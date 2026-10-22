@@ -1,0 +1,51 @@
+{
+  "roots": [
+    "yet_driver"
+  ],
+  "packages": [
+    {
+      "name": "yet_driver",
+      "version": "0.1.0+1",
+      "dependencies": [
+        "flutter",
+        "flutter_localizations"
+      ],
+      "devDependencies": [
+        "flutter_test"
+      ]
+    },
+    {
+      "name": "http",
+      "version": "0.0.0",
+      "dependencies": []
+    },
+    {
+      "name": "shared_preferences",
+      "version": "0.0.0",
+      "dependencies": []
+    },
+    {
+      "name": "path",
+      "version": "0.0.0",
+      "dependencies": []
+    },
+    {
+      "name": "flutter_test",
+      "version": "0.0.0",
+      "dependencies": []
+    },
+    {
+      "name": "flutter_localizations",
+      "version": "0.0.0",
+      "dependencies": [
+        "flutter"
+      ]
+    },
+    {
+      "name": "flutter",
+      "version": "0.0.0",
+      "dependencies": []
+    }
+  ],
+  "configVersion": 1
+}

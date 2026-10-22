@@ -4,44 +4,43 @@ packages:
   flutter:
     dependency: "direct main"
     description:
-      path: "/tmp/stubs/flutter"
-      relative: false
+      path: ".tool_studio/flutter_stub"
+      relative: true
     source: path
     version: "0.0.0"
   flutter_localizations:
     dependency: "direct main"
     description:
-      path: "/tmp/stubs/flutter_localizations"
-      relative: false
+      path: ".tool_studio/flutter_localizations_stub"
+      relative: true
     source: path
     version: "0.0.0"
   flutter_test:
     dependency: "direct dev"
     description:
-      path: "/tmp/stubs/flutter_test"
-      relative: false
+      path: ".tool_studio/flutter_test_stub"
+      relative: true
     source: path
     version: "0.0.0"
   http:
-    dependency: "direct main"
+    dependency: "direct overridden"
     description:
-      path: "/tmp/stubs/http"
-      relative: false
+      path: ".tool_studio/pub_cache/hosted/pub.dev/http-0.0.0"
+      relative: true
     source: path
     version: "0.0.0"
   path:
-    dependency: "direct main"
+    dependency: "direct overridden"
     description:
-      name: path
-      sha256: "75cca69d1490965be98c73ceaea117e8a04dd21217b37b292c9ddbec0d955bc5"
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.9.1"
+      path: ".tool_studio/pub_cache/hosted/pub.dev/path-0.0.0"
+      relative: true
+    source: path
+    version: "0.0.0"
   shared_preferences:
-    dependency: "direct main"
+    dependency: "direct overridden"
     description:
-      path: "/tmp/stubs/shared_preferences"
-      relative: false
+      path: ".tool_studio/pub_cache/hosted/pub.dev/shared_preferences-0.0.0"
+      relative: true
     source: path
     version: "0.0.0"
 sdks:
