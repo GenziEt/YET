@@ -11,31 +11,13 @@ dependencies:
     sdk: flutter
   flutter_localizations:
     sdk: flutter
-  # Persistence & offline contract (§1.8): drift = typed SQLite, survives process death.
-  drift: ^2.20.0
-  sqlite3_flutter_libs: ^0.5.24
-  path_provider: ^2.1.4
   path: ^1.9.0
-  # Local key-value (consent flags, sync backoff state)
   shared_preferences: ^2.3.1
-  # Network reachability drives the sync worker (§1.8.1)
-  connectivity_plus: ^6.0.5
-  # HTTP batch upload with timeout/backoff control
   http: ^1.2.2
-  # UUID v4 batch_id (§1.8.2)
-  uuid: ^4.4.2
-  # Battery telemetry for pilot metrics (Phase 4)
-  battery_plus: ^6.0.2
-  # Device info for diagnostics payload
-  device_info_plus: ^10.1.2
-  intl: ^0.19.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  build_runner: ^2.4.11
-  drift_dev: ^2.20.1
-  flutter_lints: ^4.0.0
 
 flutter:
   uses-material-design: true
