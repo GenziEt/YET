@@ -28,18 +28,18 @@ CREATE TABLE IF NOT EXISTS vehicles (
 -- A driver is assigned to at most one active vehicle at a time
 -- (exclusion constraint requires btree_gist; enabled in this migration).
 CREATE EXTENSION IF NOT EXISTS btree_gist;
+CREATE TABLE IF NOT EXISTS driver_vehicle_assignments (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  driver_id     UUID NOT NULL REFERENCES users(id),
+  vehicle_id    UUID NOT NULL REFERENCES vehicles(id),
+  assigned_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  unassigned_at TIMESTAMPTZ
+);
 DO $$ BEGIN
-  ALTER TABLE driver_vehicle_assignments DROP CONSTRAINT IF EXISTS dva_no_overlap;
-  CREATE TABLE IF NOT EXISTS driver_vehicle_assignments (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    driver_id     UUID NOT NULL REFERENCES users(id),
-    vehicle_id    UUID NOT NULL REFERENCES vehicles(id),
-    assigned_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    unassigned_at TIMESTAMPTZ
-  );
-  ALTER TABLE driver_vehicle_assignments ADD CONSTRAINT dva_no_overlap
+  ALTER TABLE driver_vehicle_assignments
+    ADD CONSTRAINT dva_no_overlap
     EXCLUDE USING gist (driver_id WITH =, tstzrange(assigned_at, unassigned_at, '[)') WITH &&);
-EXCEPTION WHEN duplicate_table THEN NULL; END $$;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS refresh_tokens (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -14,6 +14,12 @@ CREATE TABLE IF NOT EXISTS consent_records (
   app_version     TEXT,
   ip              INET,
   granted_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  revoked_at      TIMESTAMPTZ                    -- erasure/withdrawal path (§1.7)
+  revoked_at      TIMESTAMPTZ,                   -- erasure/withdrawal path (§1.7)
+  CONSTRAINT uq_consent_driver_version UNIQUE (driver_id, policy_version)
 );
 CREATE INDEX IF NOT EXISTS idx_consent_driver ON consent_records(driver_id, granted_at DESC);
+
+-- NOTE: POST /consent upserts ON CONFLICT on uq_consent_driver_version (defined above
+-- as a table constraint, so it exists inside this migration's transaction). A partial
+-- unique index cannot be used for ON CONFLICT inference; re-accepting the same policy
+-- version updates scopes and clears revoked_at rather than duplicating history.
