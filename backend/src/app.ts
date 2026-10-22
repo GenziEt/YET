@@ -5,7 +5,7 @@ import rateLimit from '@fastify/rate-limit';
 import sensible from '@fastify/sensible';
 import { env, isProd } from './config/env.js';
 import { checkDb, pool } from './db/pool.js';
-import identityRoutes, { ensureBootstrapAdmin } from './modules/identity/routes.js';
+import identityRoutes, { ensureBootstrapAdmin, ensureSeedDevDriver } from './modules/identity/routes.js';
 import ingestRoutes from './modules/ingest/routes.js';
 
 /**
@@ -34,7 +34,7 @@ export async function buildApp() {
     return reply.code(db ? 200 : 503).send({
       service: 'yet-backend',
       version: '0.1.0',
-      phase: 'phase-0-foundation',
+      phase: 'phase-1-ingest',
       db: status,
       time: new Date().toISOString(),
     });
@@ -67,5 +67,6 @@ export async function buildApp() {
   });
 
   await ensureBootstrapAdmin();
+  await ensureSeedDevDriver(); // dev/test only — pilot device pairing (Phase 1)
   return app;
 }

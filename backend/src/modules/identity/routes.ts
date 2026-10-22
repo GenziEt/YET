@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { pool } from '../../db/pool.js';
 import { signAccessToken, verifyAccessToken } from '../../lib/jwt.js';
 import { audit } from '../../lib/audit.js';
-import { env } from '../../config/env.js';
+import { env, isProd } from '../../config/env.js';
 
 // ---- validation schemas -------------------------------------------------------
 const LoginSchema = z.object({
@@ -13,6 +13,11 @@ const LoginSchema = z.object({
 });
 
 const ConsentScope = z.enum(['location', 'motion', 'audio']);
+const BootstrapSchema = z.object({
+  identifier: z.string().min(3),                  // phone_e164 or email of pre-provisioned driver
+  password: z.string().min(8),
+  device_id: z.string().min(8).max(128),          // stable per-install UUID from the app
+});
 const ConsentSchema = z.object({
   policy_version: z.string().min(1),
   locale: z.enum(['en', 'am']),
@@ -94,12 +99,45 @@ export default async function identityRoutes(app: FastifyInstance) {
              required: !rows[0] || rows[0].revoked_at || rows[0].policy_version !== 'consent-v1' };
   });
 
+  /** POST /me/bootstrap — one-time pairing of a pre-provisioned driver account.
+   *  Body carries the login identifier (phone_e164 or email) + password; on success
+   *  returns a JWT and stamps the device_id onto the user record so later logins can
+   *  be recognized. The app stores ONLY the token — never the password. */
+  app.post('/me/bootstrap', async (req, reply) => {
+    const body = BootstrapSchema.parse(req.body);
+    const { rows } = await pool.query(
+      `SELECT id, role, password_hash, locale, is_active FROM users
+       WHERE phone_e164 = $1 OR email = $2 LIMIT 1`,
+      [body.identifier, body.identifier],
+    );
+    const user = rows[0];
+    if (!user || !user.is_active || !verifyPassword(body.password, user.password_hash)) {
+      await audit({ action: 'bootstrap_failed', ip: req.ip });
+      return reply.code(401).send({ error: 'invalid_credentials' });
+    }
+    if (body.device_id) {
+      await pool.query(`UPDATE users SET device_id = $2 WHERE id = $1`, [user.id, body.device_id]);
+    }
+    await audit({ actorId: user.id, action: 'bootstrap_pair', targetUser: user.id, ip: req.ip });
+    const token = signAccessToken({ sub: user.id, role: user.role, locale: user.locale });
+    return { access_token: token, role: user.role, locale: user.locale, user_id: user.id };
+  });
+
   /** GET /me — token sanity check used by app bootstrap. */
   app.get('/me', async (req) => {
     const auth = await authGuard(req);
     const { rows } = await pool.query(
       `SELECT id, role, full_name, locale, phone_e164 FROM users WHERE id=$1`, [auth.id]);
-    return rows[0] ?? null;
+    const me = rows[0] ?? null;
+    if (!me) return null;
+    // Phase 1: the driver app needs its active vehicle to stamp batches/trip UI.
+    const { rows: asg } = await pool.query(
+      `SELECT va.vehicle_id, v.plate_number, v.fleet_name
+         FROM driver_vehicle_assignments va
+         JOIN vehicles v ON v.id = va.vehicle_id
+        WHERE va.driver_id = $1 AND va.unassigned_at IS NULL
+        LIMIT 1`, [auth.id]);
+    return { ...me, vehicle: asg[0] ?? null };
   });
 }
 
@@ -110,5 +148,35 @@ export async function ensureBootstrapAdmin() {
     `INSERT INTO users (role, full_name, email, password_hash)
      VALUES ('ADMIN', 'YET Admin', $1, $2) ON CONFLICT (email) DO NOTHING`,
     [env.ADMIN_BOOTSTRAP_EMAIL, hashPassword(env.ADMIN_BOOTSTRAP_PASSWORD)],
+  );
+}
+
+/**
+ * Phase 1 dev/test seed: a DRIVER + vehicle + active assignment so the ingest gate
+ * (airplane-mode replay, duplicate batch) is reproducible without manual SQL.
+ * NEVER enabled in production — real drivers are provisioned by a fleet manager.
+ */
+export async function ensureSeedDevDriver() {
+  if (isProd) return;
+  const { rows } = await pool.query(
+    `INSERT INTO users (role, full_name, phone_e164, password_hash, locale)
+     VALUES ('DRIVER', 'Test Driver A', '+251900000001', $1, 'am')
+     ON CONFLICT (phone_e164) DO UPDATE SET password_hash = EXCLUDED.password_hash
+     RETURNING id`,
+    [hashPassword('dev-driver-secret')],
+  );
+  const driverId = rows[0].id as string;
+  const { rows: veh } = await pool.query(
+    `INSERT INTO vehicles (plate_number, fleet_name, vehicle_type)
+     VALUES ('AA-90001', 'Pilot Fleet', 'TRUCK')
+     ON CONFLICT (plate_number) DO UPDATE SET fleet_name = EXCLUDED.fleet_name
+     RETURNING id`,
+  );
+  await pool.query(
+    `INSERT INTO driver_vehicle_assignments (driver_id, vehicle_id)
+     SELECT $1, $2
+     WHERE NOT EXISTS (SELECT 1 FROM driver_vehicle_assignments
+                       WHERE driver_id=$1 AND unassigned_at IS NULL)`,
+    [driverId, veh[0].id],
   );
 }
