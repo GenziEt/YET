@@ -1,12 +1,14 @@
 # Offline static-analysis overrides (sandbox only; REMOVE before real Flutter builds).
 dependency_overrides:
   flutter:
-    path: /tmp/stubs/flutter
+    path: .tool_studio/flutter_stub
   flutter_localizations:
-    path: /tmp/stubs/flutter_localizations
+    path: .tool_studio/flutter_localizations_stub
   flutter_test:
-    path: /tmp/stubs/flutter_test
+    path: .tool_studio/flutter_test_stub
+  path:
+    path: .tool_studio/pub_cache/hosted/pub.dev/path-0.0.0
   shared_preferences:
-    path: /tmp/stubs/shared_preferences
+    path: .tool_studio/pub_cache/hosted/pub.dev/shared_preferences-0.0.0
   http:
-    path: /tmp/stubs/http
+    path: .tool_studio/pub_cache/hosted/pub.dev/http-0.0.0

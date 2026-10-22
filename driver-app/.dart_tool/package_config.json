@@ -1,0 +1,50 @@
+{
+  "configVersion": 2,
+  "packages": [
+    {
+      "name": "flutter",
+      "rootUri": "../.tool_studio/flutter_stub",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
+      "name": "flutter_localizations",
+      "rootUri": "../.tool_studio/flutter_localizations_stub",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
+      "name": "flutter_test",
+      "rootUri": "../.tool_studio/flutter_test_stub",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
+      "name": "http",
+      "rootUri": "../.tool_studio/pub_cache/hosted/pub.dev/http-0.0.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
+      "name": "path",
+      "rootUri": "../.tool_studio/pub_cache/hosted/pub.dev/path-0.0.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
+      "name": "shared_preferences",
+      "rootUri": "../.tool_studio/pub_cache/hosted/pub.dev/shared_preferences-0.0.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
+      "name": "yet_driver",
+      "rootUri": "../",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    }
+  ],
+  "generator": "pub",
+  "generatorVersion": "3.13.6",
+  "pubCache": "file:///workspace/driver-app/.tool_studio/pub_cache"
+}
