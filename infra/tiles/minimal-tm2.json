@@ -1,0 +1,13 @@
+{
+  "styles": {
+    "bright": { "story": "bright.json" }
+  },
+  "sources": {
+    "ethiopia": {
+      "url": "tiles/ethiopia.pmtiles",
+      "bounds": [41.0, -5.0, 48.0, 14.9],
+      "minzoom": 6,
+      "maxzoom": 14
+    }
+  }
+}

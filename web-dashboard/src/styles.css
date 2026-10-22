@@ -1,0 +1,11 @@
+:root { font-family: system-ui, -apple-system, sans-serif; color-scheme: light; }
+* { box-sizing: border-box; margin: 0; }
+html, body, #root { height: 100%; }
+.page { display: flex; flex-direction: column; height: 100vh; }
+header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #14532d; color: #fff; }
+header h1 { font-size: 18px; font-weight: 600; flex: 1; }
+.pill { font-size: 12px; padding: 3px 10px; border-radius: 999px; background: #ffffff22; }
+.pill.ok { background: #16a34a; } .pill.bad { background: #dc2626; } .pill.warn { background: #d97706; }
+.map-wrap { flex: 1; min-height: 0; }
+.map-loading { display: grid; place-items: center; height: 100%; color: #555; }
+footer { padding: 6px 16px; font-size: 12px; background: #f3f4f6; color: #4b5563; }
