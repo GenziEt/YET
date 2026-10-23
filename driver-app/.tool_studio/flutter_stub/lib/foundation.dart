@@ -1,4 +1,13 @@
-/// Sandbox stub of dart:ui/foundation surface (analyze-only).
+/// Sandbox stub of dart:ui/foundation surface (analyze + kernel-compile).
+/// IMPORTANT: this file must be SELF-CONTAINED. The CFE does not honor
+/// `export` for resolving types used in the exporting library's own bodies
+/// (the analyzer does), so every symbol product code imports from
+/// package:flutter/foundation.dart lives here directly. debugPrint and
+/// Locale mirror real Flutter's arrangement: foundation.dart owns them and
+/// material/widgets re-export via _core.dart.
+library flutter_stub_foundation;
+
+void debugPrint(Object? message) {}
 const bool kDebugMode = true;
 const bool kReleaseMode = false;
 class _VisibleForTesting { const _VisibleForTesting(); }

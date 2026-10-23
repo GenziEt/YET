@@ -24,7 +24,11 @@ abstract class Database {
   String get path;
   int get version;
   Future<void> execute(String sql, [List<Object?>? arguments]);
-  Future<T> transaction<T>(Future<T> Function(Transaction txn) action, {bool? exclusive});
+  // Real sqflite signature: action receives a Transaction and the method is
+  // async. Keep it identical so CFE kernel compilation type-checks against
+  // hand-written fakes that use `Future<T> Function(Transaction)`.
+  Future<T> transaction<T>(Future<T> Function(Transaction txn) action,
+      {bool? exclusive});
   Future<List<Map<String, Object?>>> query(String table,
       {String? where, List<Object?>? whereArgs, String? orderBy, int? limit, int? offset});
   Future<List<Map<String, Object?>>> rawQuery(String sql, [List<Object?>? args]);
@@ -58,7 +62,8 @@ class _StubDatabase implements Database {
   @override
   Future<void> execute(String sql, [List<Object?>? arguments]) async {}
   @override
-  T transaction<T>(Future<T> Function(Transaction txn) action, {bool? exclusive}) =>
+  Future<T> transaction<T>(Future<T> Function(Transaction txn) action,
+      {bool? exclusive}) async =>
       throw UnimplementedError('stub: no runtime semantics');
   @override
   dynamic noSuchMethod(Invocation invocation) => null;

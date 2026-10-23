@@ -4,8 +4,16 @@
 /// file importing package:flutter/material.dart through widgets.dart).
 library flutter_stub_core;
 
-export 'foundation.dart' show VoidCallback, ChangeNotifier, ValueNotifier, Listenable, kDebugMode;
+// CFE does not resolve types through `export` in the exporting library's own
+// bodies, so _core imports directly AND re-exports for downstream consumers.
+import 'foundation.dart';
+import 'ui.dart' as ui;
+export 'foundation.dart' show VoidCallback, ChangeNotifier, ValueNotifier, Listenable, kDebugMode, debugPrint;
 export 'ui.dart' show Locale;
+
+/// dart:ui Locale alias so this library's own bodies can name it without a
+/// prefixed reference. Identical type as the re-export above -> no ambiguity.
+typedef Locale = ui.Locale;
 
 // ---- widgets -------------------------------------------------------------
 abstract class Key { const Key(); }
@@ -249,7 +257,7 @@ class SnackBar extends Widget {
 // ---- buttons ---------------------------------------------------------------
 class ButtonStyle { const ButtonStyle(); }
 class FilledButton extends Widget {
-  const FilledButton({super.key, this.onPressed, this.child, this.style});
+  const FilledButton({super.key, this.onPressed, this.child, this.style, this.icon});
   const FilledButton.icon({super.key, this.onPressed, this.child, this.style, this.icon});
   const FilledButton.tonal({super.key, this.onPressed, this.child, this.style, this.icon});
   final VoidCallback? onPressed;
