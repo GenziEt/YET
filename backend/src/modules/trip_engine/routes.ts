@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { verifyAccessToken } from '../../lib/jwt.js';
+import { verifyAccessToken, type TokenClaims } from '../../lib/jwt.js';
 import { pool } from '../../db/pool.js';
 import { audit } from '../../lib/audit.js';
 import { getTripStatusForVehicle, listTrips, getTripDetail } from './service.js';
@@ -11,15 +11,15 @@ import { getTripStatusForVehicle, listTrips, getTripDetail } from './service.js'
  * Dashboard reads: GET /trips (list), GET /trips/:id (detail incl. events+separations).
  */
 
-async function auth(req: any): Promise<{ id: string; role: string }> {
+async function auth(req: any): Promise<TokenClaims> {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) throw Object.assign(new Error('unauthorized'), { statusCode: 401 });
   return verifyAccessToken(header.slice(7));
 }
 
 /** Drivers see only their own trips; fleet managers/admins see all (§1.7 minimization). */
-function scopeFilter(claims: { id: string; role: string }, queryDriverId?: string): string | undefined {
-  if (claims.role === 'DRIVER') return claims.id;
+function scopeFilter(claims: TokenClaims, queryDriverId?: string): string | undefined {
+  if (claims.role === 'DRIVER') return claims.sub;
   return queryDriverId;
 }
 
@@ -41,7 +41,7 @@ export default async function tripRoutes(app: FastifyInstance) {
     const driverId = scopeFilter(claims, q.driver_id);
     const trips = await listTrips({ ...q, driver_id: driverId });
     if (claims.role !== 'DRIVER') {
-      await audit({ actorId: claims.id, action: 'read_trips', targetUser: driverId ?? null,
+      await audit({ actorId: claims.sub, action: 'read_trips', targetUser: driverId ?? null,
                     ip: req.ip, detail: { count: trips.length, filter: q } });
     }
     return { count: trips.length, trips };
@@ -77,7 +77,7 @@ export default async function tripRoutes(app: FastifyInstance) {
     if (claims.role === 'DRIVER' && detail.trip.driver_id !== claims.sub)
       return reply.code(403).send({ error: 'forbidden_role' });
     if (claims.role !== 'DRIVER') {
-      await audit({ actorId: claims.id, action: 'read_trip_detail', targetUser: detail.trip.driver_id,
+      await audit({ actorId: claims.sub, action: 'read_trip_detail', targetUser: detail.trip.driver_id,
                     ip: req.ip, detail: { trip_id: parsed.data.trip_id } });
     }
     return detail;

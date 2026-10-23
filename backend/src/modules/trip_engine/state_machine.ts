@@ -191,7 +191,7 @@ export function rebuildTrip(rawFixes: FixIn[], rawSensors: SensorIn[], cfg: Part
   if (fixes.length === 0) throw new Error('rebuildTrip requires at least one fix');
 
   const timeline: TripEventOut[] = [];
-  const first = fixes[0];
+  const first = fixes[0]!; // length checked above
   timeline.push({ event_type: 'TRIP_STARTED', event_timestamp: first.t, lat: first.lat, lng: first.lng });
 
   // ---- MOVING / STOPPED segmentation + separation detection ------------------
@@ -219,13 +219,49 @@ export function rebuildTrip(rawFixes: FixIn[], rawSensors: SensorIn[], cfg: Part
     const moving = speedMoving || (state === 'STARTED' && distance >= config.minMovingDistanceM) || displacedFromStop;
 
     if (moving) {
+      // §1.4 separation check FIRST: while STOPPED, a phone that jumps >50 m from the
+      // recorded stop point with sensors silent is the DRIVER walking away — the truck
+      // itself cannot move silently. Resolving this before the MOVING transition keeps
+      // "truck moved" (>stopRadiusM displacement) and "driver separated" (>50 m) distinct.
+      if (state === 'STOPPED' && stopPoint) {
+        const distFromStop = haversineM(stopPoint.lat, stopPoint.lng, f.lat, f.lng);
+        const sensorsQuiet = !sensorsActiveNear(sensors, f.t, config.sensorSilenceWindowS * 1000);
+        if (!separated && distFromStop > config.separationThresholdM && sensorsQuiet) {
+          separated = true;
+          separationIncidents++;
+          timeline.push({
+            event_type: 'DRIVER_SEPARATED',
+            event_timestamp: f.t,
+            lat: f.lat,
+            lng: f.lng,
+            payload: {
+              truck_stop_lat: stopPoint.lat, truck_stop_lng: stopPoint.lng, stop_at: stopPoint.t,
+              driver_lat: f.lat, driver_lng: f.lng,
+              distance_m: Math.round(distFromStop),
+            },
+          });
+        } else if (separated && distFromStop <= config.returnThresholdM) {
+          separated = false;
+          timeline.push({
+            event_type: 'DRIVER_RETURNED',
+            event_timestamp: f.t,
+            lat: f.lat,
+            lng: f.lng,
+            payload: { truck_stop_lat: stopPoint.lat, truck_stop_lng: stopPoint.lng, distance_m: Math.round(distFromStop) },
+          });
+          // Phone back at the truck; the vibration gate reopens GPS — record duty resume.
+          timeline.push({ event_type: 'GPS_DUTY_RESUME', event_timestamp: f.t, lat: f.lat, lng: f.lng,
+                         payload: { reason: 'driver_returned' } });
+        }
+      }
+
       if (state !== 'MOVING') {
         timeline.push({ event_type: 'MOVING', event_timestamp: f.t, lat: f.lat, lng: f.lng });
         state = 'MOVING';
         quietSince = null;
         stopPoint = null;
       }
-      // While MOVING the truck carries the phone — any separation is resolved.
+      // While MOVING the truck carries the phone — any open separation is resolved.
       if (separated) {
         separated = false;
         timeline.push({ event_type: 'DRIVER_RETURNED', event_timestamp: f.t, lat: f.lat, lng: f.lng,
@@ -239,16 +275,18 @@ export function rebuildTrip(rawFixes: FixIn[], rawSensors: SensorIn[], cfg: Part
       quietSince = f; // restart the stopwatch wherever the truck actually is now
     }
 
-    if (state !== 'STOPPED' && f.t - quietSince.t >= config.stoppedAfterS * 1000) {
+    // `quietSince` is non-null here: assigned unconditionally in the branch above.
+    const qs = quietSince!;
+    if (state !== 'STOPPED' && f.t - qs.t >= config.stoppedAfterS * 1000) {
       timeline.push({
         event_type: 'STOPPED',
-        event_timestamp: quietSince.t,
-        lat: quietSince.lat,
-        lng: quietSince.lng,
-        payload: { stop_lat: quietSince.lat, stop_lng: quietSince.lng, gps_duty_off: true },
+        event_timestamp: qs.t,
+        lat: qs.lat,
+        lng: qs.lng,
+        payload: { stop_lat: qs.lat, stop_lng: qs.lng, gps_duty_off: true },
       });
       state = 'STOPPED';
-      stopPoint = quietSince;
+      stopPoint = qs;
       continue;
     }
 
@@ -317,13 +355,14 @@ export function rebuildTrip(rawFixes: FixIn[], rawSensors: SensorIn[], cfg: Part
     segState = e.event_type as 'MOVING' | 'STOPPED';
     segStart = e.event_timestamp;
   }
-  const last = fixes[fixes.length - 1];
+  const last = fixes[fixes.length - 1]!; // length checked above
   const openEnd = last.t;
   if (segState === 'MOVING') movingDurationS += (openEnd - segStart) / 1000;
   if (segState === 'STOPPED') stoppedDurationS += (openEnd - segStart) / 1000;
 
   // ---- Auto-end on inactivity (pure event time; survives replay unchanged) ----
-  const anchor = transitions.length ? transitions[transitions.length - 1].event_timestamp : first.t;
+  const lastTransition = transitions[transitions.length - 1];
+  const anchor = lastTransition ? lastTransition.event_timestamp : first.t;
   let finalState: TripSummary['final_state'] = segState;
   let endedAt = openEnd;
   if (openEnd - anchor >= config.idleTimeoutS * 1000) {

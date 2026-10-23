@@ -59,10 +59,12 @@ async function loadWindow(vehicleId: string, fromMs: number, toMs: number): Prom
  */
 export function segmentTrips(fixes: FixIn[], idleTimeoutMs: number): FixIn[][] {
   if (fixes.length === 0) return [];
-  const segs: FixIn[][] = [[fixes[0]]];
+  const first = fixes[0]!;
+  const segs: FixIn[][] = [[first]];
   for (let i = 1; i < fixes.length; i++) {
-    if (fixes[i].t - fixes[i - 1].t > idleTimeoutMs) segs.push([fixes[i]]);
-    else segs[segs.length - 1].push(fixes[i]);
+    const cur = fixes[i]!, prev = fixes[i - 1]!;
+    if (cur.t - prev.t > idleTimeoutMs) segs.push([cur]);
+    else segs[segs.length - 1]!.push(cur);
   }
   return segs;
 }
@@ -97,7 +99,7 @@ async function upsertTripRow(driverId: string, vehicleId: string, rec: Reconstru
          stopPointOf(rec), stopLngOf(rec), stopAtOf(rec),
          s.distance_m, s.moving_duration_s, s.stopped_duration_s, s.turn_count, s.harsh_event_count],
       );
-      return rows[0].trip_id as string;
+      return rows[0]?.trip_id as string;
     } catch (err: any) {
       if (err?.code === '23505' && String(err.detail ?? '').includes('uq_trips_open_vehicle')) {
         // Force-end the stale open trip at its own last activity (event time), then retry.
@@ -181,8 +183,8 @@ export async function recomputeVehicleWindow(vehicleId: string, driverId: string
   if (fixes.length === 0) return;
   const segments = segmentTrips(fixes.sort((a, b) => a.t - b.t), TRIP_CONFIG.idleTimeoutS * 1000);
   for (const seg of segments) {
-    const lo = seg[0].t - TRIP_CONFIG.sensorSilenceWindowS * 1000; // include look-back sensors
-    const hi = seg[seg.length - 1].t;
+    const lo = seg[0]!.t - TRIP_CONFIG.sensorSilenceWindowS * 1000; // include look-back sensors
+    const hi = seg[seg.length - 1]!.t;
     const windowSensors = sensors.filter((s) => s.t >= lo && s.t <= hi);
     const rec = rebuildTrip(seg, windowSensors, TRIP_CONFIG);
     const tripId = await upsertTripRow(driverId, vehicleId, rec);

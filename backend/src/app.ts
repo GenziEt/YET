@@ -7,6 +7,9 @@ import { env, isProd } from './config/env.js';
 import { checkDb, pool } from './db/pool.js';
 import identityRoutes, { ensureBootstrapAdmin, ensureSeedDevDriver } from './modules/identity/routes.js';
 import ingestRoutes from './modules/ingest/routes.js';
+import tripRoutes from './modules/trip_engine/routes.js';
+import { setRecomputeHook } from './modules/ingest/service.js';
+import { recomputeVehicleWindow } from './modules/trip_engine/service.js';
 
 /**
  * Build the modular monolith. Each module registers under its own prefix so that
@@ -34,7 +37,7 @@ export async function buildApp() {
     return reply.code(db ? 200 : 503).send({
       service: 'yet-backend',
       version: '0.1.0',
-      phase: 'phase-1-ingest',
+      phase: 'phase-2-trip-engine',
       db: status,
       time: new Date().toISOString(),
     });
@@ -56,7 +59,15 @@ export async function buildApp() {
   await app.register(async (scope) => {
     await scope.register(identityRoutes);          // /auth/login, /consent, /me
   });
-  await app.register(ingestRoutes);                // Module 2: Ingest — /ingest/locations
+  await app.register(ingestRoutes);                // Module 2: Ingest — /ingest/locations, /ingest/sensors
+  await app.register(tripRoutes);                  // Module 3: Trip Engine — /trips, /trips/status, /trips/:id
+
+  // Wire the ingest → trip-engine seam (§1.5 bounded contexts): Ingest owns raw
+  // storage only; after each accepted batch it fires the late-bound recompute hook
+  // so Trip Engine reconstructs the affected event-time window (§1.8.3). The hook
+  // is registered here (composition root), not imported by Ingest's logic modules.
+  setRecomputeHook(({ vehicleId, driverId, fromMs, toMs }) =>
+    recomputeVehicleWindow(vehicleId, driverId, fromMs, toMs));
 
   // Zod errors -> 400 instead of 500
   app.setErrorHandler((err, req, reply) => {

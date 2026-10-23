@@ -37,7 +37,29 @@ async function ensurePartitions(timestamps: string[]) {
   for (const m of months) await pool.query('SELECT ensure_month_partition($1,$2)', ['location_fixes', `${m}-01T00:00:00Z`]);
 }
 
-export async function ingestLocationBatch(driverId: string, vehicleId: string | null, body: z.infer<typeof BatchSchema>): Promise<IngestResult> {
+/** Late-binding hook: Trip Engine registers itself here at boot so Ingest stays
+ *  free of trip logic (§1.5 "Does NOT own trip logic") while still triggering the
+ *  event-time recompute after each accepted batch (§1.8.3). Fire-and-forget:
+ *  ingest ACK never waits on trip reconstruction; failures are logged + audited. */
+export type RecomputeHook = (args: {
+  vehicleId: string; driverId: string; fromMs: number; toMs: number;
+}) => Promise<void>;
+
+let recomputeHook: RecomputeHook | null = null;
+export function setRecomputeHook(h: RecomputeHook) { recomputeHook = h; }
+
+function triggerRecompute(vehicleId: string | null, driverId: string, times: number[], log?: { warn: (o: unknown, m?: string) => void }) {
+  if (!recomputeHook || !vehicleId || times.length === 0) return;
+  const min = Math.min(...times), max = Math.max(...times);
+  // Window expansion grace mirrors trip_engine.batchWindowMs: look-back for sensor
+  // silence checks + one minute forward for trailing transitions.
+  const from = min - 180_000, to = max + 60_000;
+  void recomputeHook({ vehicleId, driverId, fromMs: from, toMs: to }).catch((err) => {
+    (log ?? console).warn?.({ err: String(err), vehicleId }, 'trip recompute failed (will self-heal on read path)');
+  });
+}
+
+export async function ingestLocationBatch(driverId: string, vehicleId: string | null, body: z.infer<typeof BatchSchema>, log?: { warn: (o: unknown, m?: string) => void }): Promise<IngestResult> {
   // 1) Idempotency gate: unique batch_id. If present, this is an offline replay — ACK again.
   const { rows } = await pool.query(
     `INSERT INTO ingest_batches (batch_id, driver_id, vehicle_id, fix_count, client_sent_at)
@@ -51,7 +73,59 @@ export async function ingestLocationBatch(driverId: string, vehicleId: string | 
   await ensurePartitions(body.fixes.map((f) => f.fix_timestamp));
   const { rowCount } = await insertManySafe(body.batch_id, vehicleId ?? driverId, driverId, body.fixes);
 
+  // 3) Event-time recompute of the affected window (§1.8.3) — fire-and-forget.
+  triggerRecompute(vehicleId, driverId, body.fixes.map((f) => Date.parse(f.fix_timestamp)), log);
+
   return { accepted: rowCount, already_received: false };
+}
+
+/* --------------------------- Sensor batches (Phase 2) ----------------------- */
+
+export const SensorEventSchema = z.object({
+  event_timestamp: z.string().datetime(),          // EVENT time (§1.8.3)
+  kind: z.enum(['accelerometer', 'gyroscope', 'harsh_brake', 'harsh_accel', 'turn', 'vibration_gate', 'audio_engine']),
+  payload: z.record(z.unknown()).default({}),      // samples/thresholds/metadata
+});
+
+export const SensorBatchSchema = z.object({
+  batch_id: z.string().uuid(),                     // §1.8.2 idempotency key — same contract as fixes
+  client_sent_at: z.string().datetime().optional(),
+  events: z.array(SensorEventSchema).min(1).max(env.INGEST_MAX_BATCH_SENSORS),
+});
+
+async function ensureSensorPartitions(timestamps: string[]) {
+  const months = new Set(timestamps.map((t) => t.slice(0, 7)));
+  for (const m of months) await pool.query('SELECT ensure_month_partition($1,$2)', ['sensor_events', `${m}-01T00:00:00Z`]);
+}
+
+export async function ingestSensorBatch(driverId: string, vehicleId: string | null, body: z.infer<typeof SensorBatchSchema>, log?: { warn: (o: unknown, m?: string) => void }): Promise<IngestResult> {
+  const { rows } = await pool.query(
+    `INSERT INTO ingest_batches (batch_id, driver_id, vehicle_id, fix_count, sensor_count, client_sent_at)
+     VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (batch_id) DO NOTHING RETURNING batch_id`,
+    [body.batch_id, driverId, vehicleId, 0, body.events.length, body.client_sent_at ?? null],
+  );
+  if (rows.length === 0) return { accepted: 0, already_received: true };
+  if (!vehicleId) throw Object.assign(new Error('no_vehicle_assignment'), { statusCode: 409 });
+
+  await ensureSensorPartitions(body.events.map((e) => e.event_timestamp));
+  let total = 0;
+  const CHUNK = 500; // §1.10.1 batch writes only
+  for (let i = 0; i < body.events.length; i += CHUNK) {
+    const chunk = body.events.slice(i, i + CHUNK);
+    const params: unknown[] = [];
+    const tuples = chunk.map((e, ri) => {
+      const base = ri * 5;
+      params.push(body.batch_id, vehicleId, driverId, e.event_timestamp, e.kind, JSON.stringify(e.payload));
+      return `($${base+1},$${base+2},$${base+3},$${base+4},$${base+5},$${base+6})`;
+    });
+    const res = await pool.query(
+      `INSERT INTO sensor_events (batch_id, vehicle_id, driver_id, event_timestamp, kind, payload)
+       VALUES ${tuples.join(',')} ON CONFLICT DO NOTHING`, params);
+    total += res.rowCount ?? 0;
+  }
+  // Sensor arrivals also shift separation/silence conclusions → recompute window.
+  triggerRecompute(vehicleId, driverId, body.events.map((e) => Date.parse(e.event_timestamp)), log);
+  return { accepted: total, already_received: false };
 }
 
 /** Injection-safe variant: placeholders for coordinates inside PostGIS call. */

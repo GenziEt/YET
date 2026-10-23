@@ -25,6 +25,14 @@ const EnvSchema = z.object({
 
   INGEST_RATE_LIMIT_PER_MIN: z.coerce.number().int().default(60), // §1.10.4
   INGEST_MAX_BATCH_FIXES: z.coerce.number().int().default(100),   // Phase 1 batch contract
+  INGEST_MAX_BATCH_SENSORS: z.coerce.number().int().default(2000),// Phase 2: 10 Hz sensor bursts (§1.8.5)
+
+  // Module 3 — Trip Engine thresholds (Phase 2). Defaults verbatim from the blueprint.
+  TRIP_STOPPED_AFTER_S: z.coerce.number().int().positive().default(60),          // §1.3 GPS-off gate
+  TRIP_SEPARATION_THRESHOLD_M: z.coerce.number().positive().default(50),         // §1.4 default
+  TRIP_RETURN_THRESHOLD_M: z.coerce.number().positive().default(30),             // §1.4 hysteresis
+  TRIP_IDLE_TIMEOUT_S: z.coerce.number().int().positive().default(1800),         // auto-END gap
+  TRIP_SEPARATION_NOTIFY_MIN: z.coerce.number().int().positive().default(45),    // §1.4 45-min timer
 });
 
 const parsed = EnvSchema.safeParse(process.env);
