@@ -111,17 +111,25 @@ export async function evaluateCrossings(vehicleId, driverId, fromMs, toMs) {
     // Status matrix: one row per (fix, fence) computed in Postgres so the geometry
     // authority stays in PostGIS (circle ⇒ ST_DWithin on geography; polygon ⇒
     // ST_Intersects). We pass fixes as arrays to keep it a single round-trip.
-    // NOTE (live-stack watch item): the join order below is load-bearing —
-    //   geofences drives the outer loop (GiST-friendly per-fence point tests),
-    //   fixes is the cross-joined side; swapping them changes plan shape and can
-    //   silently drop rows if the CTE ordering assumptions are edited later.
+    // NOTE (live-stack watch items, both confirmed against the running stack):
+    //  - Parameters must be $1..$3 with NO unused placeholder. A null first
+    //    element makes Postgres report "could not determine data type of
+    //    parameter $1" even though every referenced param carries an explicit
+    //    cast — unreferenced params cannot be typed.
+    //  - Use multi-arg unnest(...) WITH ORDINALITY instead of three parallel
+    //    set-returning functions (generate_subscripts + two unnests); the
+    //    WITH ORDINALITY form guarantees row alignment by construction.
+    //  - The join order below is load-bearing — geofences drives the outer loop
+    //    (GiST-friendly per-fence point tests), fixes is the cross-joined side;
+    //    swapping them changes plan shape and can silently drop rows if the CTE
+    //    ordering assumptions are edited later.
     const lats = fixes.map((f) => f.lat);
     const lngs = fixes.map((f) => f.lng);
     const fenceIds = fences.map((f) => f.geofence_id);
     const { rows: matrix } = await pool.query(`WITH fixes AS (
-       SELECT generate_subscripts($2::double precision[], 1) AS idx,
-              unnest($2::double precision[]) AS lat,
-              unnest($3::double precision[]) AS lng
+       SELECT t.idx, t.lat, t.lng
+         FROM unnest($1::double precision[], $2::double precision[])
+              WITH ORDINALITY AS t(lat, lng, idx)
      )
      SELECT fx.idx, g.geofence_id,
             CASE WHEN g.kind = 'CIRCLE'
@@ -132,7 +140,7 @@ export async function evaluateCrossings(vehicleId, driverId, fromMs, toMs) {
             END AS inside
        FROM geofences g
        CROSS JOIN fixes fx
-      WHERE g.geofence_id = ANY($4::uuid[]) AND g.active`, [null, lats, lngs, fenceIds]);
+      WHERE g.geofence_id = ANY($3::uuid[]) AND g.active`, [lats, lngs, fenceIds]);
     // Build status[geofenceIndex][fixIndex]. The matrix MUST cover every
     // (fix, fence) pair exactly once — a missing row would silently read as
     // "outside" and swallow crossings, so we assert cardinality here rather
