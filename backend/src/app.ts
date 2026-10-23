@@ -10,6 +10,7 @@ import ingestRoutes from './modules/ingest/routes.js';
 import tripRoutes from './modules/trip_engine/routes.js';
 import osmRoutes from './modules/osm_gateway/routes.js';
 import geofenceRoutes from './modules/geofence/routes.js';
+import reportingRoutes from './modules/reporting/routes.js';
 import { runCrossingEvaluator } from './modules/geofence/crossing.js';
 import { setRecomputeHook } from './modules/ingest/service.js';
 import { recomputeVehicleWindow } from './modules/trip_engine/service.js';
@@ -40,7 +41,7 @@ export async function buildApp() {
     return reply.code(db ? 200 : 503).send({
       service: 'yet-backend',
       version: '0.1.0',
-      phase: 'phase-3-geofence-route',
+      phase: 'phase-4-pilot',
       db: status,
       time: new Date().toISOString(),
     });
@@ -66,6 +67,7 @@ export async function buildApp() {
   await app.register(tripRoutes);                  // Module 3: Trip Engine — /trips, /trips/status, /trips/:id
   await app.register(osmRoutes);                   // Module 7: OSM Gateway — /route, /geocode (Phase 3)
   await app.register(geofenceRoutes);              // Module 4: Geofence — /geofences CRUD + state (Phase 3)
+  await app.register(reportingRoutes);             // Module 6: Reporting — /reports/pilot (Phase 4, read-only §1.5)
 
   // Wire the ingest → trip-engine seam (§1.5 bounded contexts): Ingest owns raw
   // storage only; after each accepted batch it fires the late-bound recompute hook

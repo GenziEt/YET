@@ -16,7 +16,8 @@
     "lint": "eslint src --ext .ts",
     "test:integration": "node scripts/integration-ingest.mjs",
     "test:trips": "node scripts/integration-trips.mjs",
-    "test:geofence": "node scripts/integration-geofence.mjs"
+    "test:geofence": "node scripts/integration-geofence.mjs",
+    "test:pilot": "node scripts/integration-pilot.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
