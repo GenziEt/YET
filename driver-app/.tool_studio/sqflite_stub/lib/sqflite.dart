@@ -23,6 +23,7 @@ abstract class Transaction {
 abstract class Database {
   String get path;
   int get version;
+  Future<void> execute(String sql, [List<Object?>? arguments]);
   Future<T> transaction<T>(Future<T> Function(Transaction txn) action, {bool? exclusive});
   Future<List<Map<String, Object?>>> query(String table,
       {String? where, List<Object?>? whereArgs, String? orderBy, int? limit, int? offset});
@@ -54,6 +55,8 @@ abstract class DatabaseFactory {
 final DatabaseFactory databaseFactory = _StubDatabaseFactory();
 
 class _StubDatabase implements Database {
+  @override
+  Future<void> execute(String sql, [List<Object?>? arguments]) async {}
   @override
   T transaction<T>(Future<T> Function(Transaction txn) action, {bool? exclusive}) =>
       throw UnimplementedError('stub: no runtime semantics');

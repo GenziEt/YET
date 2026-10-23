@@ -165,6 +165,7 @@ class State<T extends StatefulWidget> {
   BuildContext get context => BuildContext();
   bool get mounted => true;
   void initState() {}
+  void didUpdateWidget(covariant T oldWidget) {}
   void dispose() {}
   void setState(void Function() fn) => fn();
   Widget build(BuildContext context) => const SizedBox();
