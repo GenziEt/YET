@@ -73,3 +73,27 @@ footer { padding: 6px 16px; font-size: 12px; background: #f3f4f6; color: #4b5563
 .row-actions { display: flex; gap: 4px; }
 .row-actions button { font-size: 11px; padding: 2px 8px; border: 1px solid #cbd5e1; background: #fff; border-radius: 4px; cursor: pointer; }
 .map-wrap { position: relative; }
+
+/* Phase 4 — Pilot telemetry */
+.pilot-grid { flex: 1; min-height: 0; overflow: auto; display: grid; gap: 12px; padding: 12px 16px;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); align-content: start; }
+.gate-banner { grid-column: 1 / -1; border-radius: 10px; padding: 12px 16px; border: 1px solid #e5e7eb; background: #fff; }
+.gate-banner.verdict-pass { background: #f0fdf4; border-color: #86efac; }
+.gate-banner.verdict-gate_fail { background: #fef2f2; border-color: #fecaca; }
+.gate-banner.verdict-between_target_and_gate { background: #fffbeb; border-color: #fde68a; }
+.gate-banner.verdict-insufficient_data { background: #f8fafc; border-color: #cbd5e1; }
+.gate-headline { font-size: 16px; font-weight: 600; }
+.gate-sub { font-size: 12px; color: #6b7280; margin-top: 4px; }
+.card { border: 1px solid #e5e7eb; border-radius: 10px; background: #fff; padding: 10px 12px; overflow: auto; }
+.card h2 { font-size: 13px; margin-bottom: 8px; color: #374151; }
+.card-note { font-size: 11px; color: #6b7280; margin-top: 6px; }
+.big-number { font-size: 28px; font-weight: 700; }
+.big-number.ok { color: #16a34a; } .big-number.bad { color: #dc2626; }
+.verdict-tag { font-size: 11px; vertical-align: middle; margin-left: 8px; padding: 2px 8px; border-radius: 999px; background: #e5e7eb; }
+.kv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.kv-table td { padding: 3px 6px; border-bottom: 1px solid #f1f5f9; }
+.kv-table td:first-child { color: #6b7280; }
+.cell-bad { color: #dc2626; font-weight: 600; }
+.cell-warn { color: #d97706; font-weight: 600; }
+.muted { color: #9ca3af; font-size: 12px; }
+.chip.issue { background: #ede9fe; color: #5b21b6; }

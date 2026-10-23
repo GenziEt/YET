@@ -82,7 +82,12 @@ On becoming aware of a breach, the team must notify the ECA within 72 hours. Pro
 - Data controllers and processors must register with the ECA and obtain a license.
 - Status tracker:
   - [x] Phase 0: registration process initiated (paperwork filed)
-  - [ ] Before pilot launch: controller registration confirmed
+  - [ ] Before pilot launch: controller registration confirmed — **LAUNCH BLOCKER for
+        the Phase 4 field pilot** (see `docs/PILOT-RUNBOOK.md` §7/§8). Tracking owner:
+        founder/legal lead. Engineering hands over: data-flow diagram (docs/), retention
+        schedule (§2), sub-processor list, and the audit-log evidence that every
+        `/reports/pilot` read is attributable inside the 72-h ECA window. Flip this box
+        only on receipt of the ECA confirmation letter/reference number.
   - [ ] Before pilot launch: processor agreement signed with hosting partner
   - [ ] Phase 5: license number displayed in app privacy screen
 - Owner: founder/legal lead. Engineering provides: data-flow diagram (this repo docs/),
