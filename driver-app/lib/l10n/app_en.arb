@@ -76,5 +76,13 @@
         "type": "int"
       }
     }
-  }
+  },
+
+  // Phase 5 (E): mirrors notification_templates titles (migration 0011)
+  "notifTripStartedTitle": "Trip started",
+  "notifTripEndedTitle": "Trip ended",
+  "notifSeparationTitle": "Driver separation alert",
+  "notifGeofenceEnterTitle": "Entered zone",
+  "notifGeofenceExitTitle": "Left zone",
+  "notifBannerFallback": "Fleet notification"
 }
