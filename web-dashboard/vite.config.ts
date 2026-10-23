@@ -11,6 +11,13 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    proxy: { '/api': 'http://localhost:3000', '/tiles': 'http://localhost:8082' },
+    proxy: {
+      // Backend mounts routes WITHOUT the /api prefix (/healthz, /auth/login,
+      // /geofences, ...). nginx does the same in prod: `location /api/ ->
+      // proxy_pass http://api:3000/;` strips the prefix. Mirror that here so
+      // dev traffic `/api/geofences` reaches `/geofences` instead of 404ing.
+      '/api': { target: 'http://localhost:3000', changeOrigin: true, rewrite: (p) => p.replace(/^\/api/, '') },
+      '/tiles': 'http://localhost:8082',
+    },
   },
 });
