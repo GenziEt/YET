@@ -162,3 +162,102 @@ async function insertManySafe(batchId: string, vehicleId: string, driverId: stri
   }
   return { rowCount: total };
 }
+
+/* --------------------- Pilot telemetry (Phase 4) ---------------------------- */
+
+/**
+ * POST /ingest/battery — app-reported battery level at trip start/end (§Phase 4
+ * deliverable: "per-driver battery drain estimate from app-reported battery level
+ * at trip start/end"). Carried inside the SAME Offline Contract envelope as every
+ * other record type: UUID batch_id idempotency (§1.8.2), device-clock event times
+ * (§1.8.3), per-driver rate limit (§1.10.4). Samples anchor to a trip by its
+ * EVENT-TIME start (trip_started_at = timestamp of the first fix of that trip),
+ * so offline replay attaches them to the correct trip regardless of arrival order.
+ */
+export const BatterySampleSchema = z.object({
+  batch_id: z.string().uuid(),
+  client_sent_at: z.string().datetime().optional(),
+  samples: z.array(z.object({
+    trip_started_at: z.string().datetime(),           // event time of TRIP_STARTED fix
+    taken_at: z.string().datetime(),                  // event time of the reading
+    phase: z.enum(['trip_start', 'trip_end', 'mid_trip']),
+    battery_pct: z.number().gte(0).lte(100),
+    charging: z.boolean().default(false),
+  })).min(1).max(64), // one trip contributes ≤3; 64 covers a multi-trip backlog flush
+});
+
+export async function ingestBatteryBatch(
+  driverId: string,
+  vehicleId: string | null,
+  body: z.infer<typeof BatterySampleSchema>,
+): Promise<IngestResult> {
+  if (!vehicleId) throw Object.assign(new Error('no_vehicle_assignment'), { statusCode: 409 });
+  // Idempotency gate identical to locations/sensors: duplicate batch => ACK true.
+  const { rows } = await pool.query(
+    `INSERT INTO ingest_batches (batch_id, driver_id, vehicle_id, fix_count, sensor_count, client_sent_at)
+     VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (batch_id) DO NOTHING RETURNING batch_id`,
+    [body.batch_id, driverId, vehicleId, 0, 0, body.client_sent_at ?? null],
+  );
+  if (rows.length === 0) return { accepted: 0, already_received: true };
+
+  let total = 0;
+  for (const s of body.samples) {
+    // Natural-key upsert: replayed/offline batches converge to ONE sample per
+    // (vehicle, trip, phase) — no duplicated pilot statistics (§1.8.2 spirit).
+    const res = await pool.query(
+      `INSERT INTO trip_battery_samples
+         (batch_id, driver_id, vehicle_id, trip_started_at, taken_at, phase, battery_pct, charging)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (vehicle_id, trip_started_at, phase) DO UPDATE SET
+         taken_at = EXCLUDED.taken_at, battery_pct = EXCLUDED.battery_pct,
+         charging = EXCLUDED.charging, received_at = now()`,
+      [body.batch_id, driverId, vehicleId, s.trip_started_at, s.taken_at, s.phase, s.battery_pct, s.charging],
+    );
+    total += res.rowCount ?? 0;
+  }
+  return { accepted: total, already_received: false };
+}
+
+/**
+ * POST /ingest/diagnostics — one-tap in-app feedback payload (§Phase 4):
+ * issue + battery level + GPS accuracy + last-fix age + network type + pending
+ * sync count. batch_id gives the same duplicate-tap safety as data batches: a
+ * driver who taps repeatedly while offline must not multiply incidents once the
+ * tower comes back.
+ */
+export const DiagnosticsSchema = z.object({
+  batch_id: z.string().uuid(),
+  reported_at: z.string().datetime(),                 // event time from device clock
+  issue: z.enum(['gps_not_working', 'battery_drain', 'sync_stuck', 'other']),
+  battery_pct: z.number().gte(0).lte(100).optional(),
+  charging: z.boolean().optional(),
+  last_fix_age_s: z.number().int().nonnegative().optional(),
+  last_accuracy_m: z.number().nonnegative().optional(),
+  network_type: z.enum(['wifi', 'cellular', 'none', 'unknown']).default('unknown'),
+  pending_sync_count: z.number().int().nonnegative().default(0),
+  trip_active: z.boolean().default(false),
+  app_version: z.string().max(64).optional(),
+  detail: z.record(z.unknown()).default({}),
+});
+
+export async function ingestDiagnostics(
+  driverId: string,
+  vehicleId: string | null,
+  body: z.infer<typeof DiagnosticsSchema>,
+): Promise<IngestResult> {
+  const { rows } = await pool.query(
+    `INSERT INTO driver_diagnostics
+       (batch_id, driver_id, vehicle_id, reported_at, issue, battery_pct, charging,
+        last_fix_age_s, last_accuracy_m, network_type, pending_sync_count, trip_active,
+        app_version, detail)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+     ON CONFLICT (batch_id) DO NOTHING
+     RETURNING diag_id`,
+    [body.batch_id, driverId, vehicleId, body.reported_at, body.issue,
+     body.battery_pct ?? null, body.charging ?? null, body.last_fix_age_s ?? null,
+     body.last_accuracy_m ?? null, body.network_type, body.pending_sync_count,
+     body.trip_active, body.app_version ?? null, JSON.stringify(body.detail)],
+  );
+  if (rows.length === 0) return { accepted: 0, already_received: true };
+  return { accepted: 1, already_received: false };
+}
