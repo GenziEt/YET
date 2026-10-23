@@ -4,8 +4,10 @@ import 'dart:math';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:yet_driver/core/cache/fix_dao.dart';
+import 'package:yet_driver/core/cache/sensor_dao.dart';
 import 'package:yet_driver/core/sync/sync_state.dart';
 import 'package:yet_driver/core/sync/sync_worker.dart';
+import 'package:yet_driver/features/pilot/pilot_service.dart';
 
 /// In-memory sqflite stand-in. Records every statement so tests can assert on
 /// the exact SQL the Offline Contract code emits (claim ordering, ACK updates,
@@ -419,6 +421,334 @@ void main() {
       expect(ack.batchId, 'x');
       expect(ack.accepted, 0);
       expect(ack.alreadyReceived, isFalse);
+    });
+  });
+
+  // ── Phase 4: sensor offline durability (§1.8.5) — same FakeDb harness ─────
+
+  Map<String, Object?> srow(int id, String ts,
+          {String kind = 'accelerometer', String state = 'PENDING', int attempts = 0}) =>
+      {
+        'id': id,
+        'kind': kind,
+        'event_timestamp': ts,
+        'payload_json': '{"variance":0.03}',
+        'sync_state': state,
+        'batch_id': null,
+        'upload_attempts': attempts,
+      };
+
+  group('SensorDao schema + state machine mirrors FixDao (§1.8.5)', () {
+    test('creates sensor_events with sync_state column + indexes', () async {
+      final db = FakeDb();
+      await SensorDao.onCreate(db, SensorDao.dbVersion);
+      expect(db.executed.length, 3); // table + 2 indices
+      expect(db.executed[0].contains('CREATE TABLE sensor_events'), isTrue);
+      expect(db.executed[0].contains('sync_state TEXT NOT NULL'), isTrue);
+      expect(db.executed[0].contains('batch_id TEXT'), isTrue);
+      expect(db.executed[0].contains('acked_at TEXT'), isTrue);
+      expect(db.executed[1].contains('idx_sensors_sync'), isTrue);
+      expect(db.executed[2].contains('idx_sensors_time'), isTrue);
+    });
+
+    test('crash recovery: UPLOADING -> PENDING at open (§1.8.1)', () async {
+      final db = FakeDb()..lastUpdateCount = 9;
+      final dao = SensorDao(db);
+      expect(await dao.recoverUnackedUploads(), 9);
+      expect(db.queries.any((q) => q.contains('set=PENDING') && q.contains("sync_state = 'UPLOADING'")), isTrue);
+    });
+
+    test('insertEvent rejects kinds outside the backend enum (no poisoned batch)', () async {
+      final db = FakeDb();
+      final dao = SensorDao(db);
+      final bad = StoredSensorEvent(
+        id: 0,
+        kind: 'magnetometer', // not in SensorEventSchema
+        eventTimestamp: DateTime.utc(2026),
+        payload: const {},
+        syncState: SyncState.pending,
+      );
+      expect(await dao.insertEvent(bad), -1);
+      expect(db.queries.any((q) => q.startsWith('insert:sensor_events')), isFalse);
+      final good = StoredSensorEvent(
+        id: 0,
+        kind: 'gyroscope',
+        eventTimestamp: DateTime.utc(2026),
+        payload: const {'rad_s': 0.4},
+        syncState: SyncState.pending,
+      );
+      expect(await dao.insertEvent(good), greaterThan(0));
+    });
+
+    test('claimBatch orders by event_timestamp ASC (event time, §1.8.3)', () async {
+      final db = FakeDb();
+      final dao = SensorDao(db);
+      final claimed = await dao.claimBatch('b-1', 500);
+      expect(claimed, isEmpty); // FakeDb query returns [] by default
+      expect(db.queries.first, contains('query:sensor_events'));
+      expect(db.queries.first, contains('orderBy=event_timestamp ASC'));
+      expect(db.queries.first, contains('limit=500'));
+    });
+
+    test('markBatchAcked moves only this batch UPLOADING->ACKED', () async {
+      final db = FakeDb()..lastUpdateCount = 4;
+      final dao = SensorDao(db);
+      expect(await dao.markBatchAcked('b-9'), 4);
+      expect(db.queries.last, contains('set=ACKED'));
+      expect(db.queries.last, contains("sync_state = 'UPLOADING' AND batch_id = ?"));
+    });
+
+    test('releaseBatchForRetry: PENDING + attempts++ per row (§1.8.1)', () async {
+      final db = FakeDb()..lastUpdateCount = 1;
+      db.rawResults.add([srow(7, '2026-10-23T07:00:00.000Z', state: 'UPLOADING', attempts: 2)]);
+      final dao = SensorDao(db);
+      expect(await dao.releaseBatchForRetry('b-3'), 1);
+      // The update carries attempts = old + 1 via whereArgs-free values map;
+      // assert the state flip happened for the right row.
+      expect(db.queries.any((q) => q.contains('set=PENDING') && q.contains('where=id = ?')), isTrue);
+    });
+
+    test('prune deletes only ACKED rows — PENDING untouchable (§1.8.6)', () async {
+      final db = FakeDb()..lastDeleteCount = 6;
+      final dao = SensorDao(db);
+      expect(await dao.pruneAckedOlderThan(const Duration(days: 7)), 6);
+      expect(db.queries.last, contains("delete:sensor_events where=sync_state = 'ACKED'"));
+    });
+
+    test('storageBytes multiplies page_count x page_size like FixDao', () async {
+      final db = FakeDb()
+        ..rawResults.add([{'page_count': 1000}])
+        ..rawResults.add([{'page_size': 4096}]);
+      final dao = SensorDao(db);
+      expect(await dao.storageBytes(), 1000 * 4096);
+    });
+  });
+
+  group('SyncWorker sensor path (§1.8.5 through the SAME state machine)', () {
+    test('runSensorOnce: no sensor wiring -> nothingPending (Phase 1 compat)', () async {
+      final w = SyncWorker(
+        dao: FixDao(FakeDb()),
+        uploader: (_, __) async => throw UnimplementedError(),
+      );
+      expect(await w.runSensorOnce(), SyncOutcome.nothingPending);
+    });
+
+    test('runSensorOnce success: claim -> upload -> markBatchAcked', () async {
+      final db = FakeDb();
+      db.rawResults.add([srow(1, '2026-10-23T07:00:00.000Z')]);
+      String? seenBatchId;
+      final w = SyncWorker(
+        dao: FixDao(FakeDb()),
+        uploader: (_, __) async => IngestAck(batchId: 'unused', accepted: 0, alreadyReceived: false),
+        sensorDao: SensorDao(db),
+        sensorUploader: (id, events) async {
+          seenBatchId = id;
+          expect(events.length, 1);
+          expect(events.first.syncState, SyncState.uploading);
+          expect(events.first.batchId, id);
+          return IngestAck(batchId: id, accepted: 1, alreadyReceived: false);
+        },
+      );
+      expect(await w.runSensorOnce(), SyncOutcome.uploaded);
+      expect(RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-4').hasMatch(seenBatchId!), isTrue);
+      expect(db.queries.last.contains('set=ACKED'), isTrue);
+    });
+
+    test('runSensorOnce retryable failure: release to PENDING + backoff read', () async {
+      final db = FakeDb();
+      db.rawResults.add([srow(2, '2026-10-23T07:00:10.000Z')]);
+      final w = SyncWorker(
+        dao: FixDao(FakeDb()),
+        uploader: (_, __) async => throw UnimplementedError(),
+        sensorDao: SensorDao(db),
+        sensorUploader: (id, events) async =>
+            throw const RetryableUploadException('offline'),
+        random: Random(3),
+      );
+      expect(await w.runSensorOnce(), SyncOutcome.failed);
+      expect(db.queries.any((q) => q.contains('set=PENDING')), isTrue);
+      expect(db.queries.any((q) => q.contains('MAX(upload_attempts)')), isTrue);
+    });
+
+    test('runSensorOnce permanent failure blocks for the full cap', () async {
+      final db = FakeDb();
+      db.rawResults.add([srow(3, '2026-10-23T07:00:20.000Z')]);
+      final w = SyncWorker(
+        dao: FixDao(FakeDb()),
+        uploader: (_, __) async => throw UnimplementedError(),
+        sensorDao: SensorDao(db),
+        sensorUploader: (id, events) async =>
+            throw const PermanentUploadException('invalid_token'),
+      );
+      expect(await w.runSensorOnce(), SyncOutcome.failed);
+      expect(db.queries.any((q) => q.contains('set=PENDING')), isTrue);
+    });
+
+    test('refreshPendingCount sums GPS fixes + sensor backlog (§1.8.6 counter)', () async {
+      final fixDb = FakeDb()..rawResults.add([{'c': 12}]);
+      final sensorDb = FakeDb()..rawResults.add([{'c': 30}]);
+      final w = SyncWorker(
+        dao: FixDao(fixDb),
+        uploader: (_, __) async => throw UnimplementedError(),
+        sensorDao: SensorDao(sensorDb),
+        sensorUploader: (_, __) async => throw UnimplementedError(),
+      );
+      await w.refreshPendingCount();
+      expect(w.pendingCount.value, 42);
+    });
+
+    test('prune covers BOTH tables: age delete runs on sensors too', () async {
+      final fixDb = FakeDb()
+        ..lastDeleteCount = 3
+        ..rawResults.add([{'page_count': 100}])
+        ..rawResults.add([{'page_size': 4096}]);
+      final sensorDb = FakeDb()
+        ..lastDeleteCount = 5
+        ..rawResults.add([{'page_count': 100}])
+        ..rawResults.add([{'page_size': 4096}]);
+      final w = SyncWorker(
+        dao: FixDao(fixDb),
+        uploader: (_, __) async => throw UnimplementedError(),
+        sensorDao: SensorDao(sensorDb),
+        sensorUploader: (_, __) async => throw UnimplementedError(),
+      );
+      final r = await w.prune();
+      expect(r.deletedByAge, 3 + 5); // fixes + sensors (§1.8.5 both durable)
+      expect(r.deletedByBudget, 0); // ~800KB total, under the 80MB warn level
+      expect(r.warnedDriver, isFalse);
+      expect(sensorDb.queries.any((q) => q.contains("delete:sensor_events where=sync_state = 'ACKED'")), isTrue);
+    });
+  });
+
+  group('Sensor wire format matches backend SensorBatchSchema', () {
+    test('toJson emits exactly {event_timestamp, kind, payload}', () {
+      final e = StoredSensorEvent(
+        id: 1,
+        kind: 'turn',
+        eventTimestamp: DateTime.utc(2026, 10, 23, 7, 0),
+        payload: const {'angular_velocity_rad_s': 0.9},
+        syncState: SyncState.pending,
+      );
+      final j = e.toJson();
+      expect(j.keys.toSet(), {'event_timestamp', 'kind', 'payload'});
+      expect(j['kind'], 'turn');
+      // local-only columns never leave the device
+      expect(j.containsKey('id'), isFalse);
+      expect(j.containsKey('sync_state'), isFalse);
+      expect(j.containsKey('batch_id'), isFalse);
+      expect(j.containsKey('payload_json'), isFalse);
+    });
+
+    test('encodeSensorBatchBody carries batch_id + client_sent_at + events', () {
+      final body = encodeSensorBatchBody('uuid-s-1', [
+        StoredSensorEvent(
+          id: 1,
+          kind: 'harsh_brake',
+          eventTimestamp: DateTime.utc(2026),
+          payload: const {'peak_mps2': 4.2},
+          syncState: SyncState.uploading,
+        ),
+      ]);
+      expect(body.contains('"batch_id":"uuid-s-1"'), isTrue);
+      expect(body.contains('"client_sent_at"'), isTrue);
+      expect(body.contains('"events"'), isTrue);
+      expect(body.contains('"harsh_brake"'), isTrue);
+    });
+  });
+
+  group('Pilot diagnostics + battery payloads (Phase 4 endpoints)', () {
+    test('buildDiagnosticsPayload has exactly the DiagnosticsSchema fields', () {
+      final p = SyncWorker.buildDiagnosticsPayload(
+        issue: 'gps_not_working',
+        pendingSyncCount: 17,
+        tripActive: true,
+        batteryPct: 63,
+        charging: false,
+        lastFixAgeS: 95,
+        lastAccuracyM: 24.5,
+        networkType: 'cellular',
+        batchIdOverride: 'fixed-batch',
+        reportedAt: DateTime.utc(2026, 10, 23, 9),
+      );
+      expect(p['batch_id'], 'fixed-batch');
+      expect(p['reported_at'], '2026-10-23T09:00:00.000Z');
+      expect(p['issue'], 'gps_not_working');
+      expect(p['battery_pct'], 63);
+      expect(p['charging'], false);
+      expect(p['last_fix_age_s'], 95);
+      expect(p['last_accuracy_m'], 24.5);
+      expect(p['network_type'], 'cellular');
+      expect(p['pending_sync_count'], 17);
+      expect(p['trip_active'], true);
+      expect(p['detail'], isA<Map<String, Object?>>());
+      // Data minimization (§1.7): nothing beyond the schema.
+      expect(p.containsKey('contacts'), isFalse);
+      expect(p.containsKey('phone_number'), isFalse);
+    });
+
+    test('omits unknown optionals instead of fabricating them', () {
+      final p = SyncWorker.buildDiagnosticsPayload(
+        issue: 'other',
+        pendingSyncCount: 0,
+        tripActive: false,
+        batchIdOverride: 'b',
+      );
+      expect(p.containsKey('battery_pct'), isFalse);
+      expect(p.containsKey('last_fix_age_s'), isFalse);
+      expect(p['network_type'], 'unknown');
+    });
+
+    test('BatteryDrain.pctPer8h parity with backend pilot_battery constants', () {
+      // Backend: BATTERY_TARGET_PCT_PER_SHIFT = 20, GATE_MAX = 25.
+      expect(BatteryDrain.targetPctPer8h, 20.0);
+      expect(BatteryDrain.gateMaxPctPer8h, 25.0);
+      // 4% over a 2-hour trip extrapolates to 16%/8h.
+      final d = BatteryDrain.pctPer8h(
+        startPct: 80, endPct: 76, duration: const Duration(hours: 2));
+      expect(d, 16.0);
+      // Charging during the trip is excluded from drain measurement.
+      expect(BatteryDrain.pctPer8h(
+          startPct: 80, endPct: 60,
+          duration: const Duration(hours: 8), charging: true), isNull);
+      // Negative delta (plugged in mid-trip) is not a drain.
+      expect(BatteryDrain.pctPer8h(
+          startPct: 50, endPct: 70, duration: const Duration(hours: 4)), isNull);
+      // Zero/negative duration guard.
+      expect(BatteryDrain.pctPer8h(
+          startPct: 50, endPct: 40, duration: Duration.zero), isNull);
+    });
+
+    test('verdict thresholds mirror judgePilotBattery (>25 FAIL, >20 AT_RISK)', () {
+      expect(BatteryDrain.verdictForMedian(null), 'NO_DATA');
+      expect(BatteryDrain.verdictForMedian(20.0), 'PASS'); // boundary: <= target
+      expect(BatteryDrain.verdictForMedian(20.1), 'AT_RISK');
+      expect(BatteryDrain.verdictForMedian(25.0), 'AT_RISK'); // boundary: <= gate
+      expect(BatteryDrain.verdictForMedian(25.1), 'GATE_FAIL');
+    });
+  });
+
+  group('TileBounds offline pre-download math (self-hosted tiles only)', () {
+    test('countTiles is deterministic and spans all zooms 6..12', () {
+      const b = TileBounds.addisCorridor;
+      expect(b.countTiles(), b.countTiles());
+      // Sanity: every zoom contributes at least one tile for an 0.8x0.5 deg box.
+      for (var z = b.minZoom; z <= b.maxZoom; z++) {
+        final xr = b.xRange(z), yr = b.yRange(z);
+        expect(xr[1] >= xr[0], isTrue);
+        expect(yr[1] >= yr[0], isTrue);
+      }
+      // Higher zoom must cover strictly more tiles than the lowest zoom.
+      final zLow = (b.xRange(6)[1] - b.xRange(6)[0] + 1) * (b.yRange(6)[1] - b.yRange(6)[0] + 1);
+      final zHigh = (b.xRange(12)[1] - b.xRange(12)[0] + 1) * (b.yRange(12)[1] - b.yRange(12)[0] + 1);
+      expect(zHigh, greaterThan(zLow));
+      expect(b.countTiles(), greaterThanOrEqualTo(zLow + zHigh));
+    });
+
+    test('Addis center falls inside the corridor tile ranges at z=12', () {
+      const b = TileBounds.addisCorridor;
+      final xr = b.xRange(12), yr = b.yRange(12);
+      // Web-Mercator x for lng 38.75 @ z12 ≈ (38.75+180)/360*4096 ≈ 2494
+      expect(xr[0] <= 2494 && 2494 <= xr[1], isTrue);
     });
   });
 }

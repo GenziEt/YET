@@ -4,6 +4,8 @@ import '../../core/app_runtime.dart';
 import '../../core/sync/sync_worker.dart';
 import '../../l10n/app_localizations.dart';
 import '../consent/consent_repository.dart';
+import '../pilot/feedback_screen.dart';
+import '../pilot/offline_map_screen.dart';
 import '../pilot/pilot_service.dart' show AssignmentCheck;
 
 /// Phase 1 trip screen. §1.2: max 3 taps to start a trip — here it is
@@ -140,6 +142,15 @@ class _TripHomeScreenState extends State<TripHomeScreen>
             tooltip: l.feedbackTitle,
             onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(
               builder: (_) => FeedbackScreen(runtime: widget.runtime),
+            )),
+          ),
+          // Phase 4 offline-map pre-download for the pilot region (§1.6:
+          // driver app must work without signal in remote areas).
+          IconButton(
+            icon: const Icon(Icons.map_outlined),
+            tooltip: l.offlineMapTitle,
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(
+              builder: (_) => OfflineMapScreen(runtime: widget.runtime),
             )),
           ),
           TextButton(onPressed: widget.onToggleLocale, child: Text(l.languageToggle)),
