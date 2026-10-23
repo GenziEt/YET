@@ -204,6 +204,22 @@ class AppLocalizations {
         return 'አማርኛ';
     }
   }
+  String storageWarning(Object percent) {
+    switch (localeName) {
+      case 'am':
+        return 'ማከማቻው ሙሉ በሙሉ ላይ ነው ($percent%)። የGPS መረጃ ቅድሚያ ይሰጠዋል።';
+      default:
+        return 'Storage is almost full ($percent%). Sync will prioritize GPS fixes.';
+    }
+  }
+  String get syncBacklogZero {
+    switch (localeName) {
+      case 'am':
+        return 'ሁሉም መረጃ ተልኳል';
+      default:
+        return 'All fixes synced';
+    }
+  }
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {
