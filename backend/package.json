@@ -14,7 +14,9 @@
     "migrate": "tsx src/db/migrate.ts",
     "test": "vitest run",
     "lint": "eslint src --ext .ts",
-    "test:integration": "node scripts/integration-ingest.mjs"
+    "test:integration": "node scripts/integration-ingest.mjs",
+    "test:trips": "node scripts/integration-trips.mjs",
+    "test:geofence": "node scripts/integration-geofence.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
