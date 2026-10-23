@@ -699,9 +699,12 @@ void main() {
     });
 
     test('BatteryDrain.pctPer8h parity with backend pilot_battery constants', () {
-      // Backend: BATTERY_TARGET_PCT_PER_SHIFT = 20, GATE_MAX = 25.
+      // Backend: BATTERY_TARGET_PCT_PER_SHIFT = 20, GATE_MAX = 25,
+      // MIN_TRIPS_FOR_VERDICT = 10 (below that the server answers
+      // INSUFFICIENT_DATA; the client NO_DATA is the "no median yet" analog).
       expect(BatteryDrain.targetPctPer8h, 20.0);
       expect(BatteryDrain.gateMaxPctPer8h, 25.0);
+      expect(BatteryDrain.minTripsForVerdict, 10);
       // 4% over a 2-hour trip extrapolates to 16%/8h.
       final d = BatteryDrain.pctPer8h(
         startPct: 80, endPct: 76, duration: const Duration(hours: 2));

@@ -435,6 +435,9 @@ class _TileJob {
 class BatteryDrain {
   static const targetPctPer8h = 20.0; // §1.2 battery budget
   static const gateMaxPctPer8h = 25.0; // Phase 4 gate: >25% ⇒ back to Phase 2
+  /// Parity with backend MIN_TRIPS_FOR_VERDICT (trip_engine/pilot_battery.ts):
+  /// fewer usable trips ⇒ the server answers INSUFFICIENT_DATA, no verdict.
+  static const minTripsForVerdict = 10;
 
   /// Linear extrapolation of a trip's drain to an 8-hour shift. Negative
   /// deltas (charging during trip) and zero-duration trips return null —
