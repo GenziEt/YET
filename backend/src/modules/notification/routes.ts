@@ -5,7 +5,7 @@ import { verifyAccessToken } from '../../lib/jwt.js';
 import { audit } from '../../lib/audit.js';
 import { env, isProd } from '../../config/env.js';
 import { dispatchQueuedOnce } from './dispatchers.js';
-import { runSeparationSweep } from './triggers.js';
+import { runSeparationSweep, testForceSeparationOverdue, testSeparationDedupeKeys } from './triggers.js';
 
 /**
  * Module 5 — Notification HTTP surface (Phase 5).
@@ -93,13 +93,33 @@ export default async function notificationRoutes(app: FastifyInstance) {
    * personal-data triggers is not something to ship to the open internet.
    */
   if (!isProd) {
-    app.post('/notifications/sweep/run', async (req) => {
+    app.post('/notifications/sweep/run', async (req, reply) => {
       const claims = await bearer(req); // any authenticated user; audited
+      // TEST-ONLY pre-step (§1.8.3 gate): the harness may pass a separation_id to
+      // mark overdue so the sweep FIRES within seconds instead of waiting out the
+      // real TRIP_SEPARATION_NOTIFY_MIN wall clock. Guarded by the same WHERE as
+      // the sweep's own claim filter, so it can never touch notified/closed rows.
+      let forced: { shifted: boolean } | null = null;
+      const body = (req.body ?? {}) as { separation_id?: string };
+      if (body.separation_id) {
+        const parsed = z.object({ separation_id: z.string().uuid() }).safeParse(body);
+        if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
+        forced = await testForceSeparationOverdue(parsed.data.separation_id);
+      }
       const sweep = await runSeparationSweep();
       const dispatch = await dispatchQueuedOnce();
       await audit({ actorId: claims.sub, action: 'notification_sweep_run', ip: req.ip,
-                    detail: { ...sweep, ...dispatch, dry_run: process.env.NOTIFY_DISPATCH_DRY_RUN === 'true' || !env.FCM_PROJECT } });
-      return { sweep, dispatch };
+                    detail: { ...sweep, ...dispatch, forced, dry_run: process.env.NOTIFY_DISPATCH_DRY_RUN === 'true' || !env.FCM_PROJECT } });
+      return { sweep, dispatch, forced };
+    });
+
+    /** Test-mode read: per-recipient dedupe keys queued for one incident — lets
+     *  the integration gate assert `${sep:id}@${userId}` fan-out shape. */
+    app.get('/notifications/test/dedupe-keys/:separation_id', async (req, reply) => {
+      await bearer(req);
+      const p = z.object({ separation_id: z.string().uuid() }).safeParse(req.params);
+      if (!p.success) return reply.code(400).send({ error: 'invalid_params' });
+      return { keys: await testSeparationDedupeKeys(p.data.separation_id) };
     });
   }
 }

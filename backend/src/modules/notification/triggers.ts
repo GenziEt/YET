@@ -18,7 +18,7 @@
 
 import { pool } from '../../db/pool.js';
 import { env } from '../../config/env.js';
-import { decideSeparationTimer, SEPARATION_NOTIFY_MIN_DEFAULT } from './kernel.js';
+import { decideSeparationTimer, separationDedupeKey, SEPARATION_NOTIFY_MIN_DEFAULT } from './kernel.js';
 import { notifyTripEvent, notifyGeofenceCrossing, notifySeparationTimer } from './service.js';
 
 /**
@@ -129,6 +129,41 @@ export async function runSeparationSweep(nowMs: number = Date.now()): Promise<{ 
     if (queuedN > 0) fired++;
   }
   return { fired, scanned: rows.length };
+}
+
+/**
+ * TEST-HARNESS ONLY (§1.8.3 replay-determinism gate): force an OPEN separation
+ * incident past its threshold WITHOUT mutating event-time history. The honest
+ * production path is runSeparationSweep(nowMs) — real elapsed time decides. For
+ * integration gates we need to prove FIRED → NOTIFIED → dedupe → re-run no-op in
+ * seconds, not after TRIP_SEPARATION_NOTIFY_MIN of wall clock. This helper shifts
+ * separated_at back by (threshold + 1) minutes via a RETURNING CTE so the very
+ * next sweep pass sees minutes_since >= threshold and fires through the SAME code
+ * path (claim UPDATE, notifySeparationTimer fan-out, uq_notif_dedupe). Idempotent:
+ * already-notified incidents are untouched; re-calling after a shift is a no-op
+ * because returned_at IS NULL AND notified_fleet_manager = false no longer matches.
+ */
+export async function testForceSeparationOverdue(separationId: string): Promise<{ shifted: boolean }> {
+  const thresholdMin = env.TRIP_SEPARATION_NOTIFY_MIN || SEPARATION_NOTIFY_MIN_DEFAULT;
+  const { rows } = await pool.query(
+    `UPDATE driver_separation_log
+        SET separated_at = separated_at - make_interval(mins => $2::int)
+      WHERE separation_id = $1 AND returned_at IS NULL AND notified_fleet_manager = false
+      RETURNING separation_id`,
+    [separationId, thresholdMin + 1],
+  );
+  return { shifted: rows.length > 0 };
+}
+
+/** Test-harness read: current per-recipient dedupe keys queued for one incident. */
+export async function testSeparationDedupeKeys(separationId: string): Promise<string[]> {
+  const { rows } = await pool.query(
+    `SELECT dedupe_key FROM notification_log
+      WHERE event_type = 'DRIVER_SEPARATION_TIMER' AND dedupe_key LIKE $1
+      ORDER BY dedupe_key`,
+    [`${separationDedupeKey(separationId)}@%`],
+  );
+  return rows.map((r) => r.dedupe_key);
 }
 
 let sweepTimer: NodeJS.Timeout | null = null;
