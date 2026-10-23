@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/app_runtime.dart';
 import '../../core/sync/sync_worker.dart';
 import '../../l10n/app_localizations.dart';
 import '../consent/consent_repository.dart';
@@ -13,6 +14,7 @@ class TripHomeScreen extends StatefulWidget {
     required this.consent,
     required this.onToggleLocale,
     this.sync,
+    this.runtime,
   });
   final ConsentRepository consent;
   final VoidCallback onToggleLocale;
@@ -21,47 +23,77 @@ class TripHomeScreen extends StatefulWidget {
   /// placeholder value and no cadence is started.
   final SyncWorker? sync;
 
+  /// Composition root (Phase 1). When present, the Start/End button drives
+  /// BOTH the 60 s sync cadence and GPS duty-cycling through it, and the
+  /// foreground trigger of §1.8.1 fires on app resume. [sync] remains the
+  /// source of the pending counter so tests can wire the worker alone.
+  final AppRuntime? runtime;
+
   @override
   State<TripHomeScreen> createState() => _TripHomeScreenState();
 }
 
-class _TripHomeScreenState extends State<TripHomeScreen> {
+class _TripHomeScreenState extends State<TripHomeScreen>
+    with WidgetsBindingObserver {
   bool _tripActive = false;
   int _pendingSyncCount = 0; // fallback when no worker wired yet
+
+  SyncWorker? get _worker => widget.sync ?? widget.runtime?.worker;
 
   @override
   void initState() {
     super.initState();
-    widget.sync?.pendingCount.addListener(_onPendingChanged);
+    WidgetsBinding.instance.addObserver(this);
+    _worker?.pendingCount.addListener(_onPendingChanged);
     // Reflect current backlog as soon as the screen opens (app-foreground
     // trigger of the Offline Contract state machine).
-    widget.sync?.refreshPendingCount();
+    _worker?.refreshPendingCount();
   }
 
   @override
   void didUpdateWidget(covariant TripHomeScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.sync != widget.sync) {
-      oldWidget.sync?.pendingCount.removeListener(_onPendingChanged);
-      widget.sync?.pendingCount.addListener(_onPendingChanged);
-      widget.sync?.refreshPendingCount();
+    final oldWorker = oldWidget.sync ?? oldWidget.runtime?.worker;
+    if (oldWorker != _worker) {
+      oldWorker?.pendingCount.removeListener(_onPendingChanged);
+      _worker?.pendingCount.addListener(_onPendingChanged);
+      _worker?.refreshPendingCount();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // §1.8.1 trigger #1: app came to foreground -> immediate sync cycle.
+    if (state == AppLifecycleState.resumed) {
+      if (widget.runtime != null) {
+        widget.runtime!.onAppForeground();
+      } else {
+        _worker?.onAppForeground();
+      }
     }
   }
 
   void _onPendingChanged() {
     if (!mounted) return;
-    setState(() => _pendingSyncCount = widget.sync!.pendingCount.value);
+    setState(() => _pendingSyncCount = _worker?.pendingCount.value ?? 0);
   }
 
   @override
   void dispose() {
-    widget.sync?.pendingCount.removeListener(_onPendingChanged);
+    WidgetsBinding.instance.removeObserver(this);
+    _worker?.pendingCount.removeListener(_onPendingChanged);
     super.dispose();
   }
 
   void _toggleTrip() {
-    final sync = widget.sync;
+    final runtime = widget.runtime;
     setState(() => _tripActive = !_tripActive);
+    if (runtime != null) {
+      // One tap starts GPS + cadence together, ends both + flushes the tail.
+      runtime.onTripToggled(active: _tripActive);
+      return;
+    }
+    final sync = widget.sync;
     // §1.8.1: 60 s cadence only while a trip is active; ending pushes the tail.
     if (sync != null) {
       if (_tripActive) {
