@@ -116,7 +116,9 @@ export async function ingestSensorBatch(driverId: string, vehicleId: string | nu
     const tuples = chunk.map((e, ri) => {
       const base = ri * 5;
       params.push(body.batch_id, vehicleId, driverId, e.event_timestamp, e.kind, JSON.stringify(e.payload));
-      return `($${base+1},$${base+2},$${base+3},$${base+4},$${base+5},$${base+6})`;
+      // Explicit casts: node-postgres infers jsonb/unknown for string params in a
+      // multi-row VALUES list; uuid/text columns need the type annotated (PG 42804).
+      return `($${base+1}::uuid,$${base+2},$${base+3},$${base+4},$${base+5},$${base+6}::jsonb)`;
     });
     const res = await pool.query(
       `INSERT INTO sensor_events (batch_id, vehicle_id, driver_id, event_timestamp, kind, payload)
