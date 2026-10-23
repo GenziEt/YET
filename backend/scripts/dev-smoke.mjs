@@ -57,25 +57,30 @@ async function startStubServer() {
 
   // Minimal SQL router keyed on table names present in the query text. Handlers
   // receive (sql, params); only the shapes the dashboard smoke path issues are covered.
+  // NOTE: order matters — INSERT-shaped queries must be matched before the generic
+  // FROM/table-name readers below (e.g. the assignment INSERT contains a
+  // "SELECT 1 FROM driver_vehicle_assignments" NOT-EXISTS subquery).
   function handleQuery(sql, params = []) {
     const norm = sql.replace(/\s+/g, ' ').trim();
     const rows = [];
     if (/INSERT INTO users/i.test(norm)) {
-      // ensureBootstrapAdmin: VALUES ('ADMIN', 'YET Admin', $1, $2) -> params [email, hash]
-      const [, role, fullName, emailOrPhone, maybeHash] = params;
-      const isDriverSeed = /phone_e164/i.test(norm); // seed dev driver inserts by phone + RETURNING id
-      const passwordHash = isDriverSeed ? params[params.length - 1] : maybeHash;
+      // Column ORDER decides the mapping, not param count:
+      //   admin seed: (role, full_name, email, password_hash)       -> params [email, hash]
+      //   driver seed: (role, full_name, phone_e164, password_hash, locale) -> params [phone, hash, locale]
+      const isDriverSeed = /phone_e164/i.test(norm);
       const rec = isDriverSeed
-        ? { id: crypto.randomUUID(), role: 'DRIVER', full_name: fullName, email: null, phone_e164: emailOrPhone,
-            password_hash: passwordHash, locale: 'am', is_active: true, device_id: null }
-        : { id: crypto.randomUUID(), role, full_name: fullName, email: emailOrPhone, phone_e164: null,
-            password_hash: passwordHash, locale: 'en', is_active: true, device_id: null };
+        ? { id: crypto.randomUUID(), role: 'DRIVER', full_name: params[1], email: null, phone_e164: params[2],
+            password_hash: params[3], locale: params[4] ?? 'am', is_active: true, device_id: null }
+        : { id: crypto.randomUUID(), role: params[0], full_name: params[1], email: params[2], phone_e164: null,
+            password_hash: params[3], locale: 'en', is_active: true, device_id: null };
       const dupe = store.users.find((u) => (isDriverSeed ? u.phone_e164 === rec.phone_e164 : u.email === rec.email));
-      if (dupe) { dupe.password_hash = passwordHash; return { rows: [dupe], rowCount: 1 }; } // ON CONFLICT DO UPDATE ... RETURNING id
+      if (dupe) { dupe.password_hash = rec.password_hash; return { rows: [dupe], rowCount: 1 }; } // ON CONFLICT DO UPDATE ... RETURNING id
       store.users.push(rec);
       return { rows: [rec], rowCount: 1 };
     }
     if (/INSERT INTO vehicles/i.test(norm)) {
+      // (plate_number, fleet_name, vehicle_type) OR the no-RETURNING variant with
+      // params [plate, fleet, type, created_by].
       const plate = params[0];
       let v = store.vehicles.find((x) => x.plate_number === plate);
       if (!v) { v = { id: crypto.randomUUID(), plate_number: plate, fleet_name: params[1], vehicle_type: params[2] }; store.vehicles.push(v); }
@@ -87,6 +92,14 @@ async function startStubServer() {
         store.driver_vehicle_assignments.push({ driver_id: driverId, vehicle_id: vehicleId, unassigned_at: null });
       }
       return { rows: [], rowCount: 0 };
+    }
+    if (/UPDATE users SET device_id/i.test(norm)) {
+      // params: [id, device_id]  (WHERE id=$1 SET device_id=$2 ordering varies; match by uuid)
+      const id = params.find((p) => uuidRe.test(String(p)));
+      const dev = params.find((p) => !uuidRe.test(String(p)));
+      const u = store.users.find((x) => x.id === id);
+      if (u) u.device_id = dev ?? u.device_id;
+      return { rows: u ? [u] : [], rowCount: u ? 1 : 0 };
     }
     if (/FROM users/i.test(norm)) {
       const idOrPhone = params[0];
@@ -108,17 +121,24 @@ async function startStubServer() {
         return { rows: [g], rowCount: 1 };
       }
       if (/UPDATE geofences SET name/i.test(norm)) {
-        // Full-row merge UPDATE from service.updateGeofence:
-        // circle -> [id, name, category, radius_m, lat, lng, active]
-        // polygon-> [id, name, category, geojson(ring), lat, lng, active]
+        // Full-row merge UPDATE from service.updateGeofence. Param slots differ
+        // per kind; parse by placeholder position instead of fixed indexes:
+        //   circle : $2 name, $3 category, $4 radius_m, $5 lat, $6 lng, $7 active?, $1 id
+        //   polygon: $2 name, $3 category, $4 geojson/ring, $5 lat, $6 lng, $7 active?, $1 id
         const id = params[0];
         const g = store.geofences.find((x) => x.geofence_id === id);
         if (!g) return { rows: [], rowCount: 0 };
+        Object.assign(g, { name: params[1], category: params[2] });
         if (/radius_m=\$4/i.test(norm)) {
-          Object.assign(g, { kind: 'CIRCLE', name: params[1], category: params[2], radius_m: params[3],
-                            center_lat: params[4], center_lng: params[5], ring_json: null });
+          Object.assign(g, { kind: 'CIRCLE', radius_m: params[3], center_lat: params[4],
+                            center_lng: params[5], ring_json: null });
         } else {
-          Object.assign(g, { kind: 'POLYGON', name: params[1], category: params[2], ring_json: params[3] });
+          // params[3] is the GeoJSON MultiPolygon string ("coordinates":[[[lng,lat],...]]);
+          // stored ring_json / DTO shape is [[lat,lng],...] closed — convert back.
+          const gj = JSON.parse(params[3]);
+          const coords = gj.coordinates?.[0]?.[0] ?? [];
+          Object.assign(g, { kind: 'POLYGON', radius_m: null, ring_json: coords.map(([lng, lat]) => [lat, lng]),
+                            center_lat: params[4], center_lng: params[5] });
         }
         if (params[6] !== null && params[6] !== undefined) g.active = params[6];
         g.updated_at = new Date().toISOString();
@@ -131,8 +151,9 @@ async function startStubServer() {
         return { rows: [{ geofence_id: g.geofence_id }], rowCount: 1 };
       }
       if (/ST_Centroid/i.test(norm)) {
-        // Polygon centroid lookup — answer with the ring's arithmetic mean so the
-        // INSERT that follows gets plausible center_lat/lng params.
+        // service.ts asks: SELECT ST_Y(c) AS lat, ST_X(c) AS lng FROM (... centroid ...)
+        // -> answer with the ring's arithmetic mean so the INSERT/UPDATE that
+        // follows gets plausible center_lat/lng params.
         const gj = JSON.parse(params[0]);
         const coords = gj.coordinates?.[0]?.[0] ?? [[0, 0]];
         const lat = coords.reduce((s, c) => s + c[1], 0) / coords.length;
@@ -158,7 +179,9 @@ async function startStubServer() {
                center_lat: params[4], center_lng: params[5] };
     }
     return { ...base, name: params[0], kind: 'POLYGON', category: params[2],
-             ring_json: JSON.parse(params[4]), center_lat: params[5], center_lng: params[6] };
+             // params[4] is the GeoJSON MultiPolygon string; stored ring_json is [[lat,lng],...]
+             ring_json: (JSON.parse(params[4]).coordinates?.[0]?.[0] ?? []).map(([lng, lat]) => [lat, lng]),
+             center_lat: params[5], center_lng: params[6] };
   }
 
   class FakePool {
@@ -210,6 +233,9 @@ async function apiFetch(base, path, opts = {}) {
 }
 
 async function runSuite(base) {
+  // Hoisted helper (previously declared mid-suite -> TDZ ReferenceError when the
+  // POST /geofences check ran before its const initializer).
+  const uuidReOk = (s) => typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
   console.log(`\nSmoke suite against ${base}`);
 
   await check('GET /healthz -> service+phase, db reachable', async () => {
@@ -249,7 +275,6 @@ async function runSuite(base) {
     assert(r.body?.center?.lat === 9.035, `center echo ${JSON.stringify(r.body?.center)}`);
     globalThis.__zoneId = r.body.geofence_id;
   });
-  const uuidReOk = (s) => typeof s === 'string' && s.length > 10;
 
   await check('GET /geofences lists the zone (dashboard layer source)', async () => {
     const r = await apiFetch(base, '/geofences');
