@@ -6,8 +6,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 import 'cache/fix_dao.dart';
+import 'cache/sensor_dao.dart';
 import 'sync/sync_worker.dart';
 import '../features/auth/token_store.dart';
+import '../features/pilot/pilot_service.dart';
 import '../features/trip/gps_collector.dart';
 
 /// Composition root for the Phase 1 offline pipeline.
@@ -18,17 +20,24 @@ import '../features/trip/gps_collector.dart';
 class AppRuntime extends ChangeNotifier {
   AppRuntime._({
     required this.dao,
+    required this.sensorDao,
     required this.worker,
     required this.tokenStore,
     required this.gps,
+    required this.pilot,
   }) {
     worker.pendingCount.addListener(notifyListeners);
   }
 
   final FixDao dao;
+  /// §1.8.5 sensor cache — same SQLite file, same sync state machine.
+  final SensorDao sensorDao;
   final SyncWorker worker;
   final TokenStore tokenStore;
   final GpsCollector gps;
+  /// Phase 4 pilot telemetry: battery samples, one-tap assignment check,
+  /// offline tile pre-download.
+  final PilotService pilot;
 
   static Future<AppRuntime> bootstrap({
     required TokenStore tokenStore,
@@ -36,16 +45,23 @@ class AppRuntime extends ChangeNotifier {
     PositionStreamFactory? positionSource,
     DatabaseFactory? dbFactory,
     http.Client? httpClient,
+    SensorStreamFactory? sensorSource,
   }) async {
     final path = dbPathOverride ?? await defaultDbPath();
     final db = await (dbFactory ?? databaseFactory).openDatabase(
       path,
       version: FixDao.dbVersion,
-      onCreate: FixDao.onCreate,
+      onCreate: (db, v) async {
+        // One DB file holds BOTH caches (§1.8.5 "same SQLite cache").
+        await FixDao.onCreate(db, v);
+        await SensorDao.onCreate(db, v);
+      },
     );
     final dao = FixDao(db);
-    // §1.8.1 crash recovery BEFORE anything reads the cache.
+    final sensorDao = SensorDao(db);
+    // §1.8.1 crash recovery BEFORE anything reads the cache — both streams.
     await dao.recoverUnackedUploads();
+    await sensorDao.recoverUnackedUploads();
 
     final worker = SyncWorker(
       dao: dao,
@@ -53,12 +69,25 @@ class AppRuntime extends ChangeNotifier {
         accessToken: () => tokenStore.accessToken ?? '',
         client: httpClient,
       ),
+      sensorDao: sensorDao,
+      sensorUploader: SyncWorker.httpSensorUploader(
+        accessToken: () => tokenStore.accessToken ?? '',
+        client: httpClient,
+      ),
     );
     await worker.refreshPendingCount();
 
     final gps = GpsCollector(dao: dao, positionSource: positionSource);
-    return AppRuntime._(dao: dao, worker: worker, tokenStore: tokenStore, gps: gps);
+    final sensors = SensorCollector(dao: sensorDao, source: sensorSource);
+    final pilot = PilotService(tokenStore: tokenStore, client: httpClient);
+    return AppRuntime._(
+      dao: dao, sensorDao: sensorDao, worker: worker,
+      tokenStore: tokenStore, gps: gps, pilot: pilot,
+    )
+      .._sensors = sensors;
   }
+
+  SensorCollector? _sensors;
 
   /// SQLite file lives in app-support storage; PDPP §1.7 keeps it on-device
   /// until the driver's own upload sends it to the Ethiopian gateway.
