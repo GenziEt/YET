@@ -55,9 +55,32 @@ export function segmentTrips(fixes, idleTimeoutMs) {
     }
     return segs;
 }
+/**
+ * Persist one reconstructed segment. Returns { tripId, closed }:
+ *  - closed=true when the row is (or became) ENDED with ended_at set — either from
+ *    an in-data idle gap (final_state==='ENDED'), or because the wall-clock sweep
+ *    had already force-closed this exact started_at and we must not reopen it.
+ * The OPEN state (§1.8.3-safe reconstruction) maps to the last known non-terminal
+ * state with ended_at=NULL; closeOpenTrips() ends it once REAL time passes the
+ * idle horizon measured from last ACTIVITY TIME (event time), never arrival time.
+ */
 async function upsertTripRow(driverId, vehicleId, rec) {
     const s = rec.summary;
-    const endedAt = s.final_state === 'ENDED' ? new Date(s.ended_at).toISOString() : null;
+    // Sweep may have force-closed a trip for this exact started_at BEFORE this
+    // reconstruction ran (e.g. late batch recomputing an already-expired window).
+    // Respect that closure: reopening would make the end state depend on arrival
+    // order, violating §1.8.3 convergence.
+    const { rows: existing } = await pool.query(`SELECT trip_id, ended_at IS NOT NULL AS closed FROM trips
+      WHERE driver_id=$1 AND vehicle_id=$2 AND started_at=$3`, [driverId, vehicleId, new Date(s.started_at).toISOString()]);
+    if (existing[0]?.closed)
+        return { tripId: existing[0].trip_id, closed: true };
+    const closedFromData = s.final_state === 'ENDED';
+    const endedAt = closedFromData ? new Date(s.ended_at).toISOString() : null;
+    const persistedState = closedFromData
+        ? 'ENDED'
+        : s.final_state === 'OPEN'
+            ? lastNonTerminalState(rec) // OPEN is kernel-only; DB enum has no such value
+            : s.final_state;
     // The open-trip partial unique index (uq_trips_open_vehicle) can collide when a
     // reconstruction closes an old trip while opening a newer one in the same window.
     // Retry with the conflicting row force-ended — still fully event-time derived.
@@ -79,10 +102,10 @@ async function upsertTripRow(driverId, vehicleId, rec) {
            harsh_event_count = EXCLUDED.harsh_event_count,
            updated_at = now()
          RETURNING trip_id`, [driverId, vehicleId, new Date(s.started_at).toISOString(), endedAt,
-                new Date(s.last_fix.t).toISOString(), s.final_state,
+                new Date(s.last_fix.t).toISOString(), persistedState,
                 stopPointOf(rec), stopLngOf(rec), stopAtOf(rec),
                 s.distance_m, s.moving_duration_s, s.stopped_duration_s, s.turn_count, s.harsh_event_count]);
-            return rows[0]?.trip_id;
+            return { tripId: rows[0].trip_id, closed: closedFromData };
         }
         catch (err) {
             if (err?.code === '23505' && String(err.detail ?? '').includes('uq_trips_open_vehicle')) {
@@ -95,6 +118,51 @@ async function upsertTripRow(driverId, vehicleId, rec) {
         }
     }
     throw new Error('trip upsert failed after conflict retries');
+}
+/** Map kernel OPEN → a valid trip_state enum value for storage. */
+function lastNonTerminalState(rec) {
+    const e = [...rec.events].reverse().find((x) => x.event_type === 'MOVING' || x.event_type === 'STOPPED');
+    return e?.event_type ?? 'STARTED';
+}
+/**
+ * WALL-CLOCK SWEEP (§1.8.3-safe closure of OPEN trips). A reconstruction can only
+ * see data through its ingest window frontier; trips whose silence horizon lies
+ * beyond that frontier stay OPEN forever unless something compares their last
+ * ACTIVITY TIME against real elapsed time. This does that: for every open trip of
+ * this vehicle whose max(last_activity_at, last MOVING/STOPPED transition) +
+ * idleTimeoutS < now, force-close it AT its last activity (pure event time) and
+ * stamp TRIP_ENDED(idle_timeout, source:sweep).
+ * Determinism holds because:
+ *  - the kernel never returns ENDED for these segments in ANY run (OPEN is
+ *    window-frontier independent), so control and shuffled runs both rely on this
+ *    sweep, and both converge to the identical terminal state ENDED@lastActivity;
+ *  - upsertTripRow refuses to reopen a sweep-closed started_at;
+ *  - recompute skips event/log writes for already-closed trips.
+ */
+async function closeOpenTrips(vehicleId, nowMs) {
+    const { rows } = await pool.query(`SELECT t.trip_id, t.driver_id,
+            COALESCE(GREATEST(t.last_activity_at,
+                              (SELECT max(event_timestamp) FROM trip_events
+                                WHERE trip_id = t.trip_id AND event_type IN ('MOVING','STOPPED'))),
+                     t.last_activity_at) AS last_signal_at
+       FROM trips t
+      WHERE t.vehicle_id = $1 AND t.ended_at IS NULL`, [vehicleId]);
+    const horizonMs = nowMs - TRIP_CONFIG.idleTimeoutS * 1000;
+    for (const r of rows) {
+        if (new Date(r.last_signal_at).getTime() > horizonMs)
+            continue; // still within live horizon
+        const endedAtIso = new Date(r.last_signal_at).toISOString();
+        await pool.query(`UPDATE trips SET ended_at = $2, state='ENDED', updated_at=now()
+        WHERE trip_id=$1 AND ended_at IS NULL`, [r.trip_id, endedAtIso]);
+        // Idempotent terminal event — same upsert key as the reconstruction kernel uses.
+        // Coordinates: last fix at-or-before the closing moment (the truck's final known spot).
+        await pool.query(`INSERT INTO trip_events (trip_id, vehicle_id, driver_id, event_type, event_timestamp, lat, lng, payload)
+       SELECT $1, $2, $3, 'TRIP_ENDED', $4, lf.lat, lf.lng, '{"reason":"idle_timeout","source":"sweep"}'::jsonb
+         FROM (SELECT lat, lng FROM location_fixes
+                WHERE vehicle_id=$2 AND fix_timestamp <= $4
+                ORDER BY fix_timestamp DESC LIMIT 1) lf
+       ON CONFLICT ON CONSTRAINT uq_trip_event DO NOTHING`, [r.trip_id, vehicleId, r.driver_id, endedAtIso]);
+    }
 }
 function stopPointOf(rec) {
     const e = [...rec.events].reverse().find((x) => x.event_type === 'STOPPED');
@@ -183,10 +251,16 @@ async function recomputeVehicleWindowUnlocked(vehicleId, driverId, fromMs, toMs)
         const hi = seg[seg.length - 1].t;
         const windowSensors = sensors.filter((s) => s.t >= lo && s.t <= hi);
         const rec = rebuildTrip(seg, windowSensors, TRIP_CONFIG);
-        const tripId = await upsertTripRow(driverId, vehicleId, rec);
+        const { tripId, closed } = await upsertTripRow(driverId, vehicleId, rec);
+        if (closed)
+            continue; // sweep already ended this trip — do not rewrite events/state (§1.8.3 convergence)
         await upsertEvents(tripId, vehicleId, driverId, rec.events);
         await syncSeparationLog(tripId, vehicleId, driverId, rec.events);
     }
+    // Wall-clock sweep: close OPEN trips whose last ACTIVITY TIME is past the idle
+    // horizon in REAL time. Runs after reconstruction so freshly-closed-in-data trips
+    // are already ENDED and only genuinely stale open rows are touched.
+    await closeOpenTrips(vehicleId, Date.now());
     await audit({ action: 'trip_recompute', targetUser: driverId, detail: { vehicle_id: vehicleId, from_ms: fromMs, to_ms: toMs } });
 }
 /** Window expansion for a newly ingested batch: min..max event time ± grace. */
@@ -196,6 +270,11 @@ export function batchWindowMs(times) {
     return { from: min - graceS * 1000, to: max + 60_000 };
 }
 async function getOrRecoverActiveTrip(vehicleId) {
+    // Sweep first (read-path closure, §1.8.3-safe: keys off stored EVENT times —
+    // last_activity_at / last transition — compared against real elapsed time, never
+    // arrival order). Trips whose silence horizon passed in wall-clock close here
+    // even when no new data ever arrives to trigger a recompute.
+    await closeOpenTrips(vehicleId, Date.now());
     const { rows } = await pool.query(`SELECT * FROM trips WHERE vehicle_id=$1 AND ended_at IS NULL`, [vehicleId]);
     const open = rows[0] ?? null;
     // Self-heal: compare against raw ingest frontier.
@@ -251,7 +330,17 @@ export async function getTripStatusForVehicle(vehicleId) {
     };
 }
 /* ----------------------------- Dashboard reads ----------------------------- */
+/**
+ * Dashboard trip list (§1.5 Module 3 reads). Sweeps stale open trips before
+ * serving: closure is derived from stored EVENT times vs real elapsed time, so a
+ * fleet manager polling /trips sees ENDED (not a phantom 'active') for any trip
+ * whose last activity predates the idle horizon — without waiting for new data.
+ */
 export async function listTrips(q) {
+    // Cheap sweep on the read path (indexed on vehicle partial-open rows).
+    const { rows: openVehicles } = await pool.query(`SELECT DISTINCT vehicle_id FROM trips WHERE ended_at IS NULL`);
+    for (const r of openVehicles)
+        await closeOpenTrips(r.vehicle_id, Date.now());
     const conds = [];
     const params = [];
     const push = (sql, v) => { conds.push(sql); params.push(v); };

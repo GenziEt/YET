@@ -296,14 +296,34 @@ export function rebuildTrip(rawFixes, rawSensors, cfg = {}) {
     if (segState === 'STOPPED')
         stoppedDurationS += (openEnd - segStart) / 1000;
     // ---- Auto-end on inactivity (pure event time; survives replay unchanged) ----
+    // CRITICAL (§1.8.3): the idle check compares the END OF THE DATA WINDOW against
+    // the last state transition. It NEVER consults wall-clock time — otherwise an
+    // out-of-order / late replay would produce a different result than the in-order
+    // upload (the control run's window is fixed at ingest time, so its trip could
+    // never close while the shuffled run, recomputed later with a longer horizon,
+    // closed early → non-deterministic ENDED states). When no idle gap exists inside
+    // the data itself, the segment is OPEN: it may still be live, or simply the most
+    // recent activity we have. Closing OPEN trips whose last ACTIVITY TIME is far in
+    // the past is the job of the wall-clock sweep in service.ts (recompute + read
+    // path), which is safe because it keys off stored last_activity_at, not arrival
+    // order, and converges to the same terminal state for both runs.
     const lastTransition = transitions[transitions.length - 1];
     const anchor = lastTransition ? lastTransition.event_timestamp : first.t;
-    let finalState = segState;
+    // "Silence frontier": the latest moment in this data window with ANY signal —
+    // a state transition or a raw fix. The wall-clock sweep measures real idle from
+    // max(last_transition, last_fix_ts): fixes after the last transition still count
+    // as activity (e.g. the driver walking back toward the truck during a stop keeps
+    // the trip legitimately open until the phone goes truly silent).
+    const silenceFrontierMs = Math.max(anchor, last.t);
+    let finalState;
     let endedAt = openEnd;
     if (openEnd - anchor >= config.idleTimeoutS * 1000) {
         timeline.push({ event_type: 'TRIP_ENDED', event_timestamp: openEnd, lat: last.lat, lng: last.lng,
             payload: { reason: 'idle_timeout' } });
         finalState = 'ENDED';
+    }
+    else {
+        finalState = 'OPEN';
     }
     return {
         events: timeline,
@@ -319,6 +339,7 @@ export function rebuildTrip(rawFixes, rawSensors, cfg = {}) {
             separation_incidents: separationIncidents,
             currently_separated: separated,
             last_fix: last,
+            silence_frontier_ms: silenceFrontierMs,
         },
     };
 }
