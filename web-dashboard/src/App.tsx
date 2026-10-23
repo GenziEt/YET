@@ -3,8 +3,9 @@ import DashboardPage from './pages/DashboardPage';
 import RawFixesPage from './pages/RawFixesPage';
 import ZonesPage from './pages/ZonesPage';
 import PilotPage from './pages/PilotPage';
+import ReportsPage from './pages/ReportsPage';
 
-type View = 'fleet' | 'fixes' | 'zones' | 'pilot';
+type View = 'fleet' | 'fixes' | 'zones' | 'pilot' | 'reports';
 
 /** Phase 1: minimal hash-free view switch (code-split later if routes grow, §1.9.2). */
 export default function App() {
@@ -24,8 +25,11 @@ export default function App() {
         <button className={view === 'pilot' ? 'active' : ''} onClick={() => setView('pilot')}>
           Pilot
         </button>
+        <button className={view === 'reports' ? 'active' : ''} onClick={() => setView('reports')}>
+          Reports
+        </button>
       </nav>
-      {view === 'fixes' ? <RawFixesPage /> : view === 'zones' ? <ZonesPage /> : view === 'pilot' ? <PilotPage /> : <DashboardPage />}
+      {view === 'fixes' ? <RawFixesPage /> : view === 'zones' ? <ZonesPage /> : view === 'pilot' ? <PilotPage /> : view === 'reports' ? <ReportsPage /> : <DashboardPage />}
     </>
   );
 }

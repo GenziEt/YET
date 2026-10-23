@@ -75,5 +75,11 @@
         "type": "int"
       }
     }
-  }
+  },
+  "notifTripStartedTitle": "ጉዞው ጀምሯል",
+  "notifTripEndedTitle": "ጉዞው አልቋል",
+  "notifSeparationTitle": "የአሽከርካሪ መለያየት ማንቂያ",
+  "notifGeofenceEnterTitle": "ወደ ግቢ ገብቷል",
+  "notifGeofenceExitTitle": "ከግቢ ወጥቷል",
+  "notifBannerFallback": "የአደሻ ማሳወቂያ"
 }

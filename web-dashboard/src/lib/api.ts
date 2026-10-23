@@ -243,6 +243,130 @@ export const getPilotReport = (opts: { fromIso: string; toIso: string; driverId?
   return api<PilotReportDto>(`/reports/pilot?${q.toString()}`);
 };
 
+/* ---------------------------------------------------------------------------
+ * Phase 5 — Fleet reporting (Module 6, B/D). Contracts mirror
+ * backend/src/modules/reporting/{service,kernel}.ts. All three require a
+ * FLEET_MANAGER/ADMIN JWT (login() above); every read is audited server-side.
+ * ------------------------------------------------------------------------- */
+
+export interface TripReportRow {
+  trip_id: string;
+  driver_id: string;
+  plate_number: string | null;
+  started_at: string;   // ISO event time
+  ended_at: string | null;
+  state: 'STARTED' | 'MOVING' | 'STOPPED' | 'ENDED';
+  distance_m: number;
+  moving_duration_s: number;
+  stopped_duration_s: number;
+  turn_count: number;
+  harsh_event_count: number;
+}
+
+export interface TripReportDto {
+  window: { from: string; to: string };
+  driver_id: string | null;
+  summary: {
+    trip_count: number; total_distance_km: number; total_moving_s: number;
+    total_stopped_s: number; turn_count: number; harsh_event_count: number;
+  };
+  weeks: { week_start: string; trips: number; distance_km: number }[];
+  trips: TripReportRow[];
+}
+
+export const getTripReport = (opts: { fromIso: string; toIso: string; driverId?: string }) => {
+  const q = new URLSearchParams({ from: opts.fromIso, to: opts.toIso });
+  if (opts.driverId) q.set('driver_id', opts.driverId);
+  return api<TripReportDto>(`/reports/trips?${q.toString()}`);
+};
+
+export interface SeparationIncidentDto {
+  separation_id: string;
+  trip_id: string;
+  vehicle_id: string;
+  driver_id: string;
+  driver_name: string | null;
+  plate_number: string | null;
+  status: string;
+  separated_at: string;
+  returned_at: string | null;
+  duration_min: number | null;
+  truck_stop_lat: number | null;
+  truck_stop_lng: number | null;
+  distance_m: number | null;
+  notified_fleet_manager: boolean;
+  /** §1.4: snapshot of where the TRUCK was when separation began — never live. */
+  truck_last_known_location: { lat: number | null; lng: number | null; label: 'last_known' };
+}
+
+export interface SeparationsDto {
+  window: { from: string; to: string };
+  driver_id: string | null;
+  count: number;
+  incidents: SeparationIncidentDto[];
+}
+
+export const getSeparations = (opts: { fromIso: string; toIso: string; driverId?: string; openOnly?: boolean }) => {
+  const q = new URLSearchParams({ from: opts.fromIso, to: opts.toIso });
+  if (opts.driverId) q.set('driver_id', opts.driverId);
+  if (opts.openOnly) q.set('open_only', 'true');
+  return api<SeparationsDto>(`/reports/separations?${q.toString()}`);
+};
+
+export interface FleetVehicleStateDto {
+  vehicle_id: string;
+  plate_number: string | null;
+  driver_id: string | null;
+  driver_name: string | null;
+  last_fix: { at: string; lat: number; lng: number; speed_mps: number | null; accuracy_m: number | null } | null;
+  trip: {
+    vehicle_id: string; trip_id: string; driver_id: string; state: string;
+    started_at: string; last_activity_at: string; separation_open: boolean;
+    separated_minutes: number | null; notified: boolean;
+  } | null;
+  /** Age of last_fix vs the cache instant — drives the §1.4 honesty labeling. */
+  last_fix_age_s: number | null;
+  is_live: boolean;
+}
+
+export interface FleetStateDto {
+  generated_at: string;
+  vehicles: FleetVehicleStateDto[];
+  counts: { total: number; on_trip: number; separated_open: number; stale: number; offline: number };
+  cached: boolean;
+  replica_lag_s: number | null;
+  live_window_s: number;
+}
+
+/** GET /reports/fleet-state — poll this (server TTL is 30s; polling faster is harmless). */
+export const getFleetState = (refresh = false) =>
+  api<FleetStateDto>(`/reports/fleet-state${refresh ? '?refresh=1' : ''}`);
+
+/** Notification delivery ledger (§Phase 5 A) — managers only, audited. */
+export interface NotificationLogRow {
+  notification_id: string;
+  event_type: string;
+  dedupe_key: string;
+  recipient_role: string;
+  recipient_id: string;
+  target_user: string | null;
+  channel: string;
+  status: 'QUEUED' | 'SENT' | 'FAILED' | 'SKIPPED';
+  provider_msg_id: string | null;
+  error_code: string | null;
+  created_at: string;
+  sent_at: string | null;
+}
+
+export const getNotificationLog = (opts?: { eventType?: string; status?: string; limit?: number }) => {
+  const q = new URLSearchParams();
+  if (opts?.eventType) q.set('event_type', opts.eventType);
+  if (opts?.status) q.set('status', opts.status);
+  if (opts?.limit) q.set('limit', String(opts.limit));
+  const qs = q.toString();
+  return api<{ count: number; notifications: NotificationLogRow[] }>(`/notifications/log${qs ? `?${qs}` : ''}`);
+};
+
 /* Trip Engine reads used by the Phase 3 route panel (active trips selector). */
 export interface TripSummary {
   trip_id: string;
