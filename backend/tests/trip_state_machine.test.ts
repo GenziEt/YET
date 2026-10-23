@@ -165,10 +165,14 @@ function shuffleKeepsState(fixes: FixIn[], sensors: SensorIn[], cfg: Partial<typ
 }
 
 describe('state machine basics', () => {
-  it('single fix → TRIP_STARTED only, final state STARTED', () => {
+  it('single fix → TRIP_STARTED only, final state OPEN (no idle gap inside the data)', () => {
     const { events, summary } = rebuildTrip([{ t: T0, lat: 9.03, lng: 38.74, speed: 0 }], []);
     expect(events.map((e) => e.event_type)).toEqual(['TRIP_STARTED']);
-    expect(summary.final_state).toBe('STARTED');
+    // OPEN = "cannot be closed from this window alone". The persistence layer maps
+    // OPEN to the last non-terminal state and the wall-clock sweep ENDEDs it once
+    // real time passes the idle horizon — reconstruction itself never uses Date.now().
+    expect(summary.final_state).toBe('OPEN');
+    expect(summary.silence_frontier_ms).toBe(T0);
   });
 
   it('STOPPED requires a sustained quiet window (60 s default)', () => {
@@ -195,6 +199,20 @@ describe('state machine basics', () => {
     const { events, summary } = rebuildTrip(long, [], cfg);
     expect(summary.final_state).toBe('ENDED');
     expect(events.some((e) => e.event_type === 'TRIP_ENDED')).toBe(true);
+  });
+
+  it('OPEN is window-boundary independent (§1.8.3 sweep-safety invariant)', () => {
+    // A trip that reconstruction cannot close from its own data stays OPEN no
+    // matter WHERE the ingest window frontier cut falls. This is what makes the
+    // wall-clock sweep in service.ts safe: control run and late replay both see
+    // OPEN here, so both converge to ENDED@silence_frontier once real time passes
+    // the horizon — never an order-dependent terminal state.
+    const drive = movingRun(5, T0); // 0..120 s of motion, ends mid-window
+    const w1 = rebuildTrip(drive, [], DEFAULT_TRIP_CONFIG);
+    const w2 = rebuildTrip([...drive, { t: T0 + 30 * S, lat: 9.034, lng: 38.74, speed: 14 }].slice(0, drive.length + 1), [], DEFAULT_TRIP_CONFIG);
+    expect(w1.summary.final_state).toBe('OPEN');
+    expect(w2.summary.final_state).toBe('OPEN');
+    expect(w1.summary.silence_frontier_ms).toBe(drive[drive.length - 1]!.t);
   });
 
   it('device-reported TURN dedupes the GPS-derived twin within ±20 s', () => {
