@@ -1,5 +1,6 @@
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/widgets.dart' show Locale;
 
 /// Single place for environment endpoints. Production API MUST be served from an
 /// Ethiopian data center (PDPP §1.7 data sovereignty) — enforced by deployment,

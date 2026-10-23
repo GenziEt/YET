@@ -42,6 +42,18 @@
       "rootUri": "../",
       "packageUri": "lib/",
       "languageVersion": "3.4"
+    },
+    {
+      "name": "sqflite",
+      "rootUri": "../.tool_studio/sqflite_stub",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
+      "name": "path_provider",
+      "rootUri": "../.tool_studio/path_provider_stub",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
     }
   ],
   "generator": "pub",
