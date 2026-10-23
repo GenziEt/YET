@@ -157,38 +157,67 @@ export async function evaluateCrossings(vehicleId, driverId, fromMs, toMs) {
             continue;
         status[fi][Number(r.idx) - 1] = Boolean(r.inside);
     }
-    // Diff consecutive fixes within each trip; emit transitions whose CROSSING fix
-    // lies inside the requested window (anchor fix excluded — it only informs state).
+    // Diff consecutive fixes per geofence over the GLOBAL event-time sequence, then
+    // attribute each crossing to exactly ONE trip. Two facts drove this design
+    // (first live-stack run, Gate B):
+    //  1. The Trip Engine may split one continuous drive into several trips
+    //     (start / park-stop / resume), and trip windows can overlap slightly.
+    //     A naive per-trip scan attributed the SAME ENTER timestamp to two trips.
+    //  2. The §1.8.3 upsert key is (trip_id, event_type, event_timestamp), so a
+    //     duplicate attribution is invisible to the DB yet corrupts reports.
+    // Attribution rule: the LATEST-STARTED trip whose [started_at, ended_at]
+    // contains the crossing fix wins; if none contains it (edge fix between trips),
+    // fall back to the most recently started trip at or before the fix time.
+    // Because the diff runs once over the whole fix sequence, each (geofence,
+    // transition moment) yields exactly one candidate event regardless of how many
+    // trips exist or in what order batches arrived — determinism preserved.
     const events = [];
-    for (const trip of tripRows) {
-        const tStart = new Date(trip.started_at).getTime();
-        const tEnd = trip.ended_at ? new Date(trip.ended_at).getTime() : Infinity;
-        for (let gi = 0; gi < fenceIds.length; gi++) {
-            const fence = fences[gi];
-            let prevInside = false;
-            let prevT = -Infinity;
-            for (let fi = 0; fi < fixes.length; fi++) {
-                const fix = fixes[fi];
-                if (fix.t < tStart || fix.t > tEnd) {
-                    prevInside = status[gi][fi] ?? false;
-                    prevT = fix.t;
-                    continue;
-                }
-                const inside = status[gi][fi] ?? false;
-                if (prevT >= tStart && prevT <= tEnd && inside !== prevInside) {
+    for (let gi = 0; gi < fenceIds.length; gi++) {
+        const fence = fences[gi];
+        let prevInside = false;
+        for (let fi = 1; fi < fixes.length; fi++) {
+            const prev = fixes[fi - 1], cur = fixes[fi];
+            const wasInside = status[gi][fi - 1] ?? false;
+            const isInside = status[gi][fi] ?? false;
+            // Only report crossings whose event fix lies inside the requested window
+            // (the anchor fix at index 0 only informs state at the leading edge).
+            if (cur.t < fromMs || cur.t > toMs) {
+                prevInside = isInside;
+                continue;
+            }
+            if (isInside !== wasInside) {
+                const trip = attributeTrip(tripRows, cur.t);
+                if (trip) {
                     events.push({
                         trip_id: trip.trip_id, vehicle_id: vehicleId, driver_id: driverId,
                         geofence_id: fence.geofence_id, geofence_name: fence.name, category: fence.category,
-                        event_type: inside ? 'GEOFENCE_ENTER' : 'GEOFENCE_EXIT',
-                        event_timestamp_ms: fix.t, lat: fix.lat, lng: fix.lng,
+                        event_type: isInside ? 'GEOFENCE_ENTER' : 'GEOFENCE_EXIT',
+                        event_timestamp_ms: cur.t, lat: cur.lat, lng: cur.lng,
                     });
                 }
-                prevInside = inside;
-                prevT = fix.t;
+                void prev;
             }
+            prevInside = isInside;
         }
     }
     return events;
+}
+/** Deterministic single-trip attribution for a crossing fix (see rules above). */
+export function attributeTrip(tripRows, fixT) {
+    let containing = null;
+    let fallback = null;
+    for (const trip of tripRows) {
+        const start = new Date(trip.started_at).getTime();
+        const end = trip.ended_at ? new Date(trip.ended_at).getTime() : Infinity;
+        if (fixT >= start && fixT <= end) {
+            // latest-started containing trip wins (tripRows are sorted started_at ASC).
+            containing = { trip_id: trip.trip_id, start };
+        }
+        else if (start <= fixT && (!fallback || start > fallback.start)) {
+            fallback = { trip_id: trip.trip_id, start };
+        }
+    }
+    return containing ?? fallback;
 }
 /** Persist ENTER/EXIT through the §1.8.3 idempotent upsert key. */
 export async function persistCrossingEvents(events) {

@@ -115,31 +115,60 @@ async function uploadRun(token, batches) {
   }
 }
 
-/** Poll trip events until ENTER+EXIT both appear for our zone (or timeout). */
-async function waitForCrossings(token, startedIso, geofenceId) {
-  for (let i = 0; i < 30; i++) {
-    const list = await j('/trips?limit=200', {}, token);
-    const t = (list.body.trips ?? []).find((x) => x.started_at === startedIso);
-    if (t) {
-      const det = await j(`/trips/${t.trip_id}`, {}, token);
-      const evs = (det.body.events ?? []).filter(
-        (e) => e.event_type?.startsWith('GEOFENCE_') && e.payload?.geofence_id === geofenceId);
-      const enter = evs.filter((e) => e.event_type === 'GEOFENCE_ENTER');
-      const exit = evs.filter((e) => e.event_type === 'GEOFENCE_EXIT');
-      if (enter.length >= 1 && exit.length >= 1) return { trip: t, enter, exit, evs };
+/**
+ * Collect GEOFENCE_* events for OUR zone across all trips overlapping the replay
+ * window. The Trip Engine may split one continuous drive into several trips
+ * (start / park-stop / resume) with windows that don't align to the synthetic
+ * base time exactly — so we never assume "both events live in the trip whose
+ * started_at === base". Events are deduplicated by EVENT TIME first: the §1.8.3
+ * upsert key is (trip_id, event_type, event_timestamp), so attribution moving
+ * between trips across recomputes can leave rows on two trips for the SAME
+ * moment; physically those are one crossing. Assertion model: each distinct
+ * crossing MOMENT occurred exactly once (per type) for this zone.
+ */
+async function collectZoneEvents(adminToken, baseMs, geofenceId) {
+  const windowEnd = baseMs + 30 * 60_000; // synthetic corridor is ≤22 min
+  const list = await j('/trips?limit=200', {}, adminToken);
+  const overlapping = (list.body.trips ?? []).filter(
+    (x) => new Date(x.started_at).getTime() <= windowEnd &&
+           (!x.ended_at || new Date(x.ended_at).getTime() >= baseMs));
+  const all = [];
+  for (const t of overlapping) {
+    const det = await j(`/trips/${t.trip_id}`, {}, adminToken);
+    for (const e of det.body.events ?? []) {
+      if (e.event_type?.startsWith('GEOFENCE_') && e.payload?.geofence_id === geofenceId) {
+        all.push({ ...e, _trip_id: t.trip_id });
+      }
     }
+  }
+  const seen = new Set();
+  const deduped = all.filter((e) => {
+    const k = `${e.event_type}@${e.event_timestamp}`;
+    if (seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+  return { trips: overlapping, raw: all, evs: deduped };
+}
+
+/** Poll until ENTER+EXIT both appear for our zone (or timeout). */
+async function waitForCrossings(adminToken, baseMs, geofenceId) {
+  for (let i = 0; i < 30; i++) {
+    const c = await collectZoneEvents(adminToken, baseMs, geofenceId);
+    const enter = c.evs.filter((e) => e.event_type === 'GEOFENCE_ENTER');
+    const exit = c.evs.filter((e) => e.event_type === 'GEOFENCE_EXIT');
+    if (enter.length >= 1 && exit.length >= 1) return { ...c, enter, exit };
     await new Promise((res) => setTimeout(res, 1000));
   }
   return null;
 }
 
-/** Normalize crossing events relative to trip start for cross-run comparison. */
-function normalizeCrossings(found) {
-  const base = new Date(found.trip.started_at).getTime();
+/** Normalize crossing events relative to the replay BASE time (not any single
+ *  trip's start) for cross-run comparison. */
+function normalizeCrossings(found, baseMs) {
   return found.evs
     .map((e) => ({
       type: e.event_type,
-      min: Math.round((new Date(e.event_timestamp).getTime() - base) / 60_000 * 10) / 10,
+      min: Math.round((new Date(e.event_timestamp).getTime() - baseMs) / 60_000 * 10) / 10,
       lat: +(e.lat - LAT0).toFixed(4),
       lng: +(e.lng - LNG0).toFixed(4),
     }))
@@ -202,7 +231,7 @@ async function main() {
 
   const controlBatches = makeBatches(controlBase);
   await uploadRun(token, controlBatches);
-  const controlFound = await waitForCrossings(token, new Date(controlBase).toISOString(), gf.geofence_id);
+  const controlFound = await waitForCrossings(adminToken, controlBase, gf.geofence_id);
   check('CONTROL replay emitted ENTER+EXIT', !!controlFound,
     controlFound ? `enter=${controlFound.enter.length} exit=${controlFound.exit.length}` : 'none');
   if (!controlFound) process.exit(1);
@@ -212,15 +241,15 @@ async function main() {
   const shuffleBatches = makeBatches(shuffleBase);
   const order = ['C', 'A', 'D', 'B']; // out-of-order upload (§1.8.3)
   await uploadRun(token, order.map((l) => shuffleBatches.find((b) => b.label === l)));
-  const shuffleFound = await waitForCrossings(token, new Date(shuffleBase).toISOString(), gf.geofence_id);
+  const shuffleFound = await waitForCrossings(adminToken, shuffleBase, gf.geofence_id);
   check('SHUFFLED (out-of-order) replay emitted ENTER+EXIT', !!shuffleFound,
     shuffleFound ? `enter=${shuffleFound.enter.length} exit=${shuffleFound.exit.length}` : 'none');
   if (!shuffleFound) process.exit(1);
   check('ENTER emitted EXACTLY once under out-of-order upload', shuffleFound.enter.length === 1);
   check('EXIT emitted EXACTLY once under out-of-order upload', shuffleFound.exit.length === 1);
 
-  const nC = JSON.stringify(normalizeCrossings(controlFound));
-  const nS = JSON.stringify(normalizeCrossings(shuffleFound));
+  const nC = JSON.stringify(normalizeCrossings(controlFound, controlBase));
+  const nS = JSON.stringify(normalizeCrossings(shuffleFound, shuffleBase));
   check('GATE: crossing events identical modulo time shift (ordered vs shuffled)', nC === nS,
     nC === nS ? nC : `\n control=${nC}\n shuffled=${nS}`);
 
@@ -228,7 +257,7 @@ async function main() {
   // (upsert key (trip_id,event_type,event_timestamp) freshness path).
   const replayBatches = makeBatches(shuffleBase); // fresh batch ids, identical event times
   await uploadRun(token, ['D', 'B', 'A', 'C'].map((l) => replayBatches.find((b) => b.label === l)));
-  const afterReplay = await waitForCrossings(token, new Date(shuffleBase).toISOString(), gf.geofence_id);
+  const afterReplay = await waitForCrossings(adminToken, shuffleBase, gf.geofence_id);
   check('late duplicate replay does NOT multiply events', !!afterReplay
     && afterReplay.enter.length === 1 && afterReplay.exit.length === 1,
     afterReplay ? `enter=${afterReplay.enter.length} exit=${afterReplay.exit.length}` : 'lost');
@@ -254,7 +283,9 @@ async function main() {
   check('inside[] list names the zone', (st2.body.inside ?? []).some((z) => z.geofence_id === gf.geofence_id));
 
   // 5. Gate D — route to destination + Redis cache budget (§1.9.4 ≤ 50 ms cached)
-  const destQs = `/route?from=${LAT0},${LNG0}&destination_geofence_id=${gf.geofence_id}&vehicle_id=${vehicleId}`;
+  // NOTE: from/to are REQUIRED query params (the gateway validates them even when
+  // the destination is given as a geofence id, which overrides `to` server-side).
+  const destQs = `/route?from=${LAT0},${LNG0}&to=${WH_LAT},${WH_LNG}&destination_geofence_id=${gf.geofence_id}&vehicle_id=${vehicleId}`;
   const coldT0 = performance.now();
   const cold = await j(destQs, {}, token);
   const coldMs = Math.round(performance.now() - coldT0);
