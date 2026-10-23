@@ -314,6 +314,24 @@ class SwitchListTile extends Widget { const SwitchListTile({super.key, this.titl
 
 class WidgetsFlutterBinding { static void ensureInitialized() {} }
 
+/// Real Flutter: AppLifecycleState lives in dart:ui and is re-exported by
+/// foundation.dart / widgets.dart. Stubbed here with the production members.
+enum AppLifecycleState { inactive, resumed, paused, hidden, detached }
+
+mixin class WidgetsBindingObserver {
+  void didChangeAppLifecycleState(AppLifecycleState state) {}
+}
+
+/// Minimal binding surface used for lifecycle observation (analyze-only).
+class WidgetsBinding implements WidgetsFlutterBinding {
+  WidgetsBinding._();
+  static final WidgetsBinding instance = WidgetsBinding._();
+  void addObserver(WidgetsBindingObserver observer) {}
+  void removeObserver(WidgetsBindingObserver observer) {}
+}
+
+void debugPrint(Object? message) {}
+
 // ---- widgets-library surface also visible via material.dart --------------
 abstract class LocalizationsDelegate<T> {
   const LocalizationsDelegate();

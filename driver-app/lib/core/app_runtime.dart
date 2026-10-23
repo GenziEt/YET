@@ -2,14 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
-import 'core/cache/fix_dao.dart';
-import 'core/config/app_config.dart';
-import 'core/sync/sync_state.dart';
-import 'core/sync/sync_worker.dart';
-import 'features/auth/token_store.dart';
-import 'features/trip/gps_collector.dart';
+import 'cache/fix_dao.dart';
+import 'sync/sync_worker.dart';
+import '../features/auth/token_store.dart';
+import '../features/trip/gps_collector.dart';
 
 /// Composition root for the Phase 1 offline pipeline.
 ///
@@ -32,14 +31,15 @@ class AppRuntime extends ChangeNotifier {
   final GpsCollector gps;
 
   static Future<AppRuntime> bootstrap({
-    required String dbPath,
     required TokenStore tokenStore,
+    String? dbPathOverride,
+    PositionStreamFactory? positionSource,
     DatabaseFactory? dbFactory,
     http.Client? httpClient,
-    String Function()? now,
   }) async {
+    final path = dbPathOverride ?? await defaultDbPath();
     final db = await (dbFactory ?? databaseFactory).openDatabase(
-      dbPath,
+      path,
       version: FixDao.dbVersion,
       onCreate: FixDao.onCreate,
     );
@@ -56,8 +56,15 @@ class AppRuntime extends ChangeNotifier {
     );
     await worker.refreshPendingCount();
 
-    final gps = GpsCollector(dao: dao);
+    final gps = GpsCollector(dao: dao, positionSource: positionSource);
     return AppRuntime._(dao: dao, worker: worker, tokenStore: tokenStore, gps: gps);
+  }
+
+  /// SQLite file lives in app-support storage; PDPP §1.7 keeps it on-device
+  /// until the driver's own upload sends it to the Ethiopian gateway.
+  static Future<String> defaultDbPath() async {
+    final dir = await getApplicationSupportDirectory();
+    return '${dir.path}/yet_cache.db';
   }
 
   /// Trip started on screen: begin GPS duty-cycling + 60 s sync cadence.
@@ -80,7 +87,16 @@ class AppRuntime extends ChangeNotifier {
   void onAppForeground() => worker.onAppForeground();
 
   int get pendingFixes => worker.pendingCount.value;
-  SyncState stateOf(SyncState s) => s; // re-export for UI badges
+
+  /// Trip toggle from the home screen: GPS duty-cycling + 60 s sync cadence
+  /// start together, and both stop together (§1.8.1 trigger list).
+  Future<void> onTripToggled({required bool active}) async {
+    if (active) {
+      await startTrip();
+    } else {
+      await endTrip();
+    }
+  }
 
   @override
   void dispose() {
