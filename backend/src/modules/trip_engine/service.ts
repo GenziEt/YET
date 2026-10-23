@@ -192,7 +192,10 @@ async function closeOpenTrips(vehicleId: string, nowMs: number): Promise<void> {
          FROM (SELECT lat, lng FROM location_fixes
                 WHERE vehicle_id=$2 AND fix_timestamp <= $4
                 ORDER BY fix_timestamp DESC LIMIT 1) lf
-       ON CONFLICT ON CONSTRAINT uq_trip_event DO NOTHING`,
+         ON CONFLICT (trip_id, event_type, event_timestamp) DO NOTHING`,
+      // NOTE: never `ON CONFLICT ON CONSTRAINT uq_trip_event` — that syntax fails
+      // with 42P10 because uq_trip_event is a UNIQUE *index* (migration 0008),
+      // not a table constraint. Inferred-columns form works for both.
       [r.trip_id, vehicleId, r.driver_id, endedAtIso],
     );
   }
@@ -217,7 +220,7 @@ async function upsertEvents(tripId: string, vehicleId: string, driverId: string,
     await pool.query(
       `INSERT INTO trip_events (trip_id, vehicle_id, driver_id, event_type, event_timestamp, lat, lng, payload)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT ON CONSTRAINT uq_trip_event DO UPDATE SET
+       ON CONFLICT (trip_id, event_type, event_timestamp) DO UPDATE SET
          lat = EXCLUDED.lat, lng = EXCLUDED.lng, payload = EXCLUDED.payload, updated_at = now()`,
       [tripId, vehicleId, driverId, e.event_type, new Date(e.event_timestamp).toISOString(),
        e.lat ?? null, e.lng ?? null, JSON.stringify(e.payload ?? {})],
