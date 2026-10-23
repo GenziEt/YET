@@ -2,7 +2,7 @@
   "name": "@yet/backend",
   "version": "0.1.0",
   "private": true,
-  "description": "YET backend \u2014 microservice-ready modular monolith (Phase 0)",
+  "description": "YET backend — microservice-ready modular monolith (Phase 0)",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -13,7 +13,8 @@
     "start": "node dist/server.js",
     "migrate": "tsx src/db/migrate.ts",
     "test": "vitest run",
-    "lint": "eslint src --ext .ts"
+    "lint": "eslint src --ext .ts",
+    "test:integration": "node scripts/integration-ingest.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
@@ -33,9 +34,9 @@
     "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^20.14.15",
     "@types/pg": "^8.11.6",
+    "pino-pretty": "^11.2.2",
     "tsx": "^4.17.0",
     "typescript": "^5.5.4",
-    "vitest": "^2.0.5",
-    "pino-pretty": "^11.2.2"
+    "vitest": "^2.0.5"
   }
 }
