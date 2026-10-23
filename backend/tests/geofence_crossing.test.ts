@@ -38,6 +38,13 @@ const fencePolygon = randomUUID();
 // Far-future base so fixtures never collide with real/gate data day-partitions.
 const BASE = Date.now() + 365 * 24 * 3600_000;
 
+/** 'YYYY-MM' → 'YYYY-MM' of the following month (for partition upper bounds). */
+function nextMonth(ym: string): string {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(Date.UTC(y, m, 1)); // month index is 0-based → this is next month's 1st
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
 d('crossing evaluator (Postgres integration)', () => {
   beforeAll(async () => {
     poolX = new pg.Pool({ connectionString: DB, max: 2 });
@@ -48,54 +55,75 @@ d('crossing evaluator (Postgres integration)', () => {
     attributeTrip = mod.attributeTrip;
 
     // Vehicle row (FK target) + one trip covering the whole corridor.
+    // NOTE: vehicles PK column is `id` (not vehicle_id); trips.state is the enum
+    // column; polygon geom must satisfy chk_circle_shape (ST_MultiPolygon).
     await poolX.query(
-      `INSERT INTO vehicles (vehicle_id, plate_number) VALUES ($1,$2)
+      `INSERT INTO vehicles (id, plate_number) VALUES ($1,$2)
        ON CONFLICT DO NOTHING`, [vehicleId, `T-${vehicleId.slice(0, 8)}`]);
+    // Driver row: trips.driver_id has an FK to users(id).
     await poolX.query(
-      `INSERT INTO drivers_vehicles_noop () `, ).catch(() => {}); // no-op guard, ignored
+      `INSERT INTO users (id, role, full_name, password_hash, locale, is_active)
+       VALUES ($1,'DRIVER','Integration Test Driver','not-a-hash','en',true)
+       ON CONFLICT (id) DO NOTHING`, [driverId]);
     await poolX.query(
-      `INSERT INTO trips (trip_id, vehicle_id, driver_id, started_at, ended_at, state)
-       VALUES ($1,$2,$3,$4,$5,'MOVING')
+      `INSERT INTO trips (trip_id, vehicle_id, driver_id, started_at, ended_at, last_activity_at, state)
+       VALUES ($1,$2,$3,$4,$5,$4,'MOVING')
        ON CONFLICT (trip_id) DO NOTHING`,
       [randomUUID(), vehicleId, driverId,
        new Date(BASE - 60_000).toISOString(), new Date(BASE + 30 * 60_000).toISOString()]);
 
-    // Circle zone: center east of start, radius 350 m.
+    // Circle zone: center east of start, radius 350 m. Point stays POINT after
+    // geography→geometry round-trip, satisfying the CIRCLE branch of the check.
     await poolX.query(
-      `INSERT INTO geofences (geofence_id, name, kind, category, active, geom, radius_m)
+      `INSERT INTO geofences (geofence_id, name, kind, category, active, geom, radius_m, center_lat, center_lng)
        VALUES ($1,'itest-circle','CIRCLE','WAREHOUSE',true,
-               ST_SetSRID(ST_MakePoint($3,$2),4326)::geography::geometry, 350)`,
+               ST_SetSRID(ST_MakePoint($3,$2),4326)::geography::geometry, 350, $2, $3)`,
       [fenceCircle, 9.0305, 38.7469]);
-    // Polygon zone: square ~300 m around (9.0335, 38.7519).
+    // Polygon zone: square ~300 m around (9.0325, 38.7469) — straddles the
+    // corridor so the same drive crosses BOTH kinds (circle ENTER/EXIT at the
+    // edge fix, polygon ENTER/EXIT one step later).
     await poolX.query(
       `INSERT INTO geofences (geofence_id, name, kind, category, active, geom)
-       VALUES ($1,'itest-polygon','POLYGON','CUSTOMER',true,
-               ST_SetSRID(ST_MakeEnvelope($2,$3,$4,$5,4326),4326)::geography::geometry)`,
-      [fencePolygon, 38.7504, 9.0321, 38.7534, 9.0349]);
+       VALUES ($1,'itest-polygon','POLYGON','CUSTOMER_SITE',true,
+               ST_Multi(ST_SetSRID(ST_MakeEnvelope($2,$3,$4,$5),4326)))`,
+      [fencePolygon, 38.7454, 9.0311, 38.7484, 9.0339]);
 
     // Corridor fixes: start outside both zones, drive ENE into circle then out,
     // one fix inside the polygon on the way (mixed ENTER/EXIT across two kinds).
+    // NOTE: location_fixes.fix_id is `generated always as identity` — never
+    // supply it; and a far-future BASE requires the monthly partitions to exist.
     const stepMin = 30_000; // 30 s cadence
     const mk = (m: number, lat: number, lng: number, speed: number) => ({
       fix_timestamp: new Date(BASE + m * stepMin).toISOString(),
       lat, lng, speed_mps: speed, accuracy_m: 8, provider: 'gps',
     });
     const fixes = [
-      mk(0, 9.0305, 38.7325, 11),   // far outside
-      mk(4, 9.0305, 38.7395, 11),
-      mk(8, 9.0305, 38.7465, 11),   // just inside circle edge (ENTER)
-      mk(12, 9.0305, 38.7475, 11),  // inside circle
-      mk(16, 9.0305, 38.7525, 11),  // inside circle AND inside polygon
-      mk(20, 9.0305, 38.7565, 11),  // outside circle, outside polygon (EXITS)
-      mk(24, 9.0305, 38.7605, 0),
+      mk(0, 9.0315, 38.7325, 11),   // far outside (south of both zones)
+      mk(4, 9.0315, 38.7395, 11),
+      mk(8, 9.0315, 38.7465, 11),   // just inside circle edge (ENTER)
+      mk(12, 9.0315, 38.7475, 11),  // inside circle
+      mk(16, 9.0315, 38.7525, 11),  // inside circle AND inside polygon
+      mk(20, 9.0315, 38.7565, 11),  // outside circle, outside polygon (EXITS)
+      mk(24, 9.0315, 38.7605, 0),
     ];
+    // Ensure the monthly partitions covering BASE exist (migration 0002 creates
+    // a rolling window; a far-future BASE may fall outside it).
+    for (const t of [BASE - 60_000, BASE + 30 * 60_000]) {
+      const dte = new Date(t);
+      const ym = `${dte.getUTCFullYear()}-${String(dte.getUTCMonth() + 1).padStart(2, '0')}`;
+      await poolX.query(
+        `CREATE TABLE IF NOT EXISTS location_fixes_${ym.replace('-', '')}
+           PARTITION OF location_fixes FOR VALUES FROM ('${ym}-01') TO ('${nextMonth(ym)}-01')`);
+    }
+
     for (const f of fixes) {
       await poolX.query(
-        `INSERT INTO location_fixes (fix_id, vehicle_id, driver_id, fix_timestamp, lat, lng,
-                                     speed_mps, accuracy_m, provider, batch_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        `INSERT INTO location_fixes (batch_id, vehicle_id, driver_id, fix_timestamp, lat, lng,
+                                     speed_mps, accuracy_m, provider, geom)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,
+                 ST_SetSRID(ST_MakePoint($6,$5),4326))`,
         [randomUUID(), vehicleId, driverId, f.fix_timestamp, f.lat, f.lng,
-         f.speed_mps, f.accuracy_m, f.provider, randomUUID()]);
+         f.speed_mps, f.accuracy_m, f.provider]);
     }
   }, 30_000);
 
@@ -123,7 +151,7 @@ d('crossing evaluator (Postgres integration)', () => {
     const cExit = circle.find((e) => e.event_type === 'GEOFENCE_EXIT')!;
     expect(cEnter.event_timestamp_ms).toBeLessThan(cExit.event_timestamp_ms);
     // Every event carries a fix position inside/outside the boundary respectively.
-    expect(cEnter.lat).toBeCloseTo(9.0305, 4);
+    expect(cEnter.lat).toBeCloseTo(9.0315, 4);
   });
 
   it('persist + re-evaluate is idempotent (no duplicate rows under the §1.8.3 key)', async () => {
@@ -132,16 +160,11 @@ d('crossing evaluator (Postgres integration)', () => {
     await persistCrossingEvents(ev1);
     const ev2 = await evaluateCrossings(vehicleId, driverId, win.from, win.to);
     await persistCrossingEvents(ev2); // replay → upsert, must not multiply
-    const { rows } = await poolX.query(
-      `SELECT event_type, event_timestamp, count(*) c FROM trip_events
-        WHERE vehicle_id=$1 AND event_type LIKE 'GEOFENCE%%' GROUP BY 1,2 HAVING count(*)>1`,
-      [vehicleId].map((v) => v) as any);
-    // NOTE: LIKE with escaped %% through node-postgres isn't needed — use explicit list:
     const { rows: dup } = await poolX.query(
       `SELECT event_type, event_timestamp FROM trip_events
         WHERE vehicle_id=$1 AND event_type IN ('GEOFENCE_ENTER','GEOFENCE_EXIT')
         GROUP BY 1,2 HAVING count(*) > 1`, [vehicleId]);
-    expect(rows.length + dup.length).toBe(0);
+    expect(dup.length).toBe(0);
     expect(ev2.map((e) => `${e.event_type}@${e.event_timestamp_ms}`).sort())
       .toEqual(ev1.map((e) => `${e.event_type}@${e.event_timestamp_ms}`).sort());
   });

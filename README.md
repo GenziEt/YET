@@ -76,6 +76,43 @@ flutter run                     # consent screen (am/en) → permissions explain
 - [ ] ECA data-controller registration initiated (process tracked in
       `docs/COMPLIANCE-PDPP.md` — organizational task, started before pilot).
 
+## Phase 3 acceptance gate (geofence, route & ETA)
+
+Run against the live compose stack (Postgres+PostGIS, Redis, OSRM reachable; backend
+serving `phase-3-geofence-route` on `healthz`). From `backend/`:
+
+```bash
+ADMIN_EMAIL=admin@yet.local ADMIN_PASSWORD=<bootstrap-admin-password> npm run test:geofence
+# optional: CACHE_BUDGET_MS=80 npm run test:geofence   # see Gate D note below
+```
+
+Prerequisite: bootstrap ADMIN exists (`ADMIN_BOOTSTRAP_EMAIL/PASSWORD` in `.env`);
+the script logs in as ADMIN for fleet-level reads and seeds a DRIVER via `/auth/register`.
+
+- [x] **Gate A — geofence CRUD & role guards**: FLEET_MANAGER/ADMIN can create CIRCLE +
+      POLYGON zones (PostGIS geometry, GiST-indexed); DRIVER writes → 403; center/radius
+      echo contract holds; metadata-only PUT exercises the ring_json update-merge path.
+- [x] **Gate B — crossing determinism (§1.8.3)**: synthetic trip replayed chronologically,
+      out-of-order, and late-duplicate → GEOFENCE_ENTER/GEOFENCE_EXIT emitted exactly once
+      per crossing moment, event sets identical modulo time shift, no multiplication.
+      Crossings are globally diffed over fix sequences and attributed to exactly one trip
+      (`attributeTrip`) so overlapping trips cannot double-claim an ENTER.
+- [x] **Gate C — state matrix**: `GET /geofences/state` returns INSIDE/OUTSIDE per active
+      zone for the vehicle and flips correctly after an explicit boundary fix (this is the
+      dashboard coloring source).
+- [x] **Gate D — route cache budget (§1.9.4)**: `GET /route?destination_geofence_id=`
+      resolves the zone centroid as destination; first call populates Redis, second call
+      asserts `source === 'redis'` within ≤ 50 ms. Note: this is HTTP wall-clock from the
+      script, which includes client overhead — if it runs marginal on loaded hardware,
+      raise `CACHE_BUDGET_MS` rather than weakening the Redis-source assertion.
+- [x] Unit + Postgres-integration tests: `npm test` (pure geometry/ETA suite always runs;
+      `tests/geofence_crossing.test.ts` additionally runs when `YET_TEST_DB` points at a
+      migrated scratch DB — covers envelope candidates, status-matrix SQL, circle
+      ST_DWithin(geography), polygon ST_Intersects, persist idempotency, window clipping).
+- [x] Web dashboard: geofence drawing tool (circle/polygon), inside/outside-colored zone
+      layer bound to `/geofences/state`, "Route to destination" panel with ETA + stale
+      caveat banner when `eta.stale` (vehicle STOPPED).
+
 ## Non-negotiable constraints (summary — full text in blueprint §1.2)
 
 1. **Offline-first** — formal Offline Contract, `docs/OFFLINE-CONTRACT.md`. No data loss.
