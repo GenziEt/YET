@@ -170,6 +170,79 @@ export const getRoute = (opts: {
   return api<RouteResponse>(`/route?${q.toString()}`);
 };
 
+/* ---------------------------------------------------------------------------
+ * Phase 4 — Pilot telemetry (Module 6 Reporting, read-only §1.5). Contract
+ * mirrors backend/src/modules/reporting/pilot_service.ts getPilotSummary():
+ *   GET /reports/pilot?from&to[&driver_id]  (FLEET_MANAGER/ADMIN JWT + audit)
+ * Battery verdicts mirror trip_engine/pilot_battery.ts judgePilotBattery:
+ *   PASS | BETWEEN_TARGET_AND_GATE | GATE_FAIL | INSUFFICIENT_DATA
+ * Thresholds come FROM the server payload — never hardcode 20/25/0.95 here.
+ * ------------------------------------------------------------------------- */
+
+export type PilotBatteryVerdict = 'PASS' | 'BETWEEN_TARGET_AND_GATE' | 'GATE_FAIL' | 'INSUFFICIENT_DATA';
+
+export interface PilotReportDto {
+  window: { from: string; to: string };
+  thresholds: {
+    target_pct_per_8h: number;            // 20 (§Part 4 success metric)
+    gate_max_pct_per_8h: number;          // 25 (Phase 4 gate ⇒ back to P2)
+    reconstruction_min_accuracy: number;  // 0.95
+  };
+  battery: {
+    verdict: PilotBatteryVerdict;
+    median_pct_per_8h: number | null;
+    p90_pct_per_8h: number | null;
+    target_met: boolean;
+    gate_failed: boolean;
+    trips_measured: number;
+    trips_with_samples: number;
+  };
+  per_driver: {
+    driver_id: string;
+    driver_name: string | null;
+    plate_number: string | null;
+    trips_measured: number;
+    median_pct_per_8h: number | null;
+  }[];
+  upload_latency: { p50_seconds: number | null; p95_seconds: number | null; batches: number };
+  separations: {
+    vehicle_id: string;
+    plate_number: string | null;
+    incidents: number;
+    open_now: number;
+    avg_minutes: number | null;
+  }[];
+  sync_backlog: { late_fixes: number; total_fixes: number; worst_lag_s: number };
+  reconstruction_audit: {
+    offline_sent: number;
+    offline_stored: number;
+    offline_batches: number;
+    accuracy: number;      // stored/sent over offline-period batches
+    gate_passed: boolean;  // accuracy >= 0.95
+  };
+  open_driver_reports: {
+    diag_id: string;
+    batch_id: string;
+    driver_id: string;
+    driver_name: string;
+    reported_at: string;
+    issue: string;         // gps_not_working | battery_drain | sync_stuck | other
+    battery_pct: number | null;
+    last_fix_age_s: number | null;
+    last_accuracy_m: number | null;
+    network_type: string | null;
+    pending_sync_count: number | null;
+    trip_active: boolean | null;
+    app_version: string | null;
+  }[];
+}
+
+export const getPilotReport = (opts: { fromIso: string; toIso: string; driverId?: string }) => {
+  const q = new URLSearchParams({ from: opts.fromIso, to: opts.toIso });
+  if (opts.driverId) q.set('driver_id', opts.driverId);
+  return api<PilotReportDto>(`/reports/pilot?${q.toString()}`);
+};
+
 /* Trip Engine reads used by the Phase 3 route panel (active trips selector). */
 export interface TripSummary {
   trip_id: string;

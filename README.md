@@ -113,6 +113,45 @@ the script logs in as ADMIN for fleet-level reads and seeds a DRIVER via `/auth/
       layer bound to `/geofences/state`, "Route to destination" panel with ETA + stale
       caveat banner when `eta.stale` (vehicle STOPPED).
 
+## Phase 4 — Driver app hardening & field pilot
+
+Backend serves `phase: 'phase-4-pilot'` on `/healthz`. Operational playbook for the
+5–10-truck Ethiopia pilot lives in **`docs/PILOT-RUNBOOK.md`** (phone-based permission
+guidance, Samsung/Xiaomi/Oppo/Huawei Doze steps, no-signal drill, feedback triage,
+gate-audit checklist).
+
+New ingest surface (all idempotent by client `batch_id`, §1.8.2):
+- `POST /ingest/sensors` — accelerometer/gyro/discrete-event batches (§1.8.5), same
+  sync-state machine as GPS fixes; client side: `lib/core/cache/sensor_dao.dart` +
+  `SyncWorker.runSensorOnce()` (GPS fixes drain first under storage pressure, §1.8.6).
+- `POST /ingest/battery` — battery % at trip start/end keyed by
+  `(vehicle_id, trip_started_at, phase)`; feeds the drain estimator.
+- `POST /ingest/diagnostics` — one-tap driver feedback payload (issue, battery, last-fix
+  age, accuracy, network type, pending-sync count) → untriaged queue.
+
+Reporting (Module 6, read-only, FLEET_MANAGER/ADMIN JWT + audit log):
+- `GET /reports/pilot?from&to[&driver_id]` — battery verdict vs the **20% target / 25%
+  gate**, per-driver medians, upload latency p50/p95, separation counts, sync backlog,
+  offline-reconstruction audit (**≥95%** gate), open driver reports. Dashboard binding:
+  web-dashboard **Pilot page** (`src/pages/PilotPage.tsx`) renders the PASS/GATE_FAIL
+  banner straight from `battery.verdict` and server-provided thresholds.
+
+Gate kernel: `backend/src/modules/trip_engine/pilot_battery.ts` (drain math, charging/
+negative exclusions, `judgePilotBattery`, `RECONSTRUCTION_MIN_ACCURACY = 0.95`); unit
+tests `backend/tests/pilot_battery.test.ts`; end-to-end replay script
+`backend/scripts/integration-pilot.mjs` (`npm run test:pilot`, needs live staging DB).
+
+Driver app (Phase 4 deliverables): Amharic l10n complete for new screens (regenerate via
+`tool/gen_l10n.py`), one-tap Start Trip with vehicle-assignment confirmation via `GET /me`
+(offline-cached fallback keeps the ≤3-tap rule), offline tile bounding-box pre-download
+from the self-hosted tile server only, battery sampling around trips, one-tap feedback
+screen, and the Android battery-optimization exemption prompt behind
+`yet.dev/battery_exemption` MethodChannel (device-side Kotlin handler; see runbook §2).
+Device-only plugins (`battery_plus`, `connectivity_plus`) stay commented out of
+`pubspec.yaml` — product code reaches them through typedef seams so tests need no native
+binaries. Run `flutter analyze && flutter test` where a Dart SDK exists (not provisioned
+in this sandbox).
+
 ## Non-negotiable constraints (summary — full text in blueprint §1.2)
 
 1. **Offline-first** — formal Offline Contract, `docs/OFFLINE-CONTRACT.md`. No data loss.
