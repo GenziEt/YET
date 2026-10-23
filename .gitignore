@@ -1,4 +1,2 @@
-dist/
-*.map
-tsconfig.tsbuildinfo
+.env
 node_modules/
