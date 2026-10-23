@@ -79,12 +79,19 @@ export async function buildApp() {
     await runCrossingEvaluator({ vehicleId, driverId, fromMs, toMs });
   });
 
-  // Zod errors -> 400 instead of 500
+  // Zod errors -> 400 instead of 500. NOTE: match by duck-typing (`issues` array)
+  // rather than `err.name === 'ZodError'`: when the route module's zod instance is
+  // loaded through a different specifier/registry copy than this one, the thrown
+  // error arrives with a mangled constructor name and Fastify's default serializer
+  // can even null out `name` — so a name-only check leaks 500s for what are really
+  // validation failures (observed in dev-smoke: bad-field login returned 500).
   app.setErrorHandler((err, req, reply) => {
-    if ((err as any)?.name === 'ZodError') return reply.code(400).send({ error: 'validation_failed', detail: (err as any).issues });
-    if ((err as any)?.statusCode === 401) return reply.code(401).send({ error: 'unauthorized' });
+    const e = err as any;
+    const isZod = Array.isArray(e?.issues) && (e?.name === 'ZodError' || e?.constructor?.name?.includes('Zod') || !e?.statusCode);
+    if (isZod) return reply.code(400).send({ error: 'validation_failed', detail: e.issues });
+    if (e?.statusCode === 401) return reply.code(401).send({ error: 'unauthorized' });
     req.log.error(err);
-    return reply.code(err.statusCode ?? 500).send({ error: 'internal' });
+    return reply.code(e?.statusCode ?? 500).send({ error: 'internal' });
   });
 
   await ensureBootstrapAdmin();
