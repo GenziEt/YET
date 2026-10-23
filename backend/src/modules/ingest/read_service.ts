@@ -44,7 +44,7 @@ export async function listFixes(q: z.infer<typeof FixQuerySchema>): Promise<Loca
  *  "Recent" window keeps the scan on the (driver_id, fix_timestamp) index. */
 export async function listActiveDrivers(sinceIso: string) {
   const { rows } = await pool.query(
-    `SELECT d.id AS driver_id,
+    `SELECT d.driver_id,
             u.full_name,
             v.plate_number,
             v.id AS vehicle_id,
@@ -53,7 +53,7 @@ export async function listActiveDrivers(sinceIso: string) {
        JOIN users u   ON u.id = d.driver_id
   LEFT JOIN vehicles v ON v.id = d.vehicle_id
       WHERE d.fix_timestamp >= $1
-   GROUP BY d.id, u.full_name, v.plate_number, v.id
+   GROUP BY d.driver_id, u.full_name, v.plate_number, v.id
    ORDER BY last_fix_at DESC NULLS LAST
       LIMIT 200`,
     [sinceIso],
