@@ -4,6 +4,7 @@ import '../../core/app_runtime.dart';
 import '../../core/sync/sync_worker.dart';
 import '../../l10n/app_localizations.dart';
 import '../consent/consent_repository.dart';
+import '../pilot/pilot_service.dart' show AssignmentCheck;
 
 /// Phase 1 trip screen. §1.2: max 3 taps to start a trip — here it is
 /// ONE tap once permissions are set. GPS collection feeds the SQLite cache;
@@ -37,6 +38,23 @@ class _TripHomeScreenState extends State<TripHomeScreen>
     with WidgetsBindingObserver {
   bool _tripActive = false;
   int _pendingSyncCount = 0; // fallback when no worker wired yet
+  /// Result of the one-tap GET /me vehicle-assignment confirm (§Phase 4).
+  AssignmentCheck _assignment = AssignmentCheck.offlineUnknown;
+
+  /// Banner text for the assignment result; null = show nothing.
+  String? _assignmentBanner(AppLocalizations l) {
+    if (!_tripActive) return null;
+    switch (_assignment) {
+      case AssignmentCheck.confirmed:
+        final v = widget.runtime?.pilot.cachedAssignment;
+        return v == null ? null : l.tripStartConfirm(v.label);
+      case AssignmentCheck.noVehicle:
+        return l.tripVehicleNone;
+      case AssignmentCheck.offlineCached:
+      case AssignmentCheck.offlineUnknown:
+        return null; // never nag a driver who has no signal (§1.8)
+    }
+  }
 
   SyncWorker? get _worker => widget.sync ?? widget.runtime?.worker;
 
@@ -89,8 +107,12 @@ class _TripHomeScreenState extends State<TripHomeScreen>
     final runtime = widget.runtime;
     setState(() => _tripActive = !_tripActive);
     if (runtime != null) {
-      // One tap starts GPS + cadence together, ends both + flushes the tail.
-      runtime.onTripToggled(active: _tripActive);
+      // One tap: /me assignment confirm + battery anchor + GPS/sensor/cadence
+      // start together; the result drives the vehicle banner below.
+      runtime.onTripToggled(active: _tripActive).then((check) {
+        if (!mounted) return;
+        setState(() => _assignment = check);
+      });
       return;
     }
     final sync = widget.sync;
@@ -107,10 +129,21 @@ class _TripHomeScreenState extends State<TripHomeScreen>
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
+    final banner = _assignmentBanner(l);
     return Scaffold(
       appBar: AppBar(
         title: Text(l.appTitle),
-        actions: [TextButton(onPressed: widget.onToggleLocale, child: Text(l.languageToggle))],
+        actions: [
+          // Phase 4 in-app feedback: one nav hop, chips only, no typing (§1.2).
+          IconButton(
+            icon: const Icon(Icons.feedback_outlined),
+            tooltip: l.feedbackTitle,
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(
+              builder: (_) => FeedbackScreen(runtime: widget.runtime),
+            )),
+          ),
+          TextButton(onPressed: widget.onToggleLocale, child: Text(l.languageToggle)),
+        ],
       ),
       body: SafeArea(
         child: Padding(
@@ -126,6 +159,20 @@ class _TripHomeScreenState extends State<TripHomeScreen>
                 decoration: BoxDecoration(color: Colors.amber.shade100, borderRadius: BorderRadius.circular(8)),
                 child: Text(l.pendingSync(_pendingSyncCount), style: const TextStyle(fontSize: 16)),
               ),
+              // One-tap Start Trip vehicle-assignment confirmation banner.
+              if (banner != null) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: _assignment == AssignmentCheck.noVehicle
+                        ? Colors.red.shade100
+                        : Colors.green.shade100,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(banner, style: const TextStyle(fontSize: 16)),
+                ),
+              ],
               const Spacer(),
               FilledButton(
                 onPressed: _toggleTrip,
