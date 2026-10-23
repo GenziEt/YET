@@ -22,7 +22,15 @@
   "startTrip": "ጉዞ ጀምር",
   "endTrip": "ጉዞ አብቃ",
   "pendingSync": "{count, plural, =0{ሁሉም መረጃ ተልኳል} other={{count} መረጃ ለመላኽ ይጠብቃል}}",
-  "@pendingSync": { "placeholders": { "count": { "type": "int" } } },
+  "@pendingSync": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
   "offlineBanner": "በመስመር ላይ አይደለም — በአካባቢው እየተመዘገበ ራሱ በራሱ ይልካል",
-  "languageToggle": "English"
+  "languageToggle": "English",
+  "storageWarning": "ማከማቻው ሙሉ በሙሉ ላይ ነው ({percent}%)። የGPS መረጃ ቅድሚያ ይሰጠዋል።",
+  "syncBacklogZero": "ሁሉም መረጃ ተልኳል"
 }

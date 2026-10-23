@@ -22,7 +22,15 @@
   "startTrip": "START TRIP",
   "endTrip": "END TRIP",
   "pendingSync": "{count, plural, =0{All data synced} other{{count} fixes pending sync}}",
-  "@pendingSync": { "placeholders": { "count": { "type": "int" } } },
+  "@pendingSync": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
   "offlineBanner": "Offline — recording locally, will upload automatically",
-  "languageToggle": "አማርኛ"
+  "languageToggle": "አማርኛ",
+  "storageWarning": "Storage is almost full ({percent}%). Sync will prioritize GPS fixes.",
+  "syncBacklogZero": "All fixes synced"
 }
