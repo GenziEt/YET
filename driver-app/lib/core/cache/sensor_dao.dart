@@ -166,6 +166,17 @@ class SensorDao {
     return (rows.first['c'] as int?) ?? 0;
   }
 
+  /// Approximate DB size on disk in bytes (§1.8.6 budget checks). Same PRAGMA
+  /// approach as FixDao.storageBytes — both DAOs share ONE SQLite file, so the
+  /// worker sums them for the whole-cache bound.
+  Future<int> storageBytes() async {
+    final pc = await db.rawQuery('PRAGMA page_count');
+    final ps = await db.rawQuery('PRAGMA page_size');
+    final pages = (pc.first.values.first as num?)?.toInt() ?? 0;
+    final size = (ps.first.values.first as num?)?.toInt() ?? 0;
+    return pages * size;
+  }
+
   /// Claim up to [limit] oldest PENDING sensor events for one batch, stamping
   /// them with [batchId] and moving PENDING→UPLOADING atomically (contract
   /// rule 5 — same semantics as FixDao.claimBatch). Event-time ASC ordering

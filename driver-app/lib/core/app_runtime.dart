@@ -11,6 +11,7 @@ import 'sync/sync_worker.dart';
 import '../features/auth/token_store.dart';
 import '../features/pilot/pilot_service.dart';
 import '../features/trip/gps_collector.dart';
+import '../features/trip/sensor_collector.dart';
 
 /// Composition root for the Phase 1 offline pipeline.
 ///
@@ -24,6 +25,7 @@ class AppRuntime extends ChangeNotifier {
     required this.worker,
     required this.tokenStore,
     required this.gps,
+    required this.sensors,
     required this.pilot,
   }) {
     worker.pendingCount.addListener(notifyListeners);
@@ -35,6 +37,8 @@ class AppRuntime extends ChangeNotifier {
   final SyncWorker worker;
   final TokenStore tokenStore;
   final GpsCollector gps;
+  /// Phase 4 motion-sensor duty-cycling (§1.8.5): writes through [sensorDao].
+  final SensorCollector sensors;
   /// Phase 4 pilot telemetry: battery samples, one-tap assignment check,
   /// offline tile pre-download.
   final PilotService pilot;
