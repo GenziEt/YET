@@ -10,6 +10,7 @@ import ingestRoutes from './modules/ingest/routes.js';
 import tripRoutes from './modules/trip_engine/routes.js';
 import osmRoutes from './modules/osm_gateway/routes.js';
 import geofenceRoutes from './modules/geofence/routes.js';
+import reportingRoutes from './modules/reporting/routes.js';
 import { runCrossingEvaluator } from './modules/geofence/crossing.js';
 import { setRecomputeHook } from './modules/ingest/service.js';
 import { recomputeVehicleWindow } from './modules/trip_engine/service.js';
@@ -37,7 +38,7 @@ export async function buildApp() {
         return reply.code(db ? 200 : 503).send({
             service: 'yet-backend',
             version: '0.1.0',
-            phase: 'phase-3-geofence-route',
+            phase: 'phase-4-pilot',
             db: status,
             time: new Date().toISOString(),
         });
@@ -62,6 +63,7 @@ export async function buildApp() {
     await app.register(tripRoutes); // Module 3: Trip Engine — /trips, /trips/status, /trips/:id
     await app.register(osmRoutes); // Module 7: OSM Gateway — /route, /geocode (Phase 3)
     await app.register(geofenceRoutes); // Module 4: Geofence — /geofences CRUD + state (Phase 3)
+    await app.register(reportingRoutes); // Module 6: Reporting — /reports/pilot (Phase 4, read-only §1.5)
     // Wire the ingest → trip-engine seam (§1.5 bounded contexts): Ingest owns raw
     // storage only; after each accepted batch it fires the late-bound recompute hook
     // so Trip Engine reconstructs the affected event-time window (§1.8.3). The hook
@@ -73,14 +75,21 @@ export async function buildApp() {
         await recomputeVehicleWindow(vehicleId, driverId, fromMs, toMs);
         await runCrossingEvaluator({ vehicleId, driverId, fromMs, toMs });
     });
-    // Zod errors -> 400 instead of 500
+    // Zod errors -> 400 instead of 500. NOTE: match by duck-typing (`issues` array)
+    // rather than `err.name === 'ZodError'`: when the route module's zod instance is
+    // loaded through a different specifier/registry copy than this one, the thrown
+    // error arrives with a mangled constructor name and Fastify's default serializer
+    // can even null out `name` — so a name-only check leaks 500s for what are really
+    // validation failures (observed in dev-smoke: bad-field login returned 500).
     app.setErrorHandler((err, req, reply) => {
-        if (err?.name === 'ZodError')
-            return reply.code(400).send({ error: 'validation_failed', detail: err.issues });
-        if (err?.statusCode === 401)
+        const e = err;
+        const isZod = Array.isArray(e?.issues) && (e?.name === 'ZodError' || e?.constructor?.name?.includes('Zod') || !e?.statusCode);
+        if (isZod)
+            return reply.code(400).send({ error: 'validation_failed', detail: e.issues });
+        if (e?.statusCode === 401)
             return reply.code(401).send({ error: 'unauthorized' });
         req.log.error(err);
-        return reply.code(err.statusCode ?? 500).send({ error: 'internal' });
+        return reply.code(e?.statusCode ?? 500).send({ error: 'internal' });
     });
     await ensureBootstrapAdmin();
     await ensureSeedDevDriver(); // dev/test only — pilot device pairing (Phase 1)

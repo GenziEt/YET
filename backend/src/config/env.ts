@@ -12,6 +12,9 @@ const EnvSchema = z.object({
   HOST: z.string().default('0.0.0.0'),
 
   DATABASE_URL: z.string().startsWith('postgres', 'DATABASE_URL must be a Postgres URL stored in Ethiopia (§1.7)'),
+  // §1.10.3 read/write separation: Reporting reads here when set. Must also be an
+  // Ethiopian-resident replica (PDPP §1.7) — replicas inherit the sovereignty rule.
+  READER_DATABASE_URL: z.string().startsWith('postgres').optional().or(z.literal('')).transform((v) => v || undefined),
   REDIS_URL: z.string().default('redis://localhost:6379'),
 
   JWT_SECRET: z.string().min(16, 'JWT_SECRET too short'),
@@ -33,6 +36,18 @@ const EnvSchema = z.object({
   TRIP_RETURN_THRESHOLD_M: z.coerce.number().positive().default(30),             // §1.4 hysteresis
   TRIP_IDLE_TIMEOUT_S: z.coerce.number().int().positive().default(1800),         // auto-END gap
   TRIP_SEPARATION_NOTIFY_MIN: z.coerce.number().int().positive().default(45),    // §1.4 45-min timer
+
+  // Module 5 — Notification (Phase 5). FCM is the primary push channel; when real
+  // credentials are absent (dev, pre-pilot) dispatch runs in DRY-RUN mode: the full
+  // template/dedupe/log pipeline executes and messages are recorded as QUEUED for a
+  // local dispatcher to pick up. Wire FCM_PROJECT + FCM_SERVICE_ACCOUNT_JSON (GCP
+  // service account JSON, single-line base64 or raw) to go live. Real credentials
+  // land with the Ethiopian hosting partner's project — see docs/COMPLIANCE-PDPP.md.
+  FCM_PROJECT: z.string().optional(),
+  FCM_SERVICE_ACCOUNT_JSON: z.string().optional(),
+  SMS_GATEWAY_URL: z.string().url().optional(),          // local Ethiopian SMS gateway (§Phase 5)
+  SMS_GATEWAY_SENDER: z.string().default('YET'),
+  NOTIFY_SEPARATION_SWEEP_S: z.coerce.number().int().positive().default(60), // timer scan cadence
 });
 
 const parsed = EnvSchema.safeParse(process.env);
