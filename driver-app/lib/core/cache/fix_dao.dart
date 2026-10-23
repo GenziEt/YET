@@ -255,6 +255,17 @@ class FixDao {
     return (rows.first['m'] as int?) ?? 0;
   }
 
+  /// Newest cached fix by event time — feeds the Phase 4 diagnostics payload
+  /// ("last fix time / accuracy") on the in-app feedback screen. Returns null
+  /// when the cache is empty (fresh install, pre-permission).
+  Future<StoredFix?> latestFix() async {
+    final rows = await db.rawQuery(
+      'SELECT * FROM $tableFixes ORDER BY fix_timestamp DESC LIMIT 1',
+    );
+    if (rows.isEmpty) return null;
+    return StoredFix.fromDbRow(rows.first);
+  }
+
   /// Prune policy part 1 (§1.8.1): ACKED older than [maxAge] → PRUNED (deleted).
   Future<int> pruneAckedOlderThan(Duration maxAge) => db.delete(
         tableFixes,

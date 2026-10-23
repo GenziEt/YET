@@ -85,13 +85,15 @@ class AppRuntime extends ChangeNotifier {
     final sensors = SensorCollector(dao: sensorDao, source: sensorSource);
     final pilot = PilotService(tokenStore: tokenStore, client: httpClient);
     return AppRuntime._(
-      dao: dao, sensorDao: sensorDao, worker: worker,
-      tokenStore: tokenStore, gps: gps, pilot: pilot,
-    )
-      .._sensors = sensors;
+      dao: dao,
+      sensorDao: sensorDao,
+      worker: worker,
+      tokenStore: tokenStore,
+      gps: gps,
+      sensors: sensors,
+      pilot: pilot,
+    );
   }
-
-  SensorCollector? _sensors;
 
   /// SQLite file lives in app-support storage; PDPP §1.7 keeps it on-device
   /// until the driver's own upload sends it to the Ethiopian gateway.
@@ -100,18 +102,9 @@ class AppRuntime extends ChangeNotifier {
     return '${dir.path}/yet_cache.db';
   }
 
-  /// Trip started on screen: begin GPS duty-cycling + 60 s sync cadence.
-  Future<void> startTrip() async {
-    worker.startTripCadence();
-    unawaited(gps.beginCollection());
-  }
-
-  /// Trip ended: stop GPS, flush the tail of the cache, then prune housekeeping.
-  Future<void> endTrip() async {
-    await gps.endCollection();
-    await worker.stopTripCadence();
-    await worker.prune();
-  }
+  // Phase 4 note: the old bare startTrip()/endTrip() helpers are folded into
+  // [onTripToggled] — a trip toggle must ALWAYS run the pilot hooks (vehicle
+  // confirm + battery samples) and sensor collection, never just GPS+cadence.
 
   /// Connectivity callback (connectivity_plus on device): any usable network
   /// change to Wi-Fi/3G+ schedules an immediate drain (§1.8.1 trigger list).
@@ -121,14 +114,32 @@ class AppRuntime extends ChangeNotifier {
 
   int get pendingFixes => worker.pendingCount.value;
 
-  /// Trip toggle from the home screen: GPS duty-cycling + 60 s sync cadence
-  /// start together, and both stop together (§1.8.1 trigger list).
-  Future<void> onTripToggled({required bool active}) async {
+  /// One-tap trip toggle from the home screen (§1.2 max-3-taps budget).
+  ///
+  /// START: confirm vehicle assignment via GET /me first — but NEVER block the
+  /// driver: offline/no-vehicle results are returned to the UI as a banner
+  /// while tracking begins anyway (a phone with no signal still caches fixes
+  /// per §1.8). Then stamp the battery-sample trip anchor, fire-and-forget the
+  /// trip-start battery sample, and begin GPS + motion-sensor collection
+  /// together with the 60 s sync cadence (§1.8.1 trigger list).
+  /// END: stop sensing immediately (battery budget), post the trip-end battery
+  /// sample, flush the tail of the cache, then prune housekeeping.
+  Future<AssignmentCheck> onTripToggled({required bool active}) async {
     if (active) {
-      await startTrip();
-    } else {
-      await endTrip();
+      final check = await pilot.confirmVehicleAssignment();
+      pilot.markTripStartAnchor(DateTime.now().toUtc());
+      unawaited(pilot.sampleTripStart());
+      worker.startTripCadence();
+      unawaited(gps.beginCollection());
+      unawaited(sensors.beginCollection());
+      return check;
     }
+    await gps.endCollection();
+    await sensors.endCollection();
+    unawaited(pilot.sampleTripEnd());
+    await worker.stopTripCadence();
+    await worker.prune();
+    return AssignmentCheck.offlineUnknown;
   }
 
   @override

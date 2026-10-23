@@ -292,7 +292,7 @@ class Card extends Widget { const Card({super.key, this.child}); final Widget? c
 class ListTile extends Widget { const ListTile({super.key, this.title, this.subtitle, this.onTap}); final Widget? title; final Widget? subtitle; final VoidCallback? onTap; }
 class Switch extends Widget { const Switch({super.key, this.value, this.onChanged}); final bool? value; final void Function(bool)? onChanged; }
 class Checkbox extends Widget { const Checkbox({super.key, this.value, this.onChanged}); final bool? value; final void Function(bool?)? onChanged; }
-class CircularProgressIndicator extends Widget { const CircularProgressIndicator({super.key}); }
+class CircularProgressIndicator extends Widget { const CircularProgressIndicator({super.key, this.strokeWidth}); final double? strokeWidth; }
 class LinearProgressIndicator extends Widget { const LinearProgressIndicator({super.key, this.value}); final double? value; }
 class Divider extends Widget { const Divider({super.key}); }
 class ListView extends Widget {
@@ -316,9 +316,49 @@ class Icons {
   static const IconData refresh = IconData(0xe5d5);
   static const IconData sync = IconData(0xe627);
   static const IconData warning = IconData(0xe002);
+  static const IconData feedback_outlined = IconData(0xe894);
+  static const IconData map = IconData(0xe55b);
+  static const IconData download = IconData(0xe884);
 }
 
 class SwitchListTile extends Widget { const SwitchListTile({super.key, this.title, this.value, this.onChanged}); final Widget? title; final bool? value; final void Function(bool)? onChanged; }
+
+// ---- Phase 4 screens surface (analyze-only stubs) --------------------------
+class IconButton extends Widget {
+  const IconButton({super.key, this.icon, this.tooltip, this.onPressed});
+  final Widget? icon;
+  final String? tooltip;
+  final VoidCallback? onPressed;
+}
+
+class Radio<T> extends Widget {
+  const Radio({super.key, this.value, this.groupValue, this.onChanged});
+  final T? value;
+  final T? groupValue;
+  final void Function(T?)? onChanged;
+}
+
+class RadioListTile<T> extends Widget {
+  const RadioListTile({super.key, this.title, this.value, this.groupValue, this.onChanged});
+  final Widget? title;
+  final T? value;
+  final T? groupValue;
+  final void Function(T?)? onChanged;
+}
+
+class RouteSettings { const RouteSettings({this.name}); final String? name; }
+abstract class Route<T> {}
+class MaterialPageRoute<T> extends Route<T> {
+  MaterialPageRoute({WidgetBuilder? builder, RouteSettings? settings});
+}
+
+abstract class NavigatorState {
+  T? pop<T>([T? result]);
+  Future<R?> push<R>(Route<R> route);
+}
+class Navigator {
+  static NavigatorState of(BuildContext c) => throw UnimplementedError('stub');
+}
 
 class WidgetsFlutterBinding { static void ensureInitialized() {} }
 
