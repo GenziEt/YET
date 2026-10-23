@@ -49,6 +49,7 @@
   "feedbackBattery": "App draining battery",
   "feedbackSync": "Data not uploading",
   "feedbackOther": "Something else",
+  "feedbackSend": "Send report",
   "feedbackSent": "Report sent. Thank you!",
   "feedbackFailed": "Could not send — will retry when you have signal",
   "offlineMapTitle": "Offline maps",

@@ -15,6 +15,22 @@ dependencies:
   sqflite: ^2.3.0
   path_provider: ^2.1.0
   path: ^1.9.0
+  # ---- Phase 4 DEVICE-ONLY dependencies (deliberately NOT imported in lib/) ----
+  # The sandbox/analyze harness has no Flutter SDK, so these stay commented here
+  # until the device build. Product code keeps a plugin-free design via typedef
+  # seams instead of direct imports:
+  #   * battery_plus  -> injected as PilotService's BatteryReader typedef
+  #                    (features/pilot/pilot_service.dart). On device, main.dart
+  #                    wires `() async => BatteryReading(levelPct: await
+  #                    BatteryPlugin().batteryLevel.toDouble(), charging: ...)`.
+  #   * connectivity_plus -> feeds AppRuntime.onNetworkAvailable() (§1.8.1 sync
+  #                    trigger on network change to Wi-Fi/3G+) and the
+  #                    network_type field of /ingest/diagnostics.
+  #   * geolocator / sensors_dont_kill_my_tv -> GpsCollector positionSource and
+  #                    SensorCollector source factories (features/trip/*).
+  # battery_plus: ^6.0.0
+  # connectivity_plus: ^6.0.0
+  # geolocator: ^12.0.0
 
 dev_dependencies:
   flutter_test:

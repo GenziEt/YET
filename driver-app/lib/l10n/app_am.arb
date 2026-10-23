@@ -41,6 +41,7 @@
   "feedbackBattery": "መተግበሪያው ባትሪ እያሟጠቸ ነው",
   "feedbackSync": "መረጃ አይላኽም",
   "feedbackOther": "ሌላ ነገር",
+  "feedbackSend": "ዕቅዱን ላክ",
   "feedbackSent": "ዕቅዱ ተልኳል። እናመሰግናለን!",
   "feedbackFailed": "መላኽ አልተሳካም — ምልክት ሲያገኙ እንደገና ይሞክራል",
   "offlineMapTitle": "ያለ መስመር ካርታዎች",

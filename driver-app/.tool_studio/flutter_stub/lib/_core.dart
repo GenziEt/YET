@@ -318,7 +318,9 @@ class Icons {
   static const IconData warning = IconData(0xe002);
   static const IconData feedback_outlined = IconData(0xe894);
   static const IconData map = IconData(0xe55b);
+  static const IconData map_outlined = IconData(0xe55b);
   static const IconData download = IconData(0xe884);
+  static const IconData download_for_offline_outlined = IconData(0xe884);
 }
 
 class SwitchListTile extends Widget { const SwitchListTile({super.key, this.title, this.value, this.onChanged}); final Widget? title; final bool? value; final void Function(bool)? onChanged; }

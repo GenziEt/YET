@@ -284,6 +284,14 @@ class AppLocalizations {
         return 'Something else';
     }
   }
+  String get feedbackSend {
+    switch (localeName) {
+      case 'am':
+        return 'ዕቅዱን ላክ';
+      default:
+        return 'Send report';
+    }
+  }
   String get feedbackSent {
     switch (localeName) {
       case 'am':
