@@ -21,7 +21,7 @@
   "tripReadyTitle": "Ready to drive",
   "startTrip": "START TRIP",
   "endTrip": "END TRIP",
-  "pendingSync": "{count, plural, =0{All data synced} other{{count} fixes pending sync}}",
+  "pendingSync": "{count} records pending sync",
   "@pendingSync": {
     "placeholders": {
       "count": {
@@ -32,5 +32,48 @@
   "offlineBanner": "Offline — recording locally, will upload automatically",
   "languageToggle": "አማርኛ",
   "storageWarning": "Storage is almost full ({percent}%). Sync will prioritize GPS fixes.",
-  "syncBacklogZero": "All fixes synced"
+  "syncBacklogZero": "All fixes synced",
+
+  "tripVehicleNone": "No truck assigned — call your fleet manager",
+  "tripStartConfirm": "Trip started for {vehicle}",
+  "@tripStartConfirm": {
+    "placeholders": {
+      "vehicle": {
+        "type": "String"
+      }
+    }
+  },
+  "feedbackTitle": "Report a problem",
+  "feedbackIntro": "Tap the problem you are seeing. YET sends a small diagnostic message to your fleet manager.",
+  "feedbackGps": "GPS not working",
+  "feedbackBattery": "App draining battery",
+  "feedbackSync": "Data not uploading",
+  "feedbackOther": "Something else",
+  "feedbackSent": "Report sent. Thank you!",
+  "feedbackFailed": "Could not send — will retry when you have signal",
+  "offlineMapTitle": "Offline maps",
+  "offlineMapBody": "Download maps for the pilot region before departing. Works without signal later.",
+  "offlineMapStart": "Download maps now",
+  "offlineMapProgress": "Downloading maps: {done} of {total}",
+  "@offlineMapProgress": {
+    "placeholders": {
+      "done": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "offlineMapDone": "Offline maps ready ({downloaded} new, {failed} failed)",
+  "@offlineMapDone": {
+    "placeholders": {
+      "downloaded": {
+        "type": "int"
+      },
+      "failed": {
+        "type": "int"
+      }
+    }
+  }
 }

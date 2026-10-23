@@ -183,9 +183,9 @@ class AppLocalizations {
   String pendingSync(Object count) {
     switch (localeName) {
       case 'am':
-        return '{count, plural, =0{ሁሉም መረጃ ተልኳል} other={$count መረጃ ለመላኽ ይጠብቃል}}';
+        return '$count መረጃ ለመላኽ ይጠብቃል';
       default:
-        return '{count, plural, =0{All data synced} other{$count fixes pending sync}}';
+        return '$count records pending sync';
     }
   }
   String get offlineBanner {
@@ -218,6 +218,126 @@ class AppLocalizations {
         return 'ሁሉም መረጃ ተልኳል';
       default:
         return 'All fixes synced';
+    }
+  }
+  String get tripVehicleNone {
+    switch (localeName) {
+      case 'am':
+        return 'ምንም አውቶሞብሊዮ አልተመደበም — የአውቶሞብሊዮን ኃላፊዎን ይደውሉ';
+      default:
+        return 'No truck assigned — call your fleet manager';
+    }
+  }
+  String tripStartConfirm(Object vehicle) {
+    switch (localeName) {
+      case 'am':
+        return 'ለ$vehicle ጉዞ ተጀምሯል';
+      default:
+        return 'Trip started for $vehicle';
+    }
+  }
+  String get feedbackTitle {
+    switch (localeName) {
+      case 'am':
+        return 'ችግርን ያዘጋጁ';
+      default:
+        return 'Report a problem';
+    }
+  }
+  String get feedbackIntro {
+    switch (localeName) {
+      case 'am':
+        return 'የሚያዩትን ችግር ይንኩ። ዒት ትንሽ የመረጃ ማሳወቂያ ለኃላፊዎ ይልካል።';
+      default:
+        return 'Tap the problem you are seeing. YET sends a small diagnostic message to your fleet manager.';
+    }
+  }
+  String get feedbackGps {
+    switch (localeName) {
+      case 'am':
+        return 'GPS አይሰራም';
+      default:
+        return 'GPS not working';
+    }
+  }
+  String get feedbackBattery {
+    switch (localeName) {
+      case 'am':
+        return 'መተግበሪያው ባትሪ እያሟጠቸ ነው';
+      default:
+        return 'App draining battery';
+    }
+  }
+  String get feedbackSync {
+    switch (localeName) {
+      case 'am':
+        return 'መረጃ አይላኽም';
+      default:
+        return 'Data not uploading';
+    }
+  }
+  String get feedbackOther {
+    switch (localeName) {
+      case 'am':
+        return 'ሌላ ነገር';
+      default:
+        return 'Something else';
+    }
+  }
+  String get feedbackSent {
+    switch (localeName) {
+      case 'am':
+        return 'ዕቅዱ ተልኳል። እናመሰግናለን!';
+      default:
+        return 'Report sent. Thank you!';
+    }
+  }
+  String get feedbackFailed {
+    switch (localeName) {
+      case 'am':
+        return 'መላኽ አልተሳካም — ምልክት ሲያገኙ እንደገና ይሞክራል';
+      default:
+        return 'Could not send — will retry when you have signal';
+    }
+  }
+  String get offlineMapTitle {
+    switch (localeName) {
+      case 'am':
+        return 'ያለ መስመር ካርታዎች';
+      default:
+        return 'Offline maps';
+    }
+  }
+  String get offlineMapBody {
+    switch (localeName) {
+      case 'am':
+        return 'ከመነሳትዎ በፊት ለፈተናው አካባቢ ካርታዎችን ያውርዱ። በኋላ ያለ ምልክት ይሰራል።';
+      default:
+        return 'Download maps for the pilot region before departing. Works without signal later.';
+    }
+  }
+  String get offlineMapStart {
+    switch (localeName) {
+      case 'am':
+        return 'ካርታዎችን አሁን አውርድ';
+      default:
+        return 'Download maps now';
+    }
+  }
+  String offlineMapProgress(Object done, Object total) {
+    switch (localeName) {
+      case 'am':
+        return 'ካርታዎች በማውረድ ላይ፦ $done ከ$total';
+      default:
+        return 'Downloading maps: $done of $total';
+    }
+  }
+  String offlineMapDone(Object downloaded, Object failed) {
+    switch (localeName) {
+      case 'am':
+        return 'ያለ መስመር ካርታዎች ዝግጁ ($downloaded አዲስ፣ $failed ወድቀዋል)';
+      default:
+        return 'Offline maps ready ($downloaded new, $failed failed)';
     }
   }
 }

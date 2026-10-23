@@ -21,6 +21,10 @@ class AppConfig {
   /// Offline Contract §1.8.1 sync worker cadence.
   static const syncIntervalActiveTrip = Duration(seconds: 60);
   static const maxBatchFixes = 100;               // per Phase 1 deliverable
+  /// Client-side cap for sensor batches (§1.8.5). Backend allows up to
+  /// INGEST_MAX_BATCH_SENSORS=2000; we stay smaller so one request fits a
+  /// weak-3G round trip inside the uploader timeout.
+  static const maxBatchSensors = 500;
   static const backoffCap = Duration(minutes: 5); // exponential backoff cap
   static const storageWarnBytes = 80 * 1024 * 1024; // §1.8.6 warn threshold
   static const storageHardCapBytes = 100 * 1024 * 1024;
