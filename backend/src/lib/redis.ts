@@ -1,4 +1,4 @@
-import Redis from 'ioredis';
+import { Redis } from 'ioredis'; // named import: correct under NodeNext ESM interop
 import { env } from '../config/env.js';
 
 /**
