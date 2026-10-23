@@ -33,6 +33,13 @@ async function readAuth(req: any, targetDriverId: string): Promise<{ id: string;
   throw Object.assign(new Error('forbidden_role'), { statusCode: 403 });
 }
 
+/** Any authenticated principal (roster reads need identity for the audit row). */
+async function bearerClaims(req: any): Promise<{ sub: string; role: string }> {
+  const header = req.headers.authorization;
+  if (!header?.startsWith('Bearer ')) throw Object.assign(new Error('unauthorized'), { statusCode: 401 });
+  return verifyAccessToken(header.slice(7));
+}
+
 export default async function ingestRoutes(app: FastifyInstance) {
   // Per-driver backpressure (§1.10.4): 60 batches/minute -> 429 + Retry-After.
   const limiter = app.rateLimit.bind(app);
@@ -139,11 +146,18 @@ export default async function ingestRoutes(app: FastifyInstance) {
     });
   });
 
-  /** GET /ingest/drivers?since=ISO — roster for the dashboard driver selector. */
+  /** GET /ingest/drivers?since=ISO — roster for the dashboard driver selector.
+   *  Phase 5 (C): this returns names of real people, so it now requires a token
+   *  and lands a read_roster audit row like every other personal-data read
+   *  (PDPP §1.7: "Ingest module logs all access"). */
   app.get('/ingest/drivers', async (req) => {
+    const claims = await bearerClaims(req);
     const q = z.object({ since: z.string().datetime().optional() }).parse(req.query);
     const since = q.since ?? new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
-    return { drivers: await listActiveDrivers(since) };
+    const drivers = await listActiveDrivers(since);
+    await audit({ actorId: claims.sub, action: 'read_roster', targetUser: null,
+                  ip: req.ip, detail: { since, count: drivers.length } });
+    return { drivers };
   });
 
   /**
@@ -160,5 +174,92 @@ export default async function ingestRoutes(app: FastifyInstance) {
     await audit({ actorId: auth.id, action: 'read_locations', targetUser: parsed.data.driver_id,
                   ip: req.ip, detail: { from: parsed.data.from, to: parsed.data.to, count: fixes.length } });
     return { driver_id: parsed.data.driver_id, count: fixes.length, fixes };
+  });
+
+  /**
+   * DELETE /driver/:id/location-history — PDPP §1.7 erasure request (§Master
+   * "Data erasure endpoint", Phase 5 deliverable C). Semantics:
+   *   - caller must be the DRIVER (self-service erasure) or an ADMIN;
+   *   - raw location_fixes older than ERASURE_WINDOW_DAYS (default 30) are
+   *     deleted outright; the remaining recent window is DOWNSAMPLED to every
+   *     Nth fix (retention_kernel selector — same stable phase as the nightly
+   *     job, so results are identical however often this is called);
+   *   - trip aggregates + trip_events are RETAINED by design (the spec says
+   *     "anonymizes location fixes ... retaining trip aggregates only" — the
+   *     aggregates carry no coordinates beyond stop snapshots owned by Trip
+   *     Engine; full account deletion is Identity's separate path);
+   *   - ingest_batches provenance rows for purged fixes are removed so no
+   *     orphaned batch metadata survives;
+   *   - completion lands in audit_log BEFORE the 200 — the driver gets a
+   *     confirmable receipt ("backend confirms completion", §Gate).
+   */
+  app.delete('/driver/:id/location-history', async (req, reply) => {
+    const params = z.object({ id: z.string().uuid() }).safeParse(req.params);
+    if (!params.success) return reply.code(400).send({ error: 'invalid_driver_id' });
+    const claims = await bearerClaims(req);
+    if (claims.role === 'DRIVER' && claims.sub !== params.data.id)
+      return reply.code(403).send({ error: 'forbidden_role' });
+    if (claims.role !== 'DRIVER' && claims.role !== 'ADMIN')
+      return reply.code(403).send({ error: 'forbidden_role' });
+
+    const horizonDays = env.ERASURE_WINDOW_DAYS;
+    const keepEveryN = env.RETENTION_KEEP_EVERY_N;
+    const driverId = params.data.id;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Lock-free set-based pass mirroring retention_kernel's ordering contract:
+      // row_number over (fix_timestamp, fix_id) per driver, delete non-kept rows
+      // strictly older than the horizon. Keeps index 0 of the old range (anchor).
+      const { rows: counts } = await client.query(
+        `WITH old AS (
+           SELECT fix_id, fix_timestamp,
+                  row_number() OVER (PARTITION BY driver_id
+                                     ORDER BY fix_timestamp ASC, fix_id ASC) AS rn
+             FROM location_fixes
+            WHERE driver_id = $1 AND fix_timestamp < now() - make_interval(days => $2)
+         ), doomed AS (
+           DELETE FROM location_fixes lf
+            USING old o
+            WHERE lf.fix_id = o.fix_id AND lf.fix_timestamp = o.fix_timestamp
+              AND (o.rn - 1) % $3 <> 0
+         )
+         SELECT (SELECT count(*) FROM old) AS scanned_old,
+                (SELECT count(*) FROM doomed) AS deleted`,
+        [driverId, horizonDays, keepEveryN]);
+      const deleted = Number(counts[0]?.deleted ?? 0);
+      const scannedOld = Number(counts[0]?.scanned_old ?? 0);
+      // Purge batch provenance for batches that now hold zero fixes (minimize
+      // residue; recent-window batches keep their rows and stay referenced).
+      const { rows: purged } = await client.query(
+        `DELETE FROM ingest_batches ib
+           WHERE ib.driver_id = $1
+             AND NOT EXISTS (SELECT 1 FROM location_fixes lf WHERE lf.batch_id = ib.batch_id)
+         RETURNING ib.batch_id`, [driverId]);
+      await client.query(
+        `INSERT INTO audit_log (actor_id, action, target_user, ip, detail)
+         VALUES ($1, 'erasure_location_history', $2, $3, $4)`,
+        [claims.sub, driverId, req.ip,
+         JSON.stringify({ horizon_days: horizonDays, keep_every_n: keepEveryN,
+                          scanned_old: scannedOld, deleted_rows: deleted,
+                          purged_batches: purged.length })]);
+      await client.query('COMMIT');
+      return reply.code(200).send({
+        driver_id: driverId,
+        completed_at: new Date().toISOString(),
+        deleted_raw_fixes_older_than_days: horizonDays,
+        downsample_keep_every_n: keepEveryN,
+        scanned_old_fixes: scannedOld,
+        deleted_rows: deleted,
+        purged_batches: purged.length,
+        retained: ['trip_aggregates', 'trip_events'],
+        audit_action: 'erasure_location_history',
+      });
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
   });
 }

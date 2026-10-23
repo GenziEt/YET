@@ -3,6 +3,9 @@ import { z } from 'zod';
 import { verifyAccessToken, type TokenClaims } from '../../lib/jwt.js';
 import { audit } from '../../lib/audit.js';
 import { PilotQuerySchema, getPilotSummary } from './pilot_service.js';
+import { getTripReport, getSeparationIncidents, getFleetOverview } from './service.js';
+import { FLEET_STATE_CACHE_KEY } from './kernel.js';
+import { cacheDel } from '../../lib/redis.js';
 
 /**
  * Module 6 (Reporting) HTTP surface — Phase 4 pilot dashboard reads.
@@ -30,5 +33,50 @@ export default async function reportingRoutes(app: FastifyInstance) {
     await audit({ actorId: claims.sub, action: 'read_pilot_report', targetUser: parsed.data.driver_id ?? null,
                   ip: req.ip, detail: { from: parsed.data.from, to: parsed.data.to } });
     return summary;
+  });
+
+  /* --------------------- Phase 5: trip / separation / fleet-state --------------------- */
+
+  const WindowSchema = z.object({
+    from: z.string().datetime(),
+    to: z.string().datetime(),
+    driver_id: z.string().uuid().optional(),
+  });
+
+  /** GET /reports/trips?from=&to=&driver_id= — weekly trip report (§1.9.4 p95
+   *  ≤500 ms for one week/one driver). Replica-backed read, audited. */
+  app.get('/reports/trips', async (req, reply) => {
+    const claims = await managerAuth(req);
+    const parsed = WindowSchema.safeParse(req.query);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_query', detail: parsed.error.flatten() });
+    const report = await getTripReport(parsed.data);
+    await audit({ actorId: claims.sub, action: 'read_trip_report', targetUser: parsed.data.driver_id ?? null,
+                  ip: req.ip, detail: { from: parsed.data.from, to: parsed.data.to, trips: report.trips.length } });
+    return report;
+  });
+
+  /** GET /reports/separations?from=&to=&driver_id=&open_only= — §1.4 incident
+   *  history with honest last-known-location labeling. Audited like every read
+   *  of personal data. */
+  app.get('/reports/separations', async (req, reply) => {
+    const claims = await managerAuth(req);
+    const parsed = WindowSchema.extend({ open_only: z.coerce.boolean().default(false) }).safeParse(req.query);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_query', detail: parsed.error.flatten() });
+    const result = await getSeparationIncidents(parsed.data);
+    await audit({ actorId: claims.sub, action: 'read_separation_report', targetUser: parsed.data.driver_id ?? null,
+                  ip: req.ip, detail: { from: parsed.data.from, to: parsed.data.to, count: result.count } });
+    return result;
+  });
+
+  /** GET /reports/fleet-state?refresh=1 — live-map feed for the dashboard.
+   *  Redis fleet:state TTL 30s absorbs poll storms (§1.10.2); `refresh=1` lets a
+   *  manual reload bust the cache once (ops/testing convenience, still audited-
+   *  free because it aggregates no new personal reads beyond the cached shape).
+   *  Drivers are rejected here — this is a fleet-wide view (§1.7 minimization). */
+  app.get('/reports/fleet-state', async (req) => {
+    await managerAuth(req);
+    const q = z.object({ refresh: z.coerce.boolean().default(false) }).parse(req.query);
+    if (q.refresh) await cacheDel(FLEET_STATE_CACHE_KEY);
+    return getFleetOverview();
   });
 }

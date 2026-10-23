@@ -48,6 +48,9 @@ const EnvSchema = z.object({
   SMS_GATEWAY_URL: z.string().url().optional(),          // local Ethiopian SMS gateway (§Phase 5)
   SMS_GATEWAY_SENDER: z.string().default('YET'),
   NOTIFY_SEPARATION_SWEEP_S: z.coerce.number().int().positive().default(60), // timer scan cadence
+  ERASURE_WINDOW_DAYS: z.coerce.number().int().positive().default(30),   // §1.7 erasure horizon (Master spec)
+  RETENTION_KEEP_EVERY_N: z.coerce.number().int().min(2).default(10),    // §1.10.6 downsampling "every 10th"
+  RETENTION_AGE_DAYS: z.coerce.number().int().positive().default(90),    // §1.10.6 raw-fix age threshold
 });
 
 const parsed = EnvSchema.safeParse(process.env);

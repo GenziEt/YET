@@ -11,7 +11,7 @@
  * stored in the DB, so a window recomputed ten times (or an offline batch replayed
  * six hours late) re-derives the same keys and ON CONFLICT DO NOTHING makes the
  * whole pass a no-op. Fire-once lives in two layers:
- *   - TRIP_*/GEOFENCE_*: uq_notif_dedupe on (event_type, 'trip:<id>:<type>:<ts>').
+ *   - TRIP / GEOFENCE events: uq_notif_dedupe on (event_type, 'trip:<id>:<type>:<ts>').
  *   - DRIVER_SEPARATION_TIMER: the durable notified_fleet_manager marker (below)
  *     plus per-recipient dedupe keys inside enqueueNotification.
  */
