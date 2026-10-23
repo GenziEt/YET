@@ -177,8 +177,46 @@ async function syncSeparationLog(tripId: string, vehicleId: string, driverId: st
  * THE entry point: called by Ingest after each accepted batch (fire-and-forget with
  * error logging — ingest ACK must not wait on trip logic) and by the read path for
  * self-healing. Recomputes every trip overlapping the given event-time window.
+ *
+ * Serialized per vehicle via an in-process promise chain (§1.8.3). Two concurrent
+ * recomputations of overlapping windows race: reconstruction closes/opens trips
+ * transactionally per window, so interleaving can violate uq_trips_open_vehicle or
+ * double-insert events between a conflict-check and its retry. Out-of-order offline
+ * replay delivers batches back-to-back; chaining makes them converge deterministically.
+ * Coalescing: if a recompute is already queued for this vehicle, merge the requested
+ * window into it instead of growing the queue unboundedly.
  */
-export async function recomputeVehicleWindow(vehicleId: string, driverId: string, fromMs: number, toMs: number): Promise<void> {
+interface QueuedWindow { from: number; to: number; tail: Promise<void> }
+const recomputeChains = new Map<string, QueuedWindow>();
+
+export function recomputeVehicleWindow(vehicleId: string, driverId: string, fromMs: number, toMs: number): Promise<void> {
+  const existing = recomputeChains.get(vehicleId);
+  if (existing) {
+    existing.from = Math.min(existing.from, fromMs);
+    existing.to = Math.max(existing.to, toMs);
+    return existing.tail;
+  }
+  const q: QueuedWindow = { from: fromMs, to: toMs, tail: Promise.resolve() };
+  recomputeChains.set(vehicleId, q);
+  q.tail = (async () => {
+    // Drain: run until no new window has been merged while we were executing.
+    for (;;) {
+      const { from, to } = q;
+      try {
+        await recomputeVehicleWindowUnlocked(vehicleId, driverId, from, to);
+      } finally {
+        // Release the slot BEFORE re-checking so a late merge can take over.
+        const stillOurs = recomputeChains.get(vehicleId) === q;
+        if (stillOurs && q.from === from && q.to === to) recomputeChains.delete(vehicleId);
+        if (!stillOurs || (q.from === from && q.to === to)) break;
+        if (!recomputeChains.has(vehicleId)) recomputeChains.set(vehicleId, q);
+      }
+    }
+  })();
+  return q.tail;
+}
+
+async function recomputeVehicleWindowUnlocked(vehicleId: string, driverId: string, fromMs: number, toMs: number): Promise<void> {
   const { fixes, sensors } = await loadWindow(vehicleId, fromMs, toMs);
   if (fixes.length === 0) return;
   const segments = segmentTrips(fixes.sort((a, b) => a.t - b.t), TRIP_CONFIG.idleTimeoutS * 1000);

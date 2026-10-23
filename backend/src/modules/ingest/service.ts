@@ -114,13 +114,19 @@ export async function ingestSensorBatch(driverId: string, vehicleId: string | nu
     const chunk = body.events.slice(i, i + CHUNK);
     const params: unknown[] = [];
     const tuples = chunk.map((e, ri) => {
-      const base = ri * 5;
+      const base = ri * 6; // 6 params per row: batch_id, vehicle_id, driver_id, ts, kind, payload
       params.push(body.batch_id, vehicleId, driverId, e.event_timestamp, e.kind, JSON.stringify(e.payload));
       // Explicit casts on EVERY column: node-postgres sends untyped string params
       // as unknown and Postgres mis-infers types across a multi-row VALUES list
       // when one param is JSON text (PG 42804: "column batch_id is of type uuid
       // but expression is of type jsonb"). Annotate each placeholder precisely.
-      return `($${base+1}::uuid,$${base+2}::uuid,$${base+3}::uuid,$${base+4}::timestamptz,$${base+5}::text,$${base+6}::jsonb)`;
+      // NOTE: the payload param must be ::text::jsonb, NOT ::jsonb directly —
+      // PG has no jsonb→uuid assignment cast, so if Postgres propagates the
+      // jsonb type leftward across the VALUES list (e.g. into the batch_id uuid
+      // column), a direct $n::jsonb fails with 42846 "cannot cast type jsonb to
+      // uuid". Casting through text keeps every column's target-type inference
+      // unambiguous.
+      return `($${base+1}::uuid,$${base+2}::uuid,$${base+3}::uuid,$${base+4}::timestamptz,$${base+5}::text,$${base+6}::text::jsonb)`;
     });
     const res = await pool.query(
       `INSERT INTO sensor_events (batch_id, vehicle_id, driver_id, event_timestamp, kind, payload)
