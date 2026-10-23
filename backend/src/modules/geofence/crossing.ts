@@ -138,6 +138,10 @@ export async function evaluateCrossings(
   // Status matrix: one row per (fix, fence) computed in Postgres so the geometry
   // authority stays in PostGIS (circle ⇒ ST_DWithin on geography; polygon ⇒
   // ST_Intersects). We pass fixes as arrays to keep it a single round-trip.
+  // NOTE (live-stack watch item): the join order below is load-bearing —
+  //   geofences drives the outer loop (GiST-friendly per-fence point tests),
+  //   fixes is the cross-joined side; swapping them changes plan shape and can
+  //   silently drop rows if the CTE ordering assumptions are edited later.
   const lats = fixes.map((f) => f.lat);
   const lngs = fixes.map((f) => f.lng);
   const fenceIds = fences.map((f) => f.geofence_id);
@@ -146,24 +150,29 @@ export async function evaluateCrossings(
        SELECT generate_subscripts($2::double precision[], 1) AS idx,
               unnest($2::double precision[]) AS lat,
               unnest($3::double precision[]) AS lng
-     ), fences AS (
-       SELECT g.geofence_id,
-              CASE WHEN g.kind = 'CIRCLE'
-                   THEN ST_DWithin(g.geom::geography,
-                                   ST_SetSRID(ST_MakePoint(f.lng, f.lat), 4326)::geography,
-                                   g.radius_m)
-                   ELSE ST_Intersects(g.geom, ST_SetSRID(ST_MakePoint(f.lng, f.lat), 4326))
-              END AS inside
-         FROM fixes f
-         JOIN geofences g ON g.geofence_id = ANY($4::uuid[]) AND g.active
      )
-     SELECT f.idx, fences.geofence_id, fences.inside
-       FROM fixes f LEFT JOIN fences
-         ON fences.idx = f.idx`,
+     SELECT fx.idx, g.geofence_id,
+            CASE WHEN g.kind = 'CIRCLE'
+                 THEN ST_DWithin(g.geom::geography,
+                                 ST_SetSRID(ST_MakePoint(fx.lng, fx.lat), 4326)::geography,
+                                 g.radius_m)
+                 ELSE ST_Intersects(g.geom, ST_SetSRID(ST_MakePoint(fx.lng, fx.lat), 4326))
+            END AS inside
+       FROM geofences g
+       CROSS JOIN fixes fx
+      WHERE g.geofence_id = ANY($4::uuid[]) AND g.active`,
     [null, lats, lngs, fenceIds],
   );
 
-  // Build status[geofenceIndex][fixIndex]
+  // Build status[geofenceIndex][fixIndex]. The matrix MUST cover every
+  // (fix, fence) pair exactly once — a missing row would silently read as
+  // "outside" and swallow crossings, so we assert cardinality here rather
+  // than trusting the SQL shape at replay time (§1.8.3 determinism).
+  if (matrix.length !== fixes.length * fenceIds.length) {
+    throw new Error(
+      `[crossing] status matrix cardinality mismatch: got ${matrix.length}, ` +
+      `expected ${fixes.length}×${fenceIds.length}`);
+  }
   const fenceIdx = new Map(fenceIds.map((id, i) => [id, i]));
   const status: boolean[][] = fenceIds.map(() => new Array<boolean>(fixes.length).fill(false));
   for (const r of matrix) {

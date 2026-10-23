@@ -97,11 +97,37 @@ export async function createGeofence(actorId: string, body: unknown) {
   return rowToDto(rows[0]);
 }
 
+/**
+ * Normalize the ring_json echo format for the update-merge path (live-stack watch
+ * item): Postgres jsonb may return rings as number[][] with float noise or extra
+ * nesting; the merge re-validates through normalizeGeofence, so we canonicalize to
+ * a closed [lat,lng] tuple array first — otherwise a no-op rename of a POLYGON
+ * would fail validateRing purely because of JSON round-trip formatting.
+ */
+function canonicalizeRing(ring: unknown): [number, number][] | null {
+  if (!Array.isArray(ring)) return null;
+  const pts: [number, number][] = [];
+  for (const p of ring) {
+    if (!Array.isArray(p) || p.length < 2) return null;
+    const lat = Number(p[0]);
+    const lng = Number(p[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    pts.push([lat, lng]);
+  }
+  return pts.length > 0 ? pts : null;
+}
+
 export async function updateGeofence(actorId: string, geofenceId: string, body: unknown) {
   const existing = await getGeofence(geofenceId);
   if (!existing) throw Object.assign(new Error('geofence_not_found'), { statusCode: 404 });
   // Merge: allow partial updates (rename/toggle) without resending geometry.
-  const merged = { ...existingToBody(existing), ...(body as object) };
+  const base = existingToBody(existing);
+  if (base.kind === 'POLYGON') {
+    const canon = canonicalizeRing(base.ring);
+    if (!canon) throw new GeofenceValidationError('stored ring_json is malformed — recreate the geofence');
+    base.ring = canon;
+  }
+  const merged = { ...base, ...(body as object) };
   const dto = normalizeGeofence(merged);
   if (dto.kind === 'CIRCLE') {
     const { rows } = await pool.query(

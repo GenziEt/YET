@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import DashboardPage from './pages/DashboardPage';
 import RawFixesPage from './pages/RawFixesPage';
+import ZonesPage from './pages/ZonesPage';
 
-type View = 'fleet' | 'fixes';
+type View = 'fleet' | 'fixes' | 'zones';
 
 /** Phase 1: minimal hash-free view switch (code-split later if routes grow, §1.9.2). */
 export default function App() {
@@ -13,11 +14,14 @@ export default function App() {
         <button className={view === 'fixes' ? 'active' : ''} onClick={() => setView('fixes')}>
           Raw fixes
         </button>
+        <button className={view === 'zones' ? 'active' : ''} onClick={() => setView('zones')}>
+          Zones & ETA
+        </button>
         <button className={view === 'fleet' ? 'active' : ''} onClick={() => setView('fleet')}>
           Fleet map
         </button>
       </nav>
-      {view === 'fixes' ? <RawFixesPage /> : <DashboardPage />}
+      {view === 'fixes' ? <RawFixesPage /> : view === 'zones' ? <ZonesPage /> : <DashboardPage />}
     </>
   );
 }
