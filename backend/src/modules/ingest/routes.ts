@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { BatchSchema, ingestLocationBatch } from './service.js';
+import { BatchSchema, ingestLocationBatch, SensorBatchSchema, ingestSensorBatch } from './service.js';
 import { FixQuerySchema, listActiveDrivers, listFixes } from './read_service.js';
 import { verifyAccessToken } from '../../lib/jwt.js';
 import { pool } from '../../db/pool.js';
@@ -48,13 +48,47 @@ export default async function ingestRoutes(app: FastifyInstance) {
       `SELECT vehicle_id FROM driver_vehicle_assignments
        WHERE driver_id=$1 AND unassigned_at IS NULL LIMIT 1`, [auth.id]);
 
-    const result = await ingestLocationBatch(auth.id, asg[0]?.vehicle_id ?? null, parsed.data);
+    const result = await ingestLocationBatch(auth.id, asg[0]?.vehicle_id ?? null, parsed.data, req.log);
     // p95 budget: <=300ms for 100 fixes (§1.9.4). ACK lets client mark records ACKED (§1.8.1).
     return reply.code(200).send({
       batch_id: parsed.data.batch_id,
       accepted: result.accepted,
       already_received: result.already_received,
     });
+  });
+
+  /**
+   * POST /ingest/sensors — Phase 2 sensor batches (§1.8.5): accelerometer/gyro
+   * samples, device-fused turn/harsh events, vibration-gate transitions and the
+   * phone-vehicle alignment metadata all arrive here with the SAME offline contract
+   * as GPS fixes: UUID batch_id idempotency (§1.8.2), event-time timestamps (§1.8.3),
+   * per-driver rate limit (§1.10.4). Trip Engine recompute is triggered on arrival.
+   */
+  app.post('/ingest/sensors', {
+    config: { rateLimit: { max: env.INGEST_RATE_LIMIT_PER_MIN, timeWindow: '1 minute' } },
+  }, async (req, reply) => {
+    const auth = await driverAuth(req);
+    const parsed = SensorBatchSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_batch', detail: parsed.error.flatten() });
+
+    const { rows: asg } = await pool.query(
+      `SELECT vehicle_id FROM driver_vehicle_assignments
+       WHERE driver_id=$1 AND unassigned_at IS NULL LIMIT 1`, [auth.id]);
+    if (!asg[0]?.vehicle_id) return reply.code(409).send({ error: 'no_vehicle_assignment' });
+
+    try {
+      const result = await ingestSensorBatch(auth.id, asg[0].vehicle_id, parsed.data, req.log);
+      return reply.code(200).send({
+        batch_id: parsed.data.batch_id,
+        accepted: result.accepted,
+        already_received: result.already_received,
+      });
+    } catch (err: any) {
+      if (err?.code === '23505') { // row-level replay after a partial first attempt
+        return reply.code(200).send({ batch_id: parsed.data.batch_id, accepted: 0, already_received: true });
+      }
+      throw err;
+    }
   });
 
   /** GET /ingest/drivers?since=ISO — roster for the dashboard driver selector. */
