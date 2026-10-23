@@ -30,11 +30,16 @@ async function candidateGeofences(fixes) {
     const lngs = fixes.map((f) => f.lng);
     const minLat = Math.min(...lats), maxLat = Math.max(...lats);
     const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
-    const { rows } = await pool.query(`SELECT g.geofence_id, g.name, g.kind, g.category, g.radius_m,
+    const { rows } = await pool.query(
+    // NOTE: every ST_MakeEnvelope argument is explicitly ::double precision.
+    // Without the casts Postgres cannot infer $1's type (it appears only inside
+    // a function taking polymorphic/overloaded args) and errors with
+    // "could not determine data type of parameter $1" — first live-stack run.
+    `SELECT g.geofence_id, g.name, g.kind, g.category, g.radius_m,
             ST_AsText(g.geom) AS geom_wkt
        FROM geofences g
       WHERE g.active
-        AND ST_Intersects(g.geom, ST_MakeEnvelope($1,$2,$3,$4,4326))
+        AND ST_Intersects(g.geom, ST_MakeEnvelope($1::double precision,$2::double precision,$3::double precision,$4::double precision,4326))
       ORDER BY g.geofence_id
       LIMIT ${MAX_CANDIDATE_GEOFENCES}`, [minLng - 0.05, minLat - 0.05, maxLng + 0.05, maxLat + 0.05]);
     return rows;
