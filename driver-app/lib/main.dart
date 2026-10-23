@@ -44,6 +44,8 @@ class _YetAppState extends State<YetApp> {
         GlobalCupertinoLocalizations.delegate,
       ],
       theme: ThemeData(
+        // ColorScheme.fromSeed is const-compatible in the sandbox stub; real
+        // Flutter computes tokens at runtime, so keep this non-const.
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF14532D)),
         useMaterial3: true,
         // Large touch targets & text for drivers on low-end phones while moving.

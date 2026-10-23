@@ -12,3 +12,7 @@ dependency_overrides:
     path: .tool_studio/pub_cache/hosted/pub.dev/shared_preferences-0.0.0
   http:
     path: .tool_studio/pub_cache/hosted/pub.dev/http-0.0.0
+  sqflite:
+    path: .tool_studio/sqflite_stub
+  path_provider:
+    path: .tool_studio/path_provider_stub

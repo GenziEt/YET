@@ -1,0 +1,8 @@
+name: path_provider
+description: sandbox stub
+version: 0.0.0
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+dependencies:
+  flutter:
+    path: ../flutter_stub
