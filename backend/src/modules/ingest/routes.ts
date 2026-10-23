@@ -1,6 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { BatchSchema, ingestLocationBatch, SensorBatchSchema, ingestSensorBatch } from './service.js';
+import {
+  BatchSchema, ingestLocationBatch, SensorBatchSchema, ingestSensorBatch,
+  BatterySampleSchema, ingestBatteryBatch, DiagnosticsSchema, ingestDiagnostics,
+} from './service.js';
 import { FixQuerySchema, listActiveDrivers, listFixes } from './read_service.js';
 import { verifyAccessToken } from '../../lib/jwt.js';
 import { pool } from '../../db/pool.js';
@@ -89,6 +92,51 @@ export default async function ingestRoutes(app: FastifyInstance) {
       }
       throw err;
     }
+  });
+
+  /**
+   * POST /ingest/battery — Phase 4 pilot telemetry: battery % at trip start/end,
+   * reported by the app through the same Offline Contract envelope (batch_id
+   * idempotency §1.8.2, event times §1.8.3, per-driver rate limit §1.10.4).
+   */
+  app.post('/ingest/battery', {
+    config: { rateLimit: { max: env.INGEST_RATE_LIMIT_PER_MIN, timeWindow: '1 minute' } },
+  }, async (req, reply) => {
+    const auth = await driverAuth(req);
+    const parsed = BatterySampleSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_batch', detail: parsed.error.flatten() });
+    const { rows: asg } = await pool.query(
+      `SELECT vehicle_id FROM driver_vehicle_assignments
+       WHERE driver_id=$1 AND unassigned_at IS NULL LIMIT 1`, [auth.id]);
+    try {
+      const result = await ingestBatteryBatch(auth.id, asg[0]?.vehicle_id ?? null, parsed.data);
+      return reply.code(200).send({ batch_id: parsed.data.batch_id, accepted: result.accepted,
+                                    already_received: result.already_received });
+    } catch (err: any) {
+      if (err?.statusCode === 409) return reply.code(409).send({ error: 'no_vehicle_assignment' });
+      throw err;
+    }
+  });
+
+  /**
+   * POST /ingest/diagnostics — one-tap in-app feedback (§Phase 4 deliverable):
+   * "GPS not working"/"app draining battery" + diagnostic payload (battery level,
+   * GPS accuracy, last fix age, network type, pending sync count).
+   */
+  app.post('/ingest/diagnostics', {
+    config: { rateLimit: { max: env.INGEST_RATE_LIMIT_PER_MIN, timeWindow: '1 minute' } },
+  }, async (req, reply) => {
+    const auth = await driverAuth(req);
+    const parsed = DiagnosticsSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_payload', detail: parsed.error.flatten() });
+    const { rows: asg } = await pool.query(
+      `SELECT vehicle_id FROM driver_vehicle_assignments
+       WHERE driver_id=$1 AND unassigned_at IS NULL LIMIT 1`, [auth.id]);
+    const result = await ingestDiagnostics(auth.id, asg[0]?.vehicle_id ?? null, parsed.data);
+    return reply.code(result.already_received ? 200 : 201).send({
+      batch_id: parsed.data.batch_id, accepted: result.accepted,
+      already_received: result.already_received,
+    });
   });
 
   /** GET /ingest/drivers?since=ISO — roster for the dashboard driver selector. */
