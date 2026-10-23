@@ -9,7 +9,7 @@ import '../sync/sync_state.dart';
 /// (`backend/src/modules/ingest/service.ts` LocationFixSchema) so a cached row
 /// serializes into an upload payload with zero translation layer.
 class StoredFix {
-  const StoredFix({
+  StoredFix({
     required this.id,
     required this.lat,
     required this.lng,
@@ -244,6 +244,16 @@ class FixDao {
         }
         return updated;
       });
+
+  /// Highest upload_attempts among rows currently stamped with [batchId].
+  /// SyncWorker reads this AFTER releaseBatchForRetry so the backoff exponent
+  /// survives process restarts (retry state lives in SQLite, not memory).
+  Future<int> maxAttemptsForBatch(String batchId) async {
+    final rows = await db.rawQuery(
+        'SELECT MAX(upload_attempts) AS m FROM $tableFixes WHERE batch_id = ?',
+        [batchId]);
+    return (rows.first['m'] as int?) ?? 0;
+  }
 
   /// Prune policy part 1 (§1.8.1): ACKED older than [maxAge] → PRUNED (deleted).
   Future<int> pruneAckedOlderThan(Duration maxAge) => db.delete(

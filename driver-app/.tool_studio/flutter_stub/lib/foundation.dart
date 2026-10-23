@@ -1,6 +1,10 @@
 /// Sandbox stub of dart:ui/foundation surface (analyze-only).
 const bool kDebugMode = true;
 const bool kReleaseMode = false;
+class _VisibleForTesting { const _VisibleForTesting(); }
+const visibleForTesting = _VisibleForTesting();
+class _Deprecated { const _Deprecated(this.message); final String message; }
+typedef Deprecated = _Deprecated;
 typedef VoidCallback = void Function();
 abstract class Listenable { void addListener(void Function() l); void removeListener(void Function() l); }
 class ChangeNotifier implements Listenable {

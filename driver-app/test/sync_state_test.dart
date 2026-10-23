@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:yet_driver/core/cache/sync_state.dart';
+import 'package:yet_driver/core/sync/sync_state.dart';
 
 /// Offline Contract unit gates runnable WITHOUT a device (flutter test).
 void main() {
