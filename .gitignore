@@ -1,8 +1,1 @@
-.dart_tool/
-build/
-.flutter-plugins
-.flutter-plugins-dependencies
-.idea/
-.vscode/
-*.iml
-.DS_Store
+driver-app/android/local.properties

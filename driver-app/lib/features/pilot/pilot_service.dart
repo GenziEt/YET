@@ -12,8 +12,9 @@ import '../../core/sync/sync_worker.dart';
 import '../auth/token_store.dart';
 
 /// Reading of the device battery — injected seam so tests fabricate levels and
-/// on-device builds wire `battery_plus` (or MethodChannel `android.os.BatteryManager`)
-/// without this file importing any plugin (§1.2 low-end Android rule).
+/// the default `main.dart` bootstrap wires the real plugin reader from
+/// lib/platform/battery_source.dart (production `battery_plus`) without this
+/// file importing any plugin (§1.2 low-end Android rule).
 class BatteryReading {
   const BatteryReading({required this.levelPct, this.charging = false});
   /// State-of-charge percent 0..100 (Android BatteryManager.EXTRA_LEVEL scaled).
@@ -25,21 +26,21 @@ class BatteryReading {
 
 typedef BatteryReader = Future<BatteryReading> Function();
 
-/// Default [BatteryReader] used when the host has not injected the real
-/// `battery_plus` reader. Returns an unreadable sentinel (level -1, not
+/// Default [BatteryReader] used only by headless test harnesses that construct
+/// PilotService directly. Returns an unreadable sentinel (level -1, not
 /// charging) so every call site's existing guard applies its documented
 /// honest-skip policy (-1 → sample omitted; diagnostics omit the optional
 /// fields) instead of fabricating a level. The production bootstrap ALWAYS
-/// injects `BatteryPlusReader().asReader()` (lib/platform/battery_source.dart);
-/// this class exists only for headless test harnesses that construct
-/// PilotService directly.
+/// injects `BatteryPlusReader().asReader()` (lib/platform/battery_source.dart).
 class UnavailableBatteryReader {
   const UnavailableBatteryReader();
 
   /// Sentinel battery reading: level -1 is skipped by postBatterySample and
   /// charging reports false — no telemetry is emitted for an unread device.
-  Future<BatteryReading> read() async =>
+  static Future<BatteryReading> read() async =>
       const BatteryReading(levelPct: -1, charging: false);
+
+  BatteryReader asReader() => read;
 }
 
 /// Cached vehicle assignment shown on the trip screen (one-tap start, §1.2
@@ -157,7 +158,7 @@ class PilotService {
     String Function()? networkTypeProvider,
   })  : _tokens = tokenStore,
         _client = client ?? http.Client(),
-        _batteryReader = batteryReader,
+        _batteryReader = batteryReader ?? UnavailableBatteryReader.read,
         _networkTypeProvider = networkTypeProvider;
 
   final TokenStore _tokens;
@@ -389,7 +390,7 @@ class PilotService {
     Future<void> worker() async {
       while (queue.isNotEmpty) {
         final job = queue.removeAt(0);
-        final rel = '${job.z}${separator}${job.x}${separator}${job.y}.png';
+        final rel = '$job.z$separator$job.x$separator$job.y.png';
         final f = File('${root.path}$separator$rel');
         if (await f.exists()) {
           done++;

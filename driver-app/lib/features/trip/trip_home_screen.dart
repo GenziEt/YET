@@ -22,8 +22,8 @@ class TripHomeScreen extends StatefulWidget {
   final ConsentRepository consent;
   final VoidCallback onToggleLocale;
 
-  /// Null in tests / before the cache has opened; UI then shows the local
-  /// placeholder value and no cadence is started.
+  /// Null in tests / before the cache has opened; UI then shows the cached
+  /// queue-count default and no upload cadence is started.
   final SyncWorker? sync;
 
   /// Composition root (Phase 1). When present, the Start/End button drives

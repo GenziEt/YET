@@ -1,0 +1,54 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Phase 1 location ingest (§1.8.1): real GPS collection requires
+         fine/coarse location at runtime (requested via geolocator in
+         lib/platform/location_source.dart) and a location-type foreground
+         service so trips keep recording when the app backgrounds. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Sync worker + telemetry upload over cellular/Wi-Fi. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- Wake lock for the location foreground service (enableWakeLock in
+         ForegroundNotificationConfig). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
+    <application
+        android:label="YET Driver"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme"
+                />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <!-- Location foreground service: supplied by the geolocator_android
+             plugin (com.baseflow.geolocator.GeolocatorLocationService,
+             declared with android:foregroundServiceType="location" in the
+             plugin's own manifest and merged at build time). This app drives
+             it via ForegroundNotificationConfig in
+             lib/platform/location_source.dart; the FOREGROUND_SERVICE and
+             FOREGROUND_SERVICE_LOCATION permissions above are what Android 12+
+             requires on top of the plugin declaration. -->
+
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+</manifest>
