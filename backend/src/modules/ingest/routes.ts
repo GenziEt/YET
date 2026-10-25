@@ -6,6 +6,8 @@ import {
 } from './service.js';
 import { FixQuerySchema, listActiveDrivers, listFixes } from './read_service.js';
 import { verifyAccessToken } from '../../lib/jwt.js';
+import { assertTargetInFleet, forbiddenCrossFleet, getDriverFleet } from '../../lib/tenant.js';
+import { assertConsentActive } from '../identity/consent.js';
 import { pool } from '../../db/pool.js';
 import { audit } from '../../lib/audit.js';
 import { env } from '../../config/env.js';
@@ -19,17 +21,34 @@ async function driverAuth(req: any): Promise<{ id: string; role: string }> {
   return { id: claims.sub, role: claims.role };
 }
 
+/**
+ * Phase 0 collection guard (PDPP §1.7): consent state is checked BEFORE any
+ * batch is accepted. assertConsentActive throws 403 `consent_required` when the
+ * driver has no un-revoked grant covering the CURRENT policy version — which
+ * automatically covers withdrawal (POST /consent/revoke) and policy bumps (a
+ * new entry in consent.ts's registry invalidates every older grant). The guard
+ * runs on ALL FOUR ingest endpoints: locations, sensors, battery, diagnostics.
+ */
+async function consentGuard(driverId: string): Promise<void> {
+  await assertConsentActive(driverId);
+}
+
 /** Reads of personal location data require an explicit role (§1.7). Drivers may read
- *  their own history; FLEET_MANAGER/ADMIN read any driver (assignment check lands
- *  with Identity's fleet-scoping in Phase 2 — audit trail covers it meanwhile). */
+ *  their own history; FLEET_MANAGER/ADMIN read any driver — and since Phase 0 a
+ *  FLEET_MANAGER is confined to their OWN fleet (cross-fleet reads are denied at
+ *  this boundary with 403 cross_fleet_denied; covered by negative tests). */
 async function readAuth(req: any, targetDriverId: string): Promise<{ id: string; role: string }> {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) throw Object.assign(new Error('unauthorized'), { statusCode: 401 });
   const claims = verifyAccessToken(header.slice(7));
   if (claims.role === 'DRIVER' && claims.sub !== targetDriverId)
     throw Object.assign(new Error('forbidden_role'), { statusCode: 403 });
-  if (claims.role === 'DRIVER' || claims.role === 'FLEET_MANAGER' || claims.role === 'ADMIN')
+  if (claims.role === 'DRIVER') return { id: claims.sub, role: claims.role };
+  if (claims.role === 'FLEET_MANAGER' || claims.role === 'ADMIN') {
+    // Tenant layer: FLEET_MANAGER tokens must belong to the target's fleet.
+    await assertTargetInFleet(claims, { driverId: targetDriverId });
     return { id: claims.sub, role: claims.role };
+  }
   throw Object.assign(new Error('forbidden_role'), { statusCode: 403 });
 }
 
@@ -48,6 +67,7 @@ export default async function ingestRoutes(app: FastifyInstance) {
     config: { rateLimit: { max: env.INGEST_RATE_LIMIT_PER_MIN, timeWindow: '1 minute' } },
   }, async (req, reply) => {
     const auth = await driverAuth(req);
+    await consentGuard(auth.id); // collection guard: no consent ⇒ no ingest (§1.7)
     const parsed = BatchSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_batch', detail: parsed.error.flatten() });
 
@@ -78,6 +98,7 @@ export default async function ingestRoutes(app: FastifyInstance) {
     config: { rateLimit: { max: env.INGEST_RATE_LIMIT_PER_MIN, timeWindow: '1 minute' } },
   }, async (req, reply) => {
     const auth = await driverAuth(req);
+    await consentGuard(auth.id); // collection guard (§1.7) — sensors too
     const parsed = SensorBatchSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_batch', detail: parsed.error.flatten() });
 
@@ -110,6 +131,7 @@ export default async function ingestRoutes(app: FastifyInstance) {
     config: { rateLimit: { max: env.INGEST_RATE_LIMIT_PER_MIN, timeWindow: '1 minute' } },
   }, async (req, reply) => {
     const auth = await driverAuth(req);
+    await consentGuard(auth.id); // collection guard (§1.7) — battery telemetry too
     const parsed = BatterySampleSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_batch', detail: parsed.error.flatten() });
     const { rows: asg } = await pool.query(
@@ -134,6 +156,7 @@ export default async function ingestRoutes(app: FastifyInstance) {
     config: { rateLimit: { max: env.INGEST_RATE_LIMIT_PER_MIN, timeWindow: '1 minute' } },
   }, async (req, reply) => {
     const auth = await driverAuth(req);
+    await consentGuard(auth.id); // collection guard (§1.7) — diagnostics too
     const parsed = DiagnosticsSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_payload', detail: parsed.error.flatten() });
     const { rows: asg } = await pool.query(
@@ -154,9 +177,13 @@ export default async function ingestRoutes(app: FastifyInstance) {
     const claims = await bearerClaims(req);
     const q = z.object({ since: z.string().datetime().optional() }).parse(req.query);
     const since = q.since ?? new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
-    const drivers = await listActiveDrivers(since);
+    // Tenant scoping (Phase 0): FLEET_MANAGER sees only their fleet's roster;
+    // ADMIN sees all. The roster names real people, so it is a personal-data
+    // read path and must not leak across tenants.
+    const fleetId = claims.role === 'ADMIN' ? undefined : (claims.fleetId ?? forbiddenCrossFleet());
+    const drivers = await listActiveDrivers(since, fleetId);
     await audit({ actorId: claims.sub, action: 'read_roster', targetUser: null,
-                  ip: req.ip, detail: { since, count: drivers.length } });
+                  ip: req.ip, detail: { since, count: drivers.length, fleet_scoped: !!fleetId } });
     return { drivers };
   });
 

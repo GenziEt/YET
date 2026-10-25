@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { verifyAccessToken, type TokenClaims } from '../../lib/jwt.js';
+import { assertTargetInFleet, scopeFleetId } from '../../lib/tenant.js';
 import { pool } from '../../db/pool.js';
 import { audit } from '../../lib/audit.js';
 import { getTripStatusForVehicle, listTrips, getTripDetail } from './service.js';

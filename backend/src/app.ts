@@ -3,7 +3,7 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import sensible from '@fastify/sensible';
-import { env, isProd } from './config/env.js';
+import { env, isProd, validateComplianceBoot } from './config/env.js';
 import { checkDb, pool } from './db/pool.js';
 import identityRoutes, { ensureBootstrapAdmin, ensureSeedDevDriver } from './modules/identity/routes.js';
 import ingestRoutes from './modules/ingest/routes.js';
@@ -24,6 +24,25 @@ import { recomputeVehicleWindow } from './modules/trip_engine/service.js';
  * import another module's internals — only shared lib/ and db/pool (the seam).
  */
 export async function buildApp() {
+  // --- Phase 0 compliance gate (fail-closed) ----------------------------------
+  // validateComplianceBoot() is the executable counterpart of docs/COMPLIANCE-
+  // PDPP.md: secret strength + placeholder rejection, administrator-bootstrap
+  // hardening, Ethiopian data-residency allowlist for primary AND replica DBs,
+  // ECA controller-registration status, processor-agreement references, and the
+  // breach-response contact. In production ANY error aborts boot before a socket
+  // opens; in development/test the same report is surfaced as warnings so local
+  // work stays possible while the contract remains unit-testable.
+  const compliance = validateComplianceBoot();
+  if (compliance.errors.length > 0) {
+    // eslint-disable-next-line no-console
+    console.error('REFUSING TO START — compliance precondition failures:', compliance.errors);
+    throw new Error(`compliance_boot_failed: ${compliance.errors.join('; ')}`);
+  }
+  for (const w of compliance.warnings) {
+    // eslint-disable-next-line no-console
+    console.warn(`[compliance] ${w}`);
+  }
+
   const app = Fastify({
     logger: {
       level: isProd ? 'info' : 'debug',
