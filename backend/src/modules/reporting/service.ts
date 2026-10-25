@@ -32,10 +32,12 @@ export type TripReportQuery = {
  * budget ≤500ms for one week/one driver (§1.9.4) — idx_trips_driver_time covers
  * the filter, aggregation happens over at most a few hundred rows.
  */
-export async function getTripReport(q: TripReportQuery) {
+export async function getTripReport(q: TripReportQuery & { fleet_id?: string }) {
   const params: unknown[] = [q.from, q.to];
   let where = `t.started_at >= $1 AND t.started_at < $2`;
   if (q.driver_id) { params.push(q.driver_id); where += ` AND t.driver_id = $${params.length}`; }
+  // Phase 0 tenant scoping: FLEET_MANAGER reads confined to their fleet's drivers.
+  if (q.fleet_id) { params.push(q.fleet_id); where += ` AND u.fleet_id = $${params.length}`; }
   const trips = await readQuery<TripAggRow & { driver_id: string; plate_number: string | null }>(
     `SELECT t.trip_id,
             t.driver_id,
@@ -47,6 +49,7 @@ export async function getTripReport(q: TripReportQuery) {
             t.turn_count, t.harsh_event_count
        FROM trips t
        LEFT JOIN vehicles v ON v.id = t.vehicle_id
+       LEFT JOIN users u    ON u.id = t.driver_id
       WHERE ${where}
       ORDER BY t.started_at ASC
       LIMIT 5000`,
@@ -73,10 +76,12 @@ export type SeparationQuery = {
  * truck's LAST KNOWN position labeled honestly (never presented as live), plus
  * whether the fleet manager was notified and how long separation lasted.
  */
-export async function getSeparationIncidents(q: SeparationQuery) {
+export async function getSeparationIncidents(q: SeparationQuery & { fleet_id?: string }) {
   const params: unknown[] = [q.from, q.to];
   let where = `s.separated_at >= $1 AND s.separated_at < $2`;
   if (q.driver_id) { params.push(q.driver_id); where += ` AND s.driver_id = $${params.length}`; }
+  // Phase 0 tenant scoping: FLEET_MANAGER reads confined to their fleet's drivers.
+  if (q.fleet_id) { params.push(q.fleet_id); where += ` AND u.fleet_id = $${params.length}`; }
   if (q.open_only) where += ` AND s.returned_at IS NULL`;
   const rows = await readQuery(
     `SELECT s.separation_id, s.trip_id, s.vehicle_id, s.driver_id,
@@ -117,10 +122,14 @@ export async function getSeparationIncidents(q: SeparationQuery) {
  * multiplying DB load, §1.10.2). Annotated with replica_lag_s so the UI can say
  * "data may be Xs behind" instead of pretending freshness (§1.8.4).
  */
-export async function getFleetOverview(): Promise<FleetOverviewResult & {
+export async function getFleetOverview(opts?: { fleetId?: string }): Promise<FleetOverviewResult & {
   cached: boolean; replica_lag_s: number; live_window_s: number;
 }> {
-  const hit = await cacheGetJson<{ result: FleetOverviewResult }>(FLEET_STATE_CACHE_KEY);
+  // Phase 0 tenant scoping: fleet-scoped overviews cache under their own key so a
+  // FLEET_MANAGER can never be served another fleet's cached aggregate (and the
+  // SQL below filters to their fleet). ADMIN/undefined ⇒ whole-platform view.
+  const cacheKey = opts?.fleetId ? `${FLEET_STATE_CACHE_KEY}:${opts.fleetId}` : FLEET_STATE_CACHE_KEY;
+  const hit = await cacheGetJson<{ result: FleetOverviewResult }>(cacheKey);
   if (hit?.result) {
     return { ...hit.result, cached: true, replica_lag_s: await replicaLagSeconds(), live_window_s: FLEET_LIVE_WINDOW_S };
   }
@@ -135,7 +144,8 @@ export async function getFleetOverview(): Promise<FleetOverviewResult & {
        LEFT JOIN vehicles v ON v.id = lf.vehicle_id
        LEFT JOIN users u    ON u.id = lf.driver_id
       WHERE lf.fix_timestamp > now() - INTERVAL '24 hours'
-      ORDER BY lf.vehicle_id, lf.fix_timestamp DESC`);
+        AND ($1::uuid IS NULL OR u.fleet_id = $1)
+      ORDER BY lf.vehicle_id, lf.fix_timestamp DESC`, [opts?.fleetId ?? null]);
   const statuses = await readQuery<TripStatusLite>(
     `SELECT t.vehicle_id, t.trip_id, t.driver_id, t.state::text AS state,
             to_char(t.started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS started_at,
@@ -152,9 +162,11 @@ export async function getFleetOverview(): Promise<FleetOverviewResult & {
           WHERE s.trip_id = t.trip_id AND s.returned_at IS NULL
           ORDER BY s.separated_at DESC LIMIT 1
        ) ds ON true
-      WHERE t.ended_at IS NULL`);
+       LEFT JOIN users du ON du.id = t.driver_id
+      WHERE t.ended_at IS NULL
+        AND ($1::uuid IS NULL OR du.fleet_id = $1)`, [opts?.fleetId ?? null]);
   const nowMs = Date.now();
   const result = buildFleetOverview({ fixes, statuses, nowMs, liveWindowS: FLEET_LIVE_WINDOW_S });
-  await cacheSetJson(FLEET_STATE_CACHE_KEY, { result }, FLEET_STATE_TTL_S);
+  await cacheSetJson(cacheKey, { result }, FLEET_STATE_TTL_S);
   return { ...result, cached: false, replica_lag_s: await replicaLagSeconds(), live_window_s: FLEET_LIVE_WINDOW_S };
 }

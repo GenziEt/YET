@@ -435,7 +435,9 @@ export async function getTripStatusForVehicle(vehicleId: string): Promise<TripSt
  * fleet manager polling /trips sees ENDED (not a phantom 'active') for any trip
  * whose last activity predates the idle horizon — without waiting for new data.
  */
-export async function listTrips(q: { driver_id?: string; vehicle_id?: string; from?: string; to?: string; limit: number; status?: string }) {
+export async function listTrips(q: { driver_id?: string; vehicle_id?: string; from?: string; to?: string; limit: number; status?: string;
+                                     /** Phase 0 tenant scoping: when set, only trips whose DRIVER belongs to this fleet are returned. */
+                                     fleet_id?: string }) {
   // Cheap sweep on the read path (indexed on vehicle partial-open rows).
   const { rows: openVehicles } = await pool.query(
     `SELECT DISTINCT vehicle_id FROM trips WHERE ended_at IS NULL`);
@@ -445,6 +447,7 @@ export async function listTrips(q: { driver_id?: string; vehicle_id?: string; fr
   const push = (sql: string, v: unknown) => { conds.push(sql); params.push(v); };
   if (q.driver_id) push('t.driver_id = $' + (params.length + 1), q.driver_id);
   if (q.vehicle_id) push('t.vehicle_id = $' + (params.length + 1), q.vehicle_id);
+  if (q.fleet_id) push('u.fleet_id = $' + (params.length + 1), q.fleet_id);
   if (q.from) push('t.started_at >= $' + (params.length + 1), q.from);
   if (q.to) push('t.started_at < $' + (params.length + 1), q.to);
   if (q.status === 'active') conds.push('t.ended_at IS NULL');

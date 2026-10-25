@@ -160,7 +160,7 @@ export default async function identityRoutes(app: FastifyInstance) {
   app.post('/me/bootstrap', async (req, reply) => {
     const body = BootstrapSchema.parse(req.body);
     const { rows } = await pool.query(
-      `SELECT id, role, password_hash, locale, is_active FROM users
+      `SELECT id, role, password_hash, locale, is_active, fleet_id FROM users
        WHERE phone_e164 = $1 OR email = $2 LIMIT 1`,
       [body.identifier, body.identifier],
     );
@@ -173,8 +173,68 @@ export default async function identityRoutes(app: FastifyInstance) {
       await pool.query(`UPDATE users SET device_id = $2 WHERE id = $1`, [user.id, body.device_id]);
     }
     await audit({ actorId: user.id, action: 'bootstrap_pair', targetUser: user.id, ip: req.ip });
-    const token = signAccessToken({ sub: user.id, role: user.role, locale: user.locale });
-    return { access_token: token, role: user.role, locale: user.locale, user_id: user.id };
+    // Tenant claim must be stamped here too — a bootstrap token without fleet_id
+    // would be fail-closed (403) on every scoped read (lib/tenant.ts).
+    const token = signAccessToken({ sub: user.id, role: user.role, locale: user.locale, fleetId: user.fleet_id ?? undefined });
+    return { access_token: token, role: user.role, locale: user.locale, user_id: user.id, fleet_id: user.fleet_id ?? null };
+  });
+
+  /* ---------------- Fleet provisioning (Phase 0 tenant management) ---------------- */
+
+  /** GET /fleets — list tenants. FLEET_MANAGER sees only their own fleet row;
+   *  ADMIN sees all. Drivers have no legitimate need for tenant metadata (§1.7). */
+  app.get('/fleets', async (req, reply) => {
+    const auth = await authGuard(req);
+    if (auth.role === 'DRIVER') return reply.code(403).send({ error: 'forbidden_role' });
+    if (auth.role === 'ADMIN') {
+      const { rows } = await pool.query(
+        `SELECT f.id, f.name, f.status, f.agreement_ref, f.created_at,
+                (SELECT COUNT(*)::int FROM users u WHERE u.fleet_id = f.id) AS member_count,
+                (SELECT COUNT(*)::int FROM vehicles v WHERE v.fleet_id = f.id) AS vehicle_count
+           FROM fleets f ORDER BY f.name`);
+      return { count: rows.length, fleets: rows };
+    }
+    const { rows } = await pool.query(
+      `SELECT f.id, f.name, f.status, f.agreement_ref, f.created_at,
+              (SELECT COUNT(*)::int FROM users u WHERE u.fleet_id = f.id) AS member_count,
+              (SELECT COUNT(*)::int FROM vehicles v WHERE v.fleet_id = f.id) AS vehicle_count
+         FROM fleets f JOIN users me ON me.id = $1 AND me.fleet_id = f.id`, [auth.id]);
+    return { count: rows.length, fleets: rows };
+  });
+
+  /** POST /fleets — provision a new tenant (ADMIN only). */
+  app.post('/fleets', async (req, reply) => {
+    const auth = await authGuard(req);
+    if (auth.role !== 'ADMIN') return reply.code(403).send({ error: 'forbidden_role' });
+    const body = z.object({
+      name: z.string().min(2).max(200),
+      agreement_ref: z.string().min(1).max(200).optional(),
+    }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: 'invalid_body', detail: body.error.flatten() });
+    const { rows } = await pool.query(
+      `INSERT INTO fleets (name, agreement_ref) VALUES ($1, $2)
+       ON CONFLICT (name) DO NOTHING RETURNING id, name, status, agreement_ref, created_at`,
+      [body.data.name, body.data.agreement_ref ?? null]);
+    if (rows.length === 0) return reply.code(409).send({ error: 'fleet_name_exists' });
+    await audit({ actorId: auth.id, action: 'fleet_created', ip: req.ip, detail: { fleet_id: rows[0].id, name: rows[0].name } });
+    return reply.code(201).send(rows[0]);
+  });
+
+  /** PATCH /fleets/:fleet_id/status — suspend/reactivate a tenant (ADMIN only).
+   *  SUSPENDED ⇒ login denial (see /auth/login) and ingest denial (ingest routes). */
+  app.patch('/fleets/:fleet_id/status', async (req, reply) => {
+    const auth = await authGuard(req);
+    if (auth.role !== 'ADMIN') return reply.code(403).send({ error: 'forbidden_role' });
+    const params = z.object({ fleet_id: z.string().uuid() }).safeParse(req.params);
+    const body = z.object({ status: z.enum(['ACTIVE', 'SUSPENDED']) }).safeParse(req.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: 'invalid_request' });
+    const { rows } = await pool.query(
+      `UPDATE fleets SET status = $2 WHERE id = $1 RETURNING id, name, status`,
+      [params.data.fleet_id, body.data.status]);
+    if (rows.length === 0) return reply.code(404).send({ error: 'fleet_not_found' });
+    await audit({ actorId: auth.id, action: 'fleet_status_changed', ip: req.ip,
+                  detail: { fleet_id: rows[0].id, status: rows[0].status } });
+    return rows[0];
   });
 
   /** GET /me — token sanity check used by app bootstrap. */
@@ -212,19 +272,29 @@ export async function ensureBootstrapAdmin() {
  */
 export async function ensureSeedDevDriver() {
   if (isProd) return;
-  const { rows } = await pool.query(
-    `INSERT INTO users (role, full_name, phone_e164, password_hash, locale)
-     VALUES ('DRIVER', 'Test Driver A', '+251900000001', $1, 'am')
-     ON CONFLICT (phone_e164) DO UPDATE SET password_hash = EXCLUDED.password_hash
+  // Tenant first: the users trigger (migration 0013) rejects a DRIVER/FLEET_MANAGER
+  // without fleet_id, so "Pilot Fleet" must exist before the seed driver.
+  const { rows: fleetRows } = await pool.query(
+    `INSERT INTO fleets (name) VALUES ('Pilot Fleet')
+     ON CONFLICT (name) DO UPDATE SET status = 'ACTIVE'
      RETURNING id`,
-    [hashPassword('dev-driver-secret')],
+  );
+  const pilotFleetId = fleetRows[0].id as string;
+  const { rows } = await pool.query(
+    `INSERT INTO users (role, full_name, phone_e164, password_hash, locale, fleet_id)
+     VALUES ('DRIVER', 'Test Driver A', '+251900000001', $1, 'am', $2)
+     ON CONFLICT (phone_e164)
+     DO UPDATE SET password_hash = EXCLUDED.password_hash, fleet_id = EXCLUDED.fleet_id
+     RETURNING id`,
+    [hashPassword('dev-driver-secret'), pilotFleetId],
   );
   const driverId = rows[0].id as string;
   const { rows: veh } = await pool.query(
-    `INSERT INTO vehicles (plate_number, fleet_name, vehicle_type)
-     VALUES ('AA-90001', 'Pilot Fleet', 'TRUCK')
-     ON CONFLICT (plate_number) DO UPDATE SET fleet_name = EXCLUDED.fleet_name
+    `INSERT INTO vehicles (plate_number, fleet_name, vehicle_type, fleet_id)
+     VALUES ('AA-90001', 'Pilot Fleet', 'TRUCK', $1)
+     ON CONFLICT (plate_number) DO UPDATE SET fleet_name = EXCLUDED.fleet_name, fleet_id = EXCLUDED.fleet_id
      RETURNING id`,
+    [pilotFleetId],
   );
   await pool.query(
     `INSERT INTO driver_vehicle_assignments (driver_id, vehicle_id)
