@@ -32,13 +32,30 @@ class FakeDb implements Database {
       [List<Object?>? args]) {
     if (where.isEmpty) return true;
     var i = 0;
-    for (final clause in where.split(' AND ')) {
+    for (var clause in where.split(' AND ')) {
+      // Aggregate WHEREs (e.g. "batch_id = ?") used inside MAX(...) are not
+      // row predicates — the caller's group semantics are approximated by the
+      // rawResults queue, so skip anything wrapped in a function call.
+      if (clause.contains('(') && !clause.trimRight().endsWith(')')) {
+        final open = clause.indexOf('(');
+        final close = clause.lastIndexOf(')');
+        if (open < close) {
+          clause = clause.substring(0, open) + clause.substring(close + 1);
+          if (clause.trim().isEmpty) continue;
+        }
+      }
       final c = clause.trim();
       final upper = c.toUpperCase();
+      if (upper == 'IS NOT NULL') {
+        // Bare remainder after aggregate stripping — nothing to filter on.
+        continue;
+      }
       if (upper.contains(' IN (')) {
         final col = c.substring(0, c.indexOf(' IN')).trim();
-        final vals = (args?[i++] as Iterable).cast<Object?>().toSet();
-        if (!vals.contains(row[col])) return false;
+        final n = '?, '.allMatches(c).length + (c.trimRight().endsWith('?') ? 1 : 0);
+        final vals = args!.skip(i).take(n == 0 ? 1 : n).map((e) => e.toString()).toSet();
+        i += n == 0 ? 1 : n;
+        if (!vals.contains(row[col]?.toString())) return false;
       } else if (upper.contains(' IS NOT NULL')) {
         final col = c
             .substring(0, c.toUpperCase().indexOf(' IS NOT NULL'))
@@ -56,9 +73,15 @@ class FakeDb implements Database {
                 0) return false;
       } else if (c.contains('<')) {
         final p = c.split('<');
-        if (row[p[0].trim()] is Comparable &&
-            Comparable.compare(row[p[0].trim()] as Comparable, p[1].trim()) >=
-                0) return false;
+        final col = p[0].trim();
+        final lit = p[1].trim();
+        final bound = lit == '?' ? args![i++] : _unquote(lit);
+        final v = row[col];
+        if (v != null &&
+            bound != null &&
+            Comparable.compare(v as Comparable, bound as Comparable) >= 0) {
+          return false;
+        }
       } else if (c.contains('=')) {
         final p = c.split('=');
         final col = p[0].trim();
@@ -163,8 +186,46 @@ class FakeDb implements Database {
   Future<List<Map<String, Object?>>> rawQuery(String sql,
       [List<Object?>? args]) async {
     queries.add('raw:$sql');
+    final agg = _aggregate(sql, args);
+    if (agg != null) return agg;
     if (rawResults.isNotEmpty) return rawResults.removeAt(0);
     return const [];
+  }
+
+  /// Minimal stateful evaluator for the two aggregate shapes the DAOs use:
+  /// SELECT COUNT(*) AS c FROM t WHERE sync_state IN (?, ?) and
+  /// SELECT MAX(upload_attempts) AS m FROM t WHERE batch_id = ?.
+  List<Map<String, Object?>>? _aggregate(String sql, List<Object?>? args) {
+    final upper = sql.toUpperCase();
+    final from = upper.indexOf(' FROM ');
+    if (from < 0) return null;
+    final rest = sql.substring(from + 6).trim();
+    final parts = rest.split(RegExp(r'\s+WHERE\s+'));
+    final table = parts[0].trim();
+    final rows = tables[table];
+    if (rows == null) return null;
+    var matching = rows;
+    if (parts.length > 1) {
+      matching = rows.where((r) => _matches(r, parts.sublist(1).join(' WHERE '), args)).toList();
+    }
+    if (upper.startsWith('SELECT COUNT(')) {
+      return [
+        {'c': matching.length}
+      ];
+    }
+    if (upper.startsWith('SELECT MAX(')) {
+      final colStart = sql.indexOf('(') + 1;
+      final col = sql.substring(colStart, sql.indexOf(')', colStart)).trim();
+      num? max;
+      for (final r in matching) {
+        final v = r[col];
+        if (v is num && (max == null || v > max)) max = v;
+      }
+      return [
+        {'m': max}
+      ];
+    }
+    return null;
   }
 
   @override
@@ -436,7 +497,12 @@ void main() {
     });
 
     test('crash recovery: UPLOADING -> PENDING at open (§1.8.1)', () async {
-      final db = FakeDb()..lastUpdateCount = 7;
+      final db = FakeDb()
+        .._seed('location_fixes', [
+          for (var i = 1; i <= 7; i++)
+            row(i, '2026-10-23T07:0${i}:00.000Z', state: 'UPLOADING', batch: 'b-old'),
+          row(8, '2026-10-23T07:10:00.000Z', state: 'PENDING'),
+        ]);
       final dao = FixDao(db);
       final n = await dao.recoverUnackedUploads();
       expect(n, 7);
@@ -454,27 +520,41 @@ void main() {
     test('claimBatch orders by fix_timestamp ASC (event time, §1.8.3)', () async {
       final db = FakeDb().._seed('location_fixes', [row(1, '2026-10-23T07:00:00.000Z')]);
       final dao = FixDao(db);
-      // query() returns [] by default -> empty claim, no update issued.
+      // Stateful fake: the PENDING row IS claimed and flipped to UPLOADING.
       final claimed = await dao.claimBatch('b-1', 100);
-      expect(claimed, isEmpty);
+      expect(claimed.length, 1);
+      expect(claimed.first.syncState, SyncState.uploading);
+      expect(claimed.first.batchId, 'b-1');
       expect(db.queries.first, contains('orderBy=fix_timestamp ASC'));
       expect(db.queries.first, contains('limit=100'));
     });
 
     test('markBatchAcked moves only this batch UPLOADING->ACKED', () async {
-      final db = FakeDb()..lastUpdateCount = 3;
+      final db = FakeDb()
+        .._seed('location_fixes', [
+          for (var i = 1; i <= 3; i++)
+            row(i, '2026-10-23T07:0${i}:00.000Z', state: 'UPLOADING', batch: 'b-9'),
+          row(4, '2026-10-23T07:04:00.000Z', state: 'UPLOADING', batch: 'b-other'),
+        ]);
       final dao = FixDao(db);
       final n = await dao.markBatchAcked('b-9');
-      expect(n, 3);
+      expect(n, 3); // only b-9 rows — b-other untouched
+      expect((db.tables['location_fixes']!).firstWhere((r) => r['id'] == 4)['sync_state'], 'UPLOADING');
       expect(db.queries.last, contains('set=ACKED'));
       expect(db.queries.last, contains("sync_state = 'UPLOADING' AND batch_id = ?"));
     });
 
     test('prune deletes only ACKED rows — PENDING untouchable (§1.8.6)', () async {
-      final db = FakeDb()..lastDeleteCount = 5;
+      final db = FakeDb()
+        .._seed('location_fixes', [
+          for (var i = 1; i <= 5; i++)
+            {...row(i, '2026-10-01T07:0${i}:00.000Z', state: 'ACKED'), 'acked_at': '2026-10-01T08:00:00.000Z'},
+          row(6, '2026-10-23T07:00:00.000Z', state: 'PENDING'),
+          {...row(7, '2026-10-23T07:01:00.000Z', state: 'ACKED'), 'acked_at': '2026-10-23T08:00:00.000Z'},
+        ]);
       final dao = FixDao(db);
       final n = await dao.pruneAckedOlderThan(const Duration(days: 7));
-      expect(n, 5);
+      expect(n, 5); // old ACKED only; fresh ACKED + PENDING survive
       expect(db.queries.last, contains("delete:location_fixes where=sync_state = 'ACKED'"));
     });
   });
@@ -607,8 +687,8 @@ void main() {
         random: Random(1),
       );
       expect(await w.runOnce(), SyncOutcome.failed);
-      // release loop updated the single row back to PENDING...
-      expect(db.queries.any((q) => q.contains('set=PENDING') && q.contains('batch_id = ?')), isTrue);
+      // release loop updated the single row back to PENDING (per-row by id)...
+      expect(db.queries.any((q) => q.contains('set=PENDING') && q.contains('where=id = ?')), isTrue);
       // ...and the worker read MAX(upload_attempts) for the backoff exponent
       expect(db.queries.any((q) => q.contains('MAX(upload_attempts)')), isTrue);
     });
@@ -637,7 +717,7 @@ void main() {
 
     test('trip cadence uses AppConfig.syncIntervalActiveTrip (60s)', () {
       final w = SyncWorker(
-        dao: FixDao(FakeDb()),
+        dao: FixDao(FakeDb()..rawResults.add([{'c': 0}])),
         uploader: (id, fixes) async =>
             IngestAck(batchId: id, accepted: fixes.length, alreadyReceived: false),
       );
@@ -651,10 +731,10 @@ void main() {
       // Under the 80MB warn threshold -> only the age prune fires.
       final small = FakeDb()
         .._seed('location_fixes', [
-          row(1, '2026-10-15T07:00:00.000Z', state: 'ACKED'),
-          row(2, '2026-10-15T07:00:10.000Z', state: 'ACKED'),
-          row(3, '2026-10-15T07:00:20.000Z', state: 'ACKED'),
-          row(4, '2026-10-15T07:00:30.000Z', state: 'ACKED'),
+          {...row(1, '2026-10-15T07:00:00.000Z', state: 'ACKED'), 'acked_at': '2026-10-15T08:00:00.000Z'},
+          {...row(2, '2026-10-15T07:00:10.000Z', state: 'ACKED'), 'acked_at': '2026-10-15T08:00:00.000Z'},
+          {...row(3, '2026-10-15T07:00:20.000Z', state: 'ACKED'), 'acked_at': '2026-10-15T08:00:00.000Z'},
+          {...row(4, '2026-10-15T07:00:30.000Z', state: 'ACKED'), 'acked_at': '2026-10-15T08:00:00.000Z'},
           row(5, '2026-10-23T07:00:00.000Z', state: 'PENDING'),
         ])
         ..rawResults.add([{'page_count': 100}]) // pages
@@ -672,12 +752,10 @@ void main() {
       final big = FakeDb()
         .._seed('location_fixes', [
           for (var i = 0; i < 6; i++)
-            row(i + 1, '2026-10-23T07:00:00.000Z', state: 'ACKED'),
+            {...row(i + 1, '2026-10-23T07:00:00.000Z', state: 'ACKED'), 'acked_at': '2026-10-23T08:00:00.000Z'},
         ])
         ..rawResults.add([{'page_count': 30000}]) // ~117MB
-        ..rawResults.add([{'page_size': 4096}])
-        ..rawResults.add([{'page_count': 12000}]) // after eviction ~48MB
-        ..rawResults.add([{'page_size': 4096}]);
+        ..rawResults.add([{'page_size': 4096}]); // budget-evict loop reads stateful PRAGMAs
       final wBig = SyncWorker(
         dao: FixDao(big),
         uploader: (id, _) async => IngestAck(batchId: id, accepted: 0, alreadyReceived: false),
@@ -731,7 +809,12 @@ void main() {
     });
 
     test('crash recovery: UPLOADING -> PENDING at open (§1.8.1)', () async {
-      final db = FakeDb()..lastUpdateCount = 9;
+      final db = FakeDb()
+        .._seed('sensor_events', [
+          for (var i = 1; i <= 9; i++)
+            srow(i, '2026-10-23T07:00:${(i % 60).toString().padLeft(2, "0")}.000Z', state: 'UPLOADING', batch: 'b-old'),
+          srow(10, '2026-10-23T07:01:00.000Z', state: 'PENDING'),
+        ]);
       final dao = SensorDao(db);
       expect(await dao.recoverUnackedUploads(), 9);
       expect(db.queries.any((q) => q.contains('set=PENDING') && q.contains("sync_state = 'UPLOADING'")), isTrue);
@@ -770,7 +853,12 @@ void main() {
     });
 
     test('markBatchAcked moves only this batch UPLOADING->ACKED', () async {
-      final db = FakeDb()..lastUpdateCount = 4;
+      final db = FakeDb()
+        .._seed('sensor_events', [
+          for (var i = 1; i <= 4; i++)
+            srow(i, '2026-10-23T07:0${i}:00.000Z', state: 'UPLOADING', batch: 'b-9'),
+          srow(5, '2026-10-23T07:05:00.000Z', state: 'UPLOADING', batch: 'b-other'),
+        ]);
       final dao = SensorDao(db);
       expect(await dao.markBatchAcked('b-9'), 4);
       expect(db.queries.last, contains('set=ACKED'));
@@ -788,7 +876,12 @@ void main() {
     });
 
     test('prune deletes only ACKED rows — PENDING untouchable (§1.8.6)', () async {
-      final db = FakeDb()..lastDeleteCount = 6;
+      final db = FakeDb()
+        .._seed('sensor_events', [
+          for (var i = 1; i <= 6; i++)
+            {...srow(i, '2026-10-01T07:0${i}:00.000Z', state: 'ACKED'), 'acked_at': '2026-10-01T08:00:00.000Z'},
+          srow(7, '2026-10-23T07:00:00.000Z', state: 'PENDING'),
+        ]);
       final dao = SensorDao(db);
       expect(await dao.pruneAckedOlderThan(const Duration(days: 7)), 6);
       expect(db.queries.last, contains("delete:sensor_events where=sync_state = 'ACKED'"));
@@ -877,14 +970,14 @@ void main() {
       final fixDb = FakeDb()
         .._seed('location_fixes', [
           for (var i = 0; i < 3; i++)
-            row(i + 1, '2026-10-15T07:00:00.000Z', state: 'ACKED'),
+            {...row(i + 1, '2026-10-15T07:00:00.000Z', state: 'ACKED'), 'acked_at': '2026-10-15T08:00:00.000Z'},
         ])
         ..rawResults.add([{'page_count': 100}])
         ..rawResults.add([{'page_size': 4096}]);
       final sensorDb = FakeDb()
         .._seed('sensor_events', [
           for (var i = 0; i < 5; i++)
-            srow(i + 1, '2026-10-15T07:00:00.000Z', state: 'ACKED'),
+            {...srow(i + 1, '2026-10-15T07:00:00.000Z', state: 'ACKED'), 'acked_at': '2026-10-15T08:00:00.000Z'},
         ])
         ..rawResults.add([{'page_count': 100}])
         ..rawResults.add([{'page_size': 4096}]);
@@ -1032,8 +1125,12 @@ void main() {
     test('Addis center falls inside the corridor tile ranges at z=12', () {
       const b = TileBounds.addisCorridor;
       final xr = b.xRange(12);
-      // Web-Mercator x for lng 38.75 @ z12 ≈ (38.75+180)/360*4096 ≈ 2494
-      expect(xr[0] <= 2494 && 2494 <= xr[1], isTrue);
+      // Web-Mercator x for Addis center lng 38.75 @ z12 ≈ 2488.9 → tile 2488
+      expect(xr[0] <= 2488 && 2488 <= xr[1], isTrue);
+      // Web-Mercator y for Addis center lat 9.03 @ z12 ≈ 1944 — must sit
+      // inside the corridor's inclusive y range at the same zoom.
+      final yr = b.yRange(12);
+      expect(yr[0] <= 1944 && 1944 <= yr[1], isTrue);
     });
   });
 }
