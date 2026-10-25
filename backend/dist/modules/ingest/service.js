@@ -30,16 +30,34 @@ async function ensurePartitions(timestamps) {
 }
 let recomputeHook = null;
 export function setRecomputeHook(h) { recomputeHook = h; }
+/**
+ * Phase 5 (A4): SECOND late-binding seam on the same chain — Notification's
+ * composition-root trigger runs AFTER trip reconstruction + crossing persistence
+ * so it sees the trip_events this window just produced. Same fire-and-forget
+ * contract as recomputeHook: ingest ACK never waits on notification work, and a
+ * failed pass self-heals on the next batch/recompute (dedupe makes retries free).
+ * Kept SEPARATE from recomputeHook so an existing hook consumer (tests that
+ * install their own) can never accidentally starve notifications.
+ */
+let notifyHook = null;
+export function setNotifyHook(h) { notifyHook = h; }
 function triggerRecompute(vehicleId, driverId, times, log) {
-    if (!recomputeHook || !vehicleId || times.length === 0)
+    if ((!recomputeHook && !notifyHook) || !vehicleId || times.length === 0)
         return;
     const min = Math.min(...times), max = Math.max(...times);
     // Window expansion grace mirrors trip_engine.batchWindowMs: look-back for sensor
     // silence checks + one minute forward for trailing transitions.
     const from = min - 180_000, to = max + 60_000;
-    void recomputeHook({ vehicleId, driverId, fromMs: from, toMs: to }).catch((err) => {
+    // Chain order matters (§A4): trips/events first, notifications LAST so they see
+    // freshly persisted TRIP_*/GEOFENCE_* rows. Await the recompute chain before
+    // firing notifyHook — both are fire-and-forget w.r.t. the ingest ACK.
+    const chain = (recomputeHook
+        ? recomputeHook({ vehicleId, driverId, fromMs: from, toMs: to })
+        : Promise.resolve()).then(() => notifyHook?.({ vehicleId, driverId, fromMs: from, toMs: to }))
+        .catch((err) => {
         (log ?? console).warn?.({ err: String(err), vehicleId }, 'trip recompute failed (will self-heal on read path)');
     });
+    void chain;
 }
 export async function ingestLocationBatch(driverId, vehicleId, body, log) {
     // 1) Idempotency gate: unique batch_id. If present, this is an offline replay — ACK again.

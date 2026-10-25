@@ -5,6 +5,10 @@ import { pool } from '../../db/pool.js';
 import { signAccessToken, verifyAccessToken } from '../../lib/jwt.js';
 import { audit } from '../../lib/audit.js';
 import { env, isProd } from '../../config/env.js';
+import {
+  CURRENT_CONSENT_POLICY, CONSENT_POLICY_VERSIONS, isValidPolicyVersion,
+  revokeSupersededConsents,
+} from './consent.js';
 
 // ---- validation schemas -------------------------------------------------------
 const LoginSchema = z.object({
@@ -51,7 +55,7 @@ export default async function identityRoutes(app: FastifyInstance) {
   app.post('/auth/login', async (req, reply) => {
     const body = LoginSchema.parse(req.body);
     const { rows } = await pool.query(
-      `SELECT id, role, password_hash, locale, is_active FROM users
+      `SELECT id, role, password_hash, locale, is_active, fleet_id FROM users
        WHERE phone_e164 = $1 OR email = $2 LIMIT 1`,
       [body.identifier, body.identifier],
     );
@@ -60,19 +64,40 @@ export default async function identityRoutes(app: FastifyInstance) {
       await audit({ action: 'login_failed', ip: req.ip });
       return reply.code(401).send({ error: 'invalid_credentials' });
     }
+    // Tenant check (Phase 0): a suspended fleet's members cannot authenticate.
+    if (user.fleet_id) {
+      const { rows: fl } = await pool.query(`SELECT status FROM fleets WHERE id = $1`, [user.fleet_id]);
+      if (fl[0]?.status !== 'ACTIVE') {
+        await audit({ actorId: user.id, action: 'login_denied_fleet_suspended', targetUser: user.id, ip: req.ip });
+        return reply.code(403).send({ error: 'fleet_suspended' });
+      }
+    }
     await audit({ actorId: user.id, action: 'login', targetUser: user.id, ip: req.ip });
-    const token = signAccessToken({ sub: user.id, role: user.role, locale: user.locale });
-    return { access_token: token, role: user.role, locale: user.locale };
+    const token = signAccessToken({ sub: user.id, role: user.role, locale: user.locale, fleetId: user.fleet_id ?? undefined });
+    return { access_token: token, role: user.role, locale: user.locale, fleet_id: user.fleet_id ?? null };
   });
 
   /**
    * POST /consent — Phase 0 gate: backend records driver consent (PDPP §1.7).
    * Requires an authenticated driver token. Idempotent per (driver, policy_version):
    * re-accepting the same version updates scopes rather than duplicating history.
+   * The accepted version MUST exist in the registry (consent.ts) and must be the
+   * CURRENT one — a client cannot "consent" to a superseded/unknown policy.
    */
   app.post('/consent', async (req, reply) => {
     const auth = await authGuard(req);
     const body = ConsentSchema.parse(req.body);
+    if (!isValidPolicyVersion(body.policy_version)) {
+      return reply.code(400).send({ error: 'unknown_policy_version', current: CURRENT_CONSENT_POLICY.id });
+    }
+    if (body.policy_version !== CURRENT_CONSENT_POLICY.id) {
+      // Superseded text can no longer be granted — force the app to re-render.
+      return reply.code(409).send({ error: 'consent_superseded', current: CURRENT_CONSENT_POLICY.id });
+    }
+    const missing = CURRENT_CONSENT_POLICY.requiredScopes.filter((s) => !body.granted_scopes.includes(s));
+    if (missing.length > 0) {
+      return reply.code(400).send({ error: 'missing_required_scopes', missing });
+    }
     const { rows } = await pool.query(
       `INSERT INTO consent_records (driver_id, policy_version, locale, granted_scopes, device_id, app_version, ip)
        VALUES ($1,$2,$3,$4,$5,$6,$7)
@@ -82,6 +107,9 @@ export default async function identityRoutes(app: FastifyInstance) {
       [auth.id, body.policy_version, body.locale, body.granted_scopes,
        body.device_id ?? null, body.app_version ?? null, req.ip],
     );
+    // Policy-change invalidation: stamp any grants for superseded versions so the
+    // DB reflects that only the current grant is valid (idempotent, all drivers).
+    await revokeSupersededConsents();
     await audit({ actorId: auth.id, action: 'consent_granted', targetUser: auth.id, ip: req.ip,
                   detail: { scopes: body.granted_scopes, policy: body.policy_version } });
     return reply.code(201).send({ consent_id: rows[0].id, granted_at: rows[0].granted_at });
@@ -95,8 +123,34 @@ export default async function identityRoutes(app: FastifyInstance) {
        FROM consent_records WHERE driver_id = $1 ORDER BY granted_at DESC LIMIT 1`,
       [auth.id],
     );
-    return { current_policy: 'consent-v1', record: rows[0] ?? null,
-             required: !rows[0] || rows[0].revoked_at || rows[0].policy_version !== 'consent-v1' };
+    const record = rows[0] ?? null;
+    const required = !record || !!record.revoked_at || record.policy_version !== CURRENT_CONSENT_POLICY.id;
+    return { current_policy: CURRENT_CONSENT_POLICY.id, required };
+  });
+
+  /**
+   * GET /consent/policy — public metadata of the consent-policy lifecycle so the
+   * driver app renders the correct text/version without a hard-coded constant.
+   * Non-sensitive (no personal data), therefore unauthenticated by design.
+   */
+  app.get('/consent/policy', async () => ({
+    current: CURRENT_CONSENT_POLICY.id,
+    released_at: CURRENT_CONSENT_POLICY.releasedAt,
+    required_scopes: CURRENT_CONSENT_POLICY.requiredScopes,
+    optional_scopes: CURRENT_CONSENT_POLICY.optionalScopes,
+    history: CONSENT_POLICY_VERSIONS.map((v) => ({ id: v.id, released_at: v.releasedAt })),
+  }));
+
+  /** POST /consent/revoke — withdrawal path (PDPP §1.7). Stops ingest at once:
+   *  the collection guard sees revoked_at and returns 403 consent_required. */
+  app.post('/consent/revoke', async (req) => {
+    const auth = await authGuard(req);
+    const { rowCount } = await pool.query(
+      `UPDATE consent_records SET revoked_at = now()
+        WHERE driver_id = $1 AND revoked_at IS NULL`, [auth.id]);
+    await audit({ actorId: auth.id, action: 'consent_revoked', targetUser: auth.id, ip: req.ip,
+                  detail: { rows_revoked: rowCount } });
+    return { revoked: true, as_of: new Date().toISOString() };
   });
 
   /** POST /me/bootstrap — one-time pairing of a pre-provisioned driver account.
