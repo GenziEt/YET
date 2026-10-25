@@ -115,11 +115,30 @@ d('Phase 0 gates (Postgres integration)', () => {
       `SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='fleets') AS ok`);
     if (!mig[0].ok) throw new Error('YET_TEST_DB missing schema — apply migrations first');
 
-    // Idempotent reseed of THIS suite's fixtures (random UUIDs each process, but
-    // consent/audit rows from an interrupted earlier run could linger keyed by
-    // nothing else we can guess — clean our own scope before inserting).
-    await poolX.query(`DELETE FROM consent_records WHERE driver_id = ANY($1::uuid[])`, [FIX_CONSENT]);
-    await poolX.query(`DELETE FROM audit_log WHERE actor_id = ANY($1::uuid[]) OR target_user = ANY($1::uuid[])`, [FIX_CONSENT]);
+    // Idempotent reseed of THIS suite's fixtures. The fleet NAMES are the stable
+    // identity across processes (ids are random per run), so purge leftovers from
+    // an interrupted earlier run by name (children first — most FKs are NO ACTION).
+    const PURGE = `WITH old AS (SELECT id FROM fleets WHERE name IN ('p0g-A','p0g-B')),
+      od AS (SELECT id FROM users WHERE fleet_id IN (SELECT id FROM old))`;
+    await poolX.query(`${PURGE} DELETE FROM driver_vehicle_assignments WHERE driver_id IN (SELECT id FROM od) OR vehicle_id IN (SELECT id FROM vehicles WHERE fleet_id IN (SELECT id FROM old))`);
+    await poolX.query(`${PURGE} DELETE FROM consent_records WHERE driver_id IN (SELECT id FROM od)`);
+    await poolX.query(`${PURGE} DELETE FROM audit_log WHERE actor_id IN (SELECT id FROM od) OR target_user IN (SELECT id FROM od)`);
+    await poolX.query(`${PURGE} DELETE FROM location_fixes WHERE driver_id IN (SELECT id FROM od)`);
+    await poolX.query(`${PURGE} DELETE FROM ingest_batches WHERE driver_id IN (SELECT id FROM od)`);
+    await poolX.query(`${PURGE} DELETE FROM driver_diagnostics WHERE driver_id IN (SELECT id FROM od)`);
+    await poolX.query(`${PURGE} DELETE FROM trip_battery_samples WHERE driver_id IN (SELECT id FROM od)`);
+    await poolX.query(`${PURGE} DELETE FROM trips WHERE driver_id IN (SELECT id FROM od)`);
+    await poolX.query(`${PURGE} DELETE FROM notification_log WHERE target_user IN (SELECT id FROM od)`);
+    await poolX.query(`${PURGE} DELETE FROM user_push_tokens WHERE user_id IN (SELECT id FROM od)`);
+    await poolX.query(`${PURGE} DELETE FROM refresh_tokens WHERE user_id IN (SELECT id FROM od)`);
+    await poolX.query(`${PURGE} DELETE FROM geofences WHERE fleet_id IN (SELECT id FROM old)`);
+    await poolX.query(`${PURGE} DELETE FROM vehicles WHERE fleet_id IN (SELECT id FROM old)`);
+    await poolX.query(`${PURGE} DELETE FROM users WHERE fleet_id IN (SELECT id FROM old)`);
+    await poolX.query(`DELETE FROM fleets WHERE name IN ('p0g-A','p0g-B')`);
+    await poolX.query(
+      `DELETE FROM consent_records WHERE driver_id = ANY($1::uuid[])`, [FIX_CONSENT]);
+    await poolX.query(
+      `DELETE FROM audit_log WHERE actor_id = ANY($1::uuid[]) OR target_user = ANY($1::uuid[])`, [FIX_CONSENT]);
 
     // Tenants + users (trigger requires fleet_id for DRIVER role) + vehicles.
     await poolX.query(
@@ -157,7 +176,7 @@ d('Phase 0 gates (Postgres integration)', () => {
     await poolX.query(`DELETE FROM audit_log WHERE actor_id = ANY($1::uuid[]) OR target_user = ANY($1::uuid[])`, [FIX_CONSENT]).catch(() => {});
     await poolX.query(`DELETE FROM location_fixes WHERE vehicle_id = $1 OR driver_id IN ($2,$3)`, [vehicleA, driverA, driverB]).catch(() => {});
     await poolX.query(`DELETE FROM ingest_batches WHERE driver_id IN ($1,$2)`, [driverA, driverB]);
-    await poolX.query(`DELETE FROM assignments WHERE driver_id IN ($1,$2)`, [driverA, driverB]);
+    await poolX.query(`DELETE FROM driver_vehicle_assignments WHERE driver_id IN ($1,$2)`, [driverA, driverB]);
     await poolX.query(`DELETE FROM consent_records WHERE driver_id IN ($1,$2)`, [driverA, driverB]);
     await poolX.query(`DELETE FROM vehicles WHERE id = $1`, [vehicleA]);
     await poolX.query(`DELETE FROM users WHERE id IN ($1,$2)`, [driverA, driverB]);

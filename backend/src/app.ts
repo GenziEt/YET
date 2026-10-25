@@ -129,15 +129,17 @@ export async function buildApp() {
     const e = err as any;
     const isZod = Array.isArray(e?.issues) && (e?.name === 'ZodError' || e?.constructor?.name?.includes('Zod') || !e?.statusCode);
     if (isZod) return reply.code(400).send({ error: 'validation_failed', detail: e.issues });
-    if (e?.statusCode === 401) return reply.code(401).send({ error: 'unauthorized' });
-    // Machine-readable denial reasons must survive serialization — the driver
-    // app branches on `consent_required` (re-show consent screen) and
+    // Machine-readable denial codes take precedence over @fastify/sensible's
+    // default serialization — a 403 thrown as `new Error('consent_required')`
+    // would otherwise render as {error:'Forbidden', message:'consent_required'};
+    // the driver app branches on `consent_required` (re-show consent screen) and
     // `fleet_suspended`; the dashboard branches on `cross_fleet_denied`.
     const KNOWN_DENIALS = ['consent_required', 'fleet_suspended', 'cross_fleet_denied',
                            'forbidden_role', 'target_not_found'];
     if (typeof e?.message === 'string' && KNOWN_DENIALS.includes(e.message)) {
       return reply.code(e.statusCode ?? 403).send({ error: e.message });
     }
+    if (e?.statusCode === 401) return reply.code(401).send({ error: 'unauthorized' });
     req.log.error(err);
     return reply.code(e?.statusCode ?? 500).send({ error: 'internal' });
   });
