@@ -11,8 +11,11 @@ import tripRoutes from './modules/trip_engine/routes.js';
 import osmRoutes from './modules/osm_gateway/routes.js';
 import geofenceRoutes from './modules/geofence/routes.js';
 import reportingRoutes from './modules/reporting/routes.js';
+import notificationRoutes from './modules/notification/routes.js';
 import { runCrossingEvaluator } from './modules/geofence/crossing.js';
-import { setRecomputeHook } from './modules/ingest/service.js';
+import { setRecomputeHook, setNotifyHook } from './modules/ingest/service.js';
+import { runNotificationTrigger, startSeparationSweepLoop } from './modules/notification/triggers.js';
+import { startDispatcherLoop } from './modules/notification/dispatchers.js';
 import { recomputeVehicleWindow } from './modules/trip_engine/service.js';
 /**
  * Build the modular monolith. Each module registers under its own prefix so that
@@ -63,7 +66,8 @@ export async function buildApp() {
     await app.register(tripRoutes); // Module 3: Trip Engine — /trips, /trips/status, /trips/:id
     await app.register(osmRoutes); // Module 7: OSM Gateway — /route, /geocode (Phase 3)
     await app.register(geofenceRoutes); // Module 4: Geofence — /geofences CRUD + state (Phase 3)
-    await app.register(reportingRoutes); // Module 6: Reporting — /reports/pilot (Phase 4, read-only §1.5)
+    await app.register(reportingRoutes); // Module 6: Reporting — /reports/* (Phase 4 pilot + Phase 5 reports)
+    await app.register(notificationRoutes); // Module 5: Notification — /notifications/* (Phase 5)
     // Wire the ingest → trip-engine seam (§1.5 bounded contexts): Ingest owns raw
     // storage only; after each accepted batch it fires the late-bound recompute hook
     // so Trip Engine reconstructs the affected event-time window (§1.8.3). The hook
@@ -75,6 +79,19 @@ export async function buildApp() {
         await recomputeVehicleWindow(vehicleId, driverId, fromMs, toMs);
         await runCrossingEvaluator({ vehicleId, driverId, fromMs, toMs });
     });
+    // Phase 5 (A4): Notification trigger chained on the SAME seam via a second
+    // late-binding hook (ingest awaits the recompute chain before firing it), so
+    // TRIP_STARTED/TRIP_ENDED/GEOFENCE_ENTER/EXIT queueing sees freshly persisted
+    // trip_events. Dedupe keys derive from stored EVENT times ⇒ replay-safe no-ops.
+    setNotifyHook(async ({ vehicleId, driverId, fromMs, toMs }) => {
+        await runNotificationTrigger({ vehicleId, driverId, fromMs, toMs });
+    });
+    // Delivery workers (in-process loops; extraction = move folder + own deployment):
+    // dispatcher picks up QUEUED rows every 5 s; separation sweep applies the §1.4
+    // 45-min timer decision every NOTIFY_SEPARATION_SWEEP_S seconds. Both unref'd —
+    // they never hold the process open in tests.
+    startDispatcherLoop();
+    startSeparationSweepLoop();
     // Zod errors -> 400 instead of 500. NOTE: match by duck-typing (`issues` array)
     // rather than `err.name === 'ZodError'`: when the route module's zod instance is
     // loaded through a different specifier/registry copy than this one, the thrown
