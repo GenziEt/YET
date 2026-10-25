@@ -29,7 +29,10 @@ export default async function reportingRoutes(app: FastifyInstance) {
     const claims = await managerAuth(req);
     const parsed = PilotQuerySchema.safeParse(req.query);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_query', detail: parsed.error.flatten() });
-    const summary = await getPilotSummary(parsed.data);
+    // Tenant boundary (Phase 0): a named driver must be in the caller's fleet;
+    // aggregate pilot reads are confined to the caller's fleet unless ADMIN.
+    if (parsed.data.driver_id) await assertTargetInFleet(claims, { driverId: parsed.data.driver_id });
+    const summary = await getPilotSummary({ ...parsed.data, fleet_id: scopeFleetId(claims) });
     await audit({ actorId: claims.sub, action: 'read_pilot_report', targetUser: parsed.data.driver_id ?? null,
                   ip: req.ip, detail: { from: parsed.data.from, to: parsed.data.to } });
     return summary;
@@ -49,7 +52,8 @@ export default async function reportingRoutes(app: FastifyInstance) {
     const claims = await managerAuth(req);
     const parsed = WindowSchema.safeParse(req.query);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_query', detail: parsed.error.flatten() });
-    const report = await getTripReport(parsed.data);
+    if (parsed.data.driver_id) await assertTargetInFleet(claims, { driverId: parsed.data.driver_id });
+    const report = await getTripReport({ ...parsed.data, fleet_id: scopeFleetId(claims) });
     await audit({ actorId: claims.sub, action: 'read_trip_report', targetUser: parsed.data.driver_id ?? null,
                   ip: req.ip, detail: { from: parsed.data.from, to: parsed.data.to, trips: report.trips.length } });
     return report;
@@ -62,7 +66,8 @@ export default async function reportingRoutes(app: FastifyInstance) {
     const claims = await managerAuth(req);
     const parsed = WindowSchema.extend({ open_only: z.coerce.boolean().default(false) }).safeParse(req.query);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_query', detail: parsed.error.flatten() });
-    const result = await getSeparationIncidents(parsed.data);
+    if (parsed.data.driver_id) await assertTargetInFleet(claims, { driverId: parsed.data.driver_id });
+    const result = await getSeparationIncidents({ ...parsed.data, fleet_id: scopeFleetId(claims) });
     await audit({ actorId: claims.sub, action: 'read_separation_report', targetUser: parsed.data.driver_id ?? null,
                   ip: req.ip, detail: { from: parsed.data.from, to: parsed.data.to, count: result.count } });
     return result;
@@ -72,11 +77,15 @@ export default async function reportingRoutes(app: FastifyInstance) {
    *  Redis fleet:state TTL 30s absorbs poll storms (§1.10.2); `refresh=1` lets a
    *  manual reload bust the cache once (ops/testing convenience, still audited-
    *  free because it aggregates no new personal reads beyond the cached shape).
-   *  Drivers are rejected here — this is a fleet-wide view (§1.7 minimization). */
+   *  Drivers are rejected here — this is a fleet-wide view (§1.7 minimization).
+   *  Phase 0 tenant scoping: FLEET_MANAGER sees ONLY their own fleet (per-fleet
+   *  cache key + SQL filter); ADMIN sees the whole platform. */
   app.get('/reports/fleet-state', async (req) => {
-    await managerAuth(req);
+    const claims = await managerAuth(req);
     const q = z.object({ refresh: z.coerce.boolean().default(false) }).parse(req.query);
-    if (q.refresh) await cacheDel(FLEET_STATE_CACHE_KEY);
-    return getFleetOverview();
+    const fleetId = scopeFleetId(claims); // fail-closed for tenant tokens lacking a fleet claim
+    const cacheKey = fleetId ? `${FLEET_STATE_CACHE_KEY}:${fleetId}` : FLEET_STATE_CACHE_KEY;
+    if (q.refresh) await cacheDel(cacheKey);
+    return getFleetOverview({ fleetId });
   });
 }
