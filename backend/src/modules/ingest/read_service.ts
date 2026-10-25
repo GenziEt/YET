@@ -41,8 +41,10 @@ export async function listFixes(q: z.infer<typeof FixQuerySchema>): Promise<Loca
 }
 
 /** Lightweight fleet roster for the dashboard selector: drivers with recent activity.
- *  "Recent" window keeps the scan on the (driver_id, fix_timestamp) index. */
-export async function listActiveDrivers(sinceIso: string) {
+ *  "Recent" window keeps the scan on the (driver_id, fix_timestamp) index.
+ *  Phase 0 tenant scoping: when `fleetId` is provided the roster is confined to
+ *  that fleet (FLEET_MANAGER tokens); ADMIN passes undefined => whole platform. */
+export async function listActiveDrivers(sinceIso: string, fleetId?: string) {
   const { rows } = await pool.query(
     `SELECT d.driver_id,
             u.full_name,
@@ -53,10 +55,11 @@ export async function listActiveDrivers(sinceIso: string) {
        JOIN users u   ON u.id = d.driver_id
   LEFT JOIN vehicles v ON v.id = d.vehicle_id
       WHERE d.fix_timestamp >= $1
+        AND ($2::uuid IS NULL OR u.fleet_id = $2)
    GROUP BY d.driver_id, u.full_name, v.plate_number, v.id
    ORDER BY last_fix_at DESC NULLS LAST
       LIMIT 200`,
-    [sinceIso],
+    [sinceIso, fleetId ?? null],
   );
   return rows;
 }
