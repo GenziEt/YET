@@ -1,10 +1,22 @@
 import { describe, it, expect } from 'vitest';
-import {
+
+// These suites exercise PURE helpers only (zero I/O). However,
+// src/modules/geofence/service.js transitively imports db/pool.js → config/env.js,
+// which fail-fasts with process.exit(1) when required secrets are absent. Set the
+// documented inert test contract BEFORE importing so env validation passes without
+// any live database connection being made (pool connects lazily on first query).
+process.env.NODE_ENV ??= 'test';
+process.env.DATABASE_URL ??= 'postgres://yet:test@localhost:5432/yet_test';
+process.env.JWT_SECRET ??= 'osm-gateway-test-secret-0123456789abcdef';
+
+const {
   roundCoord, parseLatLng, routeCacheKey, geocodeCacheKey, decodePolyline,
   computeEta, validateCircle, validateRing, ringToMultipolygonJson,
-} from '../src/modules/osm_gateway/geo.js';
-import { normalizeGeofence, GeofenceValidationError } from '../src/modules/geofence/service.js';
-import { pointInRing, parseWktPoint } from '../src/modules/geofence/crossing.js';
+} = await import('../src/modules/osm_gateway/geo.js');
+const { normalizeGeofence, GeofenceValidationError } = await import(
+  '../src/modules/geofence/service.js'
+);
+const { pointInRing, parseWktPoint } = await import('../src/modules/geofence/crossing.js');
 
 /**
  * Phase 3 gate tests — OSM Gateway + Geofence PURE helpers (§1.5 Module 7 / 4).

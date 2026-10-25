@@ -1,8 +1,284 @@
-import 'dart:async';
-import 'dart:math';
+/// In-memory sqflite stand-in. Records every statement so tests can assert on
+/// the exact SQL the Offline Contract code emits (claim ordering, ACK updates,
+/// prune WHERE clauses) without a device or native SQLite. Implements the full
+/// [Database] surface; members the pipeline never calls throw [UnimplementedError]
+/// so accidental use in a production path would fail loudly rather than silently.
+class FakeDb implements Database {
+  final List<String> executed = [];
+  final List<String> queries = [];
+  /// Queue of rawQuery results consumed in FIFO order (PRAGMAs, counts...).
+  final List<List<Map<String, Object?>>> rawResults = [];
+  int lastUpdateCount = 0;
+  int lastDeleteCount = 0;
+  int lastInsertId = 1;
 
-import 'package:flutter_test/flutter_test.dart';
-import 'package:sqflite/sqflite.dart';
+  @override
+  String get path => 'fake.db';
+  @override
+  bool get isOpen => true;
+  @override
+  int get version => 1;
+
+  @override
+  Future<void> execute(String sql, [List<Object?>? arguments]) async {
+    executed.add(sql);
+  }
+
+  @override
+  Future<T> transaction<T>(Future<T> Function(Transaction txn) action,
+      {bool? exclusive}) async {
+    return action(_FakeTxn(this));
+  }
+
+  @override
+  Future<T> readTransaction<T>(Future<T> Function(Transaction txn) action) =>
+      action(_FakeTxn(this));
+
+  @override
+  Future<List<Map<String, Object?>>> query(String table,
+      {bool? distinct,
+      List<String>? columns,
+      String? where,
+      List<Object?>? whereArgs,
+      String? groupBy,
+      String? having,
+      String? orderBy,
+      int? limit,
+      int? offset}) async {
+    queries.add('query:$table where=$where orderBy=$orderBy limit=$limit');
+    return const [];
+  }
+
+  @override
+  Future<List<Map<String, Object?>>> rawQuery(String sql,
+      [List<Object?>? args]) async {
+    queries.add('raw:$sql');
+    if (rawResults.isNotEmpty) return rawResults.removeAt(0);
+    return const [];
+  }
+
+  @override
+  Future<Map<String, Object?>?> rawQueryFirst(String sql,
+      [List<Object?>? args]) async {
+    final rows = await rawQuery(sql, args);
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  @override
+  Future<int> insert(String table, Map<String, Object?> values,
+      {String? nullColumnHack, ConflictAlgorithm? conflictAlgorithm}) async {
+    queries.add('insert:$table state=${values['sync_state']}');
+    return lastInsertId++;
+  }
+
+  @override
+  Future<int> update(String table, Map<String, Object?> values,
+      {String? where,
+      List<Object?>? whereArgs,
+      ConflictAlgorithm? conflictAlgorithm}) async {
+    queries.add('update:$table set=${values['sync_state']} where=$where');
+    return lastUpdateCount;
+  }
+
+  @override
+  Future<int> delete(String table,
+      {String? where, List<Object?>? whereArgs}) async {
+    queries.add('delete:$table where=$where');
+    return lastDeleteCount;
+  }
+
+  @override
+  Future<int> rawInsert(String sql, [List<Object?>? args]) async => 1;
+  @override
+  Future<int> rawUpdate(String sql, [List<Object?>? args]) async => 1;
+  @override
+  Future<int> rawDelete(String sql, [List<Object?>? args]) async => 0;
+
+  @override
+  Batch batch() => _FakeBatch();
+
+  @override
+  Future<QueryCursor> queryCursor(String table,
+          {bool? distinct,
+          List<String>? columns,
+          String? where,
+          List<Object?>? whereArgs,
+          String? groupBy,
+          String? having,
+          String? orderBy,
+          int? limit,
+          int? offset,
+          int? bufferSize}) =>
+      throw UnimplementedError('queryCursor not used by the sync pipeline');
+
+  @override
+  Future<QueryCursor> rawQueryCursor(String sql, List<Object?>? arguments,
+          {int? bufferSize}) =>
+      throw UnimplementedError('rawQueryCursor not used by the sync pipeline');
+
+  @override
+  Future<T> devInvokeMethod<T>(String method, [Object? arguments]) =>
+      throw UnimplementedError('dev helpers are test-only');
+
+  @override
+  Future<T> devInvokeSqlMethod<T>(String method, String sql,
+          [Object? arguments]) =>
+      throw UnimplementedError('dev helpers are test-only');
+
+  @override
+  Future<void> close() async {}
+}
+
+class _FakeTxn implements Transaction {
+  _FakeTxn(this.db);
+  final FakeDb db;
+
+  @override
+  Future<List<Map<String, Object?>>> query(String table,
+          {bool? distinct,
+          List<String>? columns,
+          String? where,
+          List<Object?>? whereArgs,
+          String? groupBy,
+          String? having,
+          String? orderBy,
+          int? limit,
+          int? offset}) =>
+      db.query(table,
+          distinct: distinct,
+          columns: columns,
+          where: where,
+          whereArgs: whereArgs,
+          groupBy: groupBy,
+          having: having,
+          orderBy: orderBy,
+          limit: limit,
+          offset: offset);
+
+  @override
+  Future<List<Map<String, Object?>>> rawQuery(String sql,
+          [List<Object?>? args]) =>
+      db.rawQuery(sql, args);
+
+  @override
+  Future<Map<String, Object?>?> rawQueryFirst(String sql,
+          [List<Object?>? args]) =>
+      db.rawQueryFirst(sql, args);
+
+  @override
+  Future<int> insert(String table, Map<String, Object?> values,
+          {String? nullColumnHack, ConflictAlgorithm? conflictAlgorithm}) =>
+      db.insert(table, values,
+          nullColumnHack: nullColumnHack, conflictAlgorithm: conflictAlgorithm);
+
+  @override
+  Future<int> update(String table, Map<String, Object?> values,
+          {String? where,
+          List<Object?>? whereArgs,
+          ConflictAlgorithm? conflictAlgorithm}) =>
+      db.update(table, values,
+          where: where, whereArgs: whereArgs, conflictAlgorithm: conflictAlgorithm);
+
+  @override
+  Future<int> delete(String table,
+          {String? where, List<Object?>? whereArgs}) =>
+      db.delete(table, where: where, whereArgs: whereArgs);
+
+  @override
+  Future<int> rawInsert(String sql, [List<Object?>? args]) =>
+      db.rawInsert(sql, args);
+  @override
+  Future<int> rawUpdate(String sql, [List<Object?>? args]) =>
+      db.rawUpdate(sql, args);
+  @override
+  Future<int> rawDelete(String sql, [List<Object?>? args]) =>
+      db.rawDelete(sql, args);
+
+  @override
+  Future<void> execute(String sql, [List<Object?>? arguments]) =>
+      db.execute(sql, arguments);
+
+  @override
+  Batch batch() => _FakeBatch();
+
+  @override
+  Database get database => db;
+
+  @override
+  Future<QueryCursor> queryCursor(String table,
+          {bool? distinct,
+          List<String>? columns,
+          String? where,
+          List<Object?>? whereArgs,
+          String? groupBy,
+          String? having,
+          String? orderBy,
+          int? limit,
+          int? offset,
+          int? bufferSize}) =>
+      throw UnimplementedError('queryCursor not used by the sync pipeline');
+
+  @override
+  Future<QueryCursor> rawQueryCursor(String sql, List<Object?>? arguments,
+          {int? bufferSize}) =>
+      throw UnimplementedError('rawQueryCursor not used by the sync pipeline');
+}
+
+/// Minimal [Batch] stand-in — records queued statement kinds and commits with
+/// one result slot per statement. The DAOs' bulk paths are exercised through
+/// individual statements in these unit tests; this exists to satisfy the
+/// Database interface contract completely.
+class _FakeBatch implements Batch {
+  final List<String> ops = [];
+
+  @override
+  int get length => ops.length;
+
+  @override
+  void rawInsert(String sql, [List<Object?>? arguments]) => ops.add('rawInsert');
+  @override
+  void insert(String table, Map<String, Object?> values,
+          {String? nullColumnHack, ConflictAlgorithm? conflictAlgorithm}) =>
+      ops.add('insert:$table');
+  @override
+  void rawUpdate(String sql, [List<Object?>? arguments]) => ops.add('rawUpdate');
+  @override
+  void update(String table, Map<String, Object?> values,
+          {String? where,
+          List<Object?>? whereArgs,
+          ConflictAlgorithm? conflictAlgorithm}) =>
+      ops.add('update:$table');
+  @override
+  void rawDelete(String sql, [List<Object?>? arguments]) => ops.add('rawDelete');
+  @override
+  void delete(String table, {String? where, List<Object?>? whereArgs}) =>
+      ops.add('delete:$table');
+  @override
+  void execute(String sql, [List<Object?>? arguments]) => ops.add('execute');
+  @override
+  void query(String table,
+          {bool? distinct,
+          List<String>? columns,
+          String? where,
+          List<Object?>? whereArgs,
+          String? groupBy,
+          String? having,
+          String? orderBy,
+          int? limit,
+          int? offset}) =>
+      ops.add('query:$table');
+  @override
+  void rawQuery(String sql, [List<Object?>? arguments]) => ops.add('rawQuery');
+
+  @override
+  Future<List<Object?>> commit(
+          {bool? exclusive, bool? noResult, bool? continueOnError}) async =>
+      List<Object?>.filled(ops.length, 0, growable: false);
+
+  @override
+  Future<List<Object?>> apply({bool? noResult, bool? continueOnError}) async =>
+      List<Object?>.filled(ops.length, 0, growable: false);
+}
 import 'package:yet_driver/core/cache/fix_dao.dart';
 import 'package:yet_driver/core/cache/sensor_dao.dart';
 import 'package:yet_driver/core/sync/sync_state.dart';

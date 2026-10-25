@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:geolocator/geolocator.dart';
-import 'package:geolocator_android/geolocator_android.dart';
 
 import '../features/trip/gps_collector.dart';
 
@@ -47,10 +46,15 @@ class GeolocatorPositionSource {
             intervalDuration: const Duration(seconds: 2),
             // Foreground-service lifecycle (§Phase 1): collect with a
             // persistent driver-visible notification so Android keeps the
-            // location stream alive when the app backgrounds mid-trip.
+            // location stream alive when the app backgrounds mid-trip. The
+            // geolocator_android plugin's GeolocatorLocationService (declared
+            // in android/app/src/main/AndroidManifest.xml comments + merged
+            // from the plugin manifest) hosts it; this app supplies only the
+            // FOREGROUND_SERVICE / FOREGROUND_SERVICE_LOCATION permissions.
             foregroundNotificationConfig: const ForegroundNotificationConfig(
               notificationTitle: 'YET tracking',
               notificationText: 'Trip recording active',
+              enableWakeLock: true,
             ),
           ),
         ).listen(

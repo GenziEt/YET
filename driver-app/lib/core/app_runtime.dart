@@ -87,7 +87,7 @@ class AppRuntime extends ChangeNotifier {
     final pilot = PilotService(
       tokenStore: tokenStore,
       client: httpClient,
-      batteryReader: batteryReader ?? const UnavailableBatteryReader().read,
+      batteryReader: batteryReader ?? UnavailableBatteryReader.read,
       networkTypeProvider: networkTypeProvider,
     );
     return AppRuntime._(
