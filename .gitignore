@@ -1,1 +1,2 @@
-driver-app/android/local.properties
+.dart_tool/
+.flutter-plugins-dependencies
