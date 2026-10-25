@@ -16,11 +16,9 @@ class BatteryPlusReader {
     final level = await _battery.batteryLevel; // 0..100, -1 if unavailable
     final state = await _battery.batteryState;
     return BatteryReading(
-      levelPct: level.clamp(0, 100),
+      levelPct: level < 0 ? -1 : level.toDouble().clamp(0.0, 100.0),
       charging: state == BatteryState.charging ||
-          state == BatteryState.full ||
-          state == BatteryState.ac_power ||
-          state == BatteryState.usb_power,
+          state == BatteryState.full,
     );
   }
 

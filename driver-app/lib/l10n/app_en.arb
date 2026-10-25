@@ -78,7 +78,7 @@
     }
   },
 
-  // Phase 5 (E): mirrors notification_templates titles (migration 0011)
+  
   "notifTripStartedTitle": "Trip started",
   "notifTripEndedTitle": "Trip ended",
   "notifSeparationTitle": "Driver separation alert",

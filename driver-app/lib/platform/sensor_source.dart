@@ -11,12 +11,14 @@ import '../features/trip/sensor_collector.dart';
 /// anything reaches SQLite, so raw 50–100 Hz streams never balloon the cache.
 class SensorsPlusSource {
   SensorsPlusSource({
-    this.accelerometerPeriod = SensorInterval.normalInterval,
-    this.gyroscopePeriod = SensorInterval.normalInterval,
+    this.accelerometerPeriod = const Duration(milliseconds: 200),
+    this.gyroscopePeriod = const Duration(milliseconds: 200),
   });
 
-  final int accelerometerPeriod;
-  final int gyroscopePeriod;
+  /// ~5 Hz device-side sampling: raw 50-100 Hz streams would defeat the
+  /// battery budget (§1.8.5); SensorCollector downsamples further while idle.
+  final Duration accelerometerPeriod;
+  final Duration gyroscopePeriod;
 
   final List<StreamSubscription<dynamic>> _subs = [];
   bool _stopped = false;
@@ -47,9 +49,9 @@ class SensorsPlusSource {
     }
 
     try {
-      _subs.add(accelerometerEventStream(period: accelerometerPeriod)
+      _subs.add(accelerometerEventStream(samplingPeriod: accelerometerPeriod)
           .listen(addAcc, onError: fail));
-      _subs.add(gyroscopeEventStream(period: gyroscopePeriod)
+      _subs.add(gyroscopeEventStream(samplingPeriod: gyroscopePeriod)
           .listen(addGyro, onError: fail));
     } catch (e, s) {
       fail(e, s);

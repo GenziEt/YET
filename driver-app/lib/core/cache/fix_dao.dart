@@ -129,7 +129,7 @@ class FixDao {
   /// Open + crash recovery. Call once at startup (pre-warmed off the cold-start
   /// critical path per §1.9.1).
   static Future<FixDao> openAndRecover(String path) async {
-    final db = await databaseFactory.openDatabase(
+    final db = await openDatabase(
       path,
       version: dbVersion,
       onCreate: onCreate,
