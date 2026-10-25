@@ -6,6 +6,7 @@
 
 import { pool } from '../../db/pool.js';
 import { audit } from '../../lib/audit.js';
+import { forbiddenCrossFleet } from '../../lib/tenant.js';
 import {
   validateCircle, validateRing, ringToMultipolygonJson,
   type GeofenceCircle, type GeofencePolygon,
@@ -25,6 +26,7 @@ const CATEGORIES = ['WAREHOUSE', 'CUSTOMER_SITE', 'RESTRICTED_ZONE', 'DEPOT', 'O
 function rowToDto(r: any) {
   return {
     geofence_id: r.geofence_id,
+    fleet_id: r.fleet_id ?? null,
     name: r.name,
     kind: r.kind,
     category: r.category,
@@ -66,16 +68,20 @@ export function normalizeGeofence(body: unknown): GeofenceInput {
   throw new GeofenceValidationError("kind must be 'CIRCLE' or 'POLYGON'");
 }
 
-export async function createGeofence(actorId: string, body: unknown) {
+/** `fleetId` is the OWNING tenant (route layer resolves it from the actor's
+ * fleet claim; ADMIN may pass an explicit target). Migration 0014 made the
+ * column NOT NULL, so creation without a fleet fails closed. */
+export async function createGeofence(actorId: string, fleetId: string, body: unknown) {
+  if (!fleetId) throw Object.assign(new Error('geofence_fleet_required'), { statusCode: 400 });
   const dto = normalizeGeofence(body);
   if (dto.kind === 'CIRCLE') {
     // geom built server-side from center_lat/center_lng — the API never accepts raw WKT.
     const { rows } = await pool.query(
-      `INSERT INTO geofences (name, kind, category, radius_m, center_lat, center_lng, geom, created_by)
+      `INSERT INTO geofences (name, kind, category, radius_m, center_lat, center_lng, geom, created_by, fleet_id)
        VALUES ($1,$2,$3::geofence_category,$4,$5,$6,
-               ST_SetSRID(ST_MakePoint($6,$5), 4326), $7)
+               ST_SetSRID(ST_MakePoint($6,$5), 4326), $7, $8)
        RETURNING *`,
-      [dto.name, dto.kind, dto.category, dto.radius_m, dto.center.lat, dto.center.lng, actorId],
+      [dto.name, dto.kind, dto.category, dto.radius_m, dto.center.lat, dto.center.lng, actorId, fleetId],
     );
     await audit({ actorId, action: 'geofence_create', detail: { geofence_id: rows[0].geofence_id, name: dto.name } });
     return rowToDto(rows[0]);
@@ -117,7 +123,9 @@ function canonicalizeRing(ring: unknown): [number, number][] | null {
   return pts.length > 0 ? pts : null;
 }
 
-export async function updateGeofence(actorId: string, geofenceId: string, body: unknown) {
+export async function updateGeofence(actorId: string, geofenceId: string, body: unknown, scope?: { role: string; fleetId?: string | null }) {
+  // Fail closed: writes REQUIRE an explicit tenancy scope from the route layer.
+  await assertGeofenceInFleet(scope ?? { role: 'FLEET_MANAGER', fleetId: null }, geofenceId, 404);
   const existing = await getGeofence(geofenceId);
   if (!existing) throw Object.assign(new Error('geofence_not_found'), { statusCode: 404 });
   // Merge: allow partial updates (rename/toggle) without resending geometry.
@@ -164,7 +172,8 @@ function existingToBody(g: ReturnType<typeof rowToDto>) {
     : { kind: 'POLYGON', name: g.name, category: g.category, ring: g.ring };
 }
 
-export async function deleteGeofence(actorId: string, geofenceId: string) {
+export async function deleteGeofence(actorId: string, geofenceId: string, scope?: { role: string; fleetId?: string | null }) {
+  await assertGeofenceInFleet(scope ?? { role: 'FLEET_MANAGER', fleetId: null }, geofenceId, 404);
   // Soft-delete: deactivate rather than drop — trip_events payloads keep referencing
   // geofence ids and fleet history must remain interpretable (§1.7 retention posture).
   const { rows } = await pool.query(
@@ -180,9 +189,55 @@ export async function getGeofence(geofenceId: string) {
   return rows[0] ? rowToDto(rows[0]) : null;
 }
 
-export async function listGeofences(opts: { active_only?: boolean } = {}) {
+/** Raw-row fetch used by route guards that must inspect tenancy columns
+ *  (fleet_id) before deciding whether to expose the DTO. */
+async function getGeofenceRow(geofenceId: string): Promise<{ fleet_id: string } | null> {
+  const { rows } = await pool.query(`SELECT fleet_id FROM geofences WHERE geofence_id=$1`, [geofenceId]);
+  return rows[0] ?? null;
+}
+
+/** Route-boundary tenant check for :geofence_id operations. ADMIN passes;
+ *  every other role must own the zone's fleet — else 403 cross_fleet_denied.
+ *  Unknown id => 404 (so probing leaks nothing about other tenants' zones). */
+export async function assertGeofenceInFleet(
+  claims: { role: string; fleetId?: string | null }, geofenceId: string,
+  notFoundStatus = 404,
+) {
+  const row = await getGeofenceRow(geofenceId);
+  if (!row) throw Object.assign(new Error('geofence_not_found'), { statusCode: notFoundStatus });
+  if (claims.role === 'ADMIN') return row;
+  if (!claims.fleetId || claims.fleetId !== row.fleet_id) forbiddenCrossFleet();
+  return row;
+}
+
+/** Resolve the owning fleet for a NEW zone from the actor's identity:
+ *  FLEET_MANAGER creates inside their own fleet; ADMIN must name one explicitly
+ *  (`ownerFleetId`) or the zone lands in the reserved 'Unassigned Fleet'. */
+export async function resolveCreateFleet(claims: { role: string; sub: string; fleetId?: string | null }, ownerFleetId?: string | null): Promise<string> {
+  if (claims.role === 'FLEET_MANAGER') {
+    if (ownerFleetId && ownerFleetId !== claims.fleetId) forbiddenCrossFleet();
+    if (!claims.fleetId) forbiddenCrossFleet();
+    return claims.fleetId;
+  }
+  // ADMIN path
+  if (ownerFleetId) {
+    const { rows } = await pool.query(`SELECT id FROM fleets WHERE id=$1`, [ownerFleetId]);
+    if (rows.length === 0) throw Object.assign(new Error('fleet_not_found'), { statusCode: 404 });
+    return ownerFleetId;
+  }
+  const { rows } = await pool.query(`SELECT id FROM fleets WHERE name='Unassigned Fleet'`);
+  if (rows.length === 0) throw Object.assign(new Error('unassigned_fleet_missing'), { statusCode: 500 });
+  return rows[0].id;
+}
+
+export async function listGeofences(opts: { active_only?: boolean; fleet_id?: string } = {}) {
+  const conds: string[] = [];
+  if (opts.active_only !== false) conds.push('active');
+  const params: unknown[] = [];
+  if (opts.fleet_id) { params.push(opts.fleet_id); conds.push(`fleet_id = $${params.length}`); }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
   const { rows } = await pool.query(
-    `SELECT * FROM geofences ${opts.active_only === false ? '' : 'WHERE active'} ORDER BY name ASC`);
+    `SELECT * FROM geofences ${where} ORDER BY name ASC`, params);
   return rows.map(rowToDto);
 }
 
@@ -191,7 +246,7 @@ export async function listGeofences(opts: { active_only?: boolean } = {}) {
  * powers the dashboard layer coloring ("vehicle is inside zone X"). One SQL call,
  * GiST-bounded candidates only.
  */
-export async function vehicleGeofenceState(vehicleId: string) {
+export async function vehicleGeofenceState(vehicleId: string, fleetId?: string | null) {
   const { rows: fixRows } = await pool.query(
     `SELECT lat, lng, fix_timestamp FROM location_fixes
       WHERE vehicle_id=$1 ORDER BY fix_timestamp DESC LIMIT 1`, [vehicleId]);
@@ -204,9 +259,10 @@ export async function vehicleGeofenceState(vehicleId: string) {
                  ELSE ST_Intersects(g.geom, ST_SetSRID(ST_MakePoint($2,$1),4326)) END AS inside
        FROM geofences g
       WHERE g.active
+        AND ($3::uuid IS NULL OR g.fleet_id = $3)
         AND ST_DWithin(g.geom::geography, ST_SetSRID(ST_MakePoint($2,$1),4326)::geography, 20000)
       ORDER BY g.name`,
-    [Number(last.lat), Number(last.lng)]);
+    [Number(last.lat), Number(last.lng), fleetId ?? null]);
   return {
     vehicle_id: vehicleId,
     last_fix_at: new Date(last.fix_timestamp).toISOString(),

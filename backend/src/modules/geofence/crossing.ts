@@ -40,7 +40,7 @@ const MAX_CANDIDATE_GEOFENCES = 200; // sane cap; Addis warehouse density ≪ th
  * ST_DWithin on the geometry PLANE with a degree cap (~2.8 km max circle) keeps
  * the lookup index-bounded; circles get the exact geography test per fix below.
  */
-async function candidateGeofences(fixes: { lat: number; lng: number }[]) {
+async function candidateGeofences(fixes: { lat: number; lng: number }[], fleetId?: string | null) {
   if (fixes.length === 0) return [];
   const lats = fixes.map((f) => f.lat);
   const lngs = fixes.map((f) => f.lng);
@@ -55,10 +55,11 @@ async function candidateGeofences(fixes: { lat: number; lng: number }[]) {
             ST_AsText(g.geom) AS geom_wkt
        FROM geofences g
       WHERE g.active
+        AND ($5::uuid IS NULL OR g.fleet_id = $5)
         AND ST_Intersects(g.geom, ST_MakeEnvelope($1::double precision,$2::double precision,$3::double precision,$4::double precision,4326))
       ORDER BY g.geofence_id
       LIMIT ${MAX_CANDIDATE_GEOFENCES}`,
-    [minLng - 0.05, minLat - 0.05, maxLng + 0.05, maxLat + 0.05],
+    [minLng - 0.05, minLat - 0.05, maxLng + 0.05, maxLat + 0.05, fleetId ?? null],
   );
   return rows as {
     geofence_id: string; name: string; kind: 'CIRCLE' | 'POLYGON';
@@ -136,7 +137,11 @@ export async function evaluateCrossings(
   }));
   if (fixes.length < 2) return [];
 
-  const fences = await candidateGeofences(fixes);
+  // Tenant filter (Phase 0): a vehicle's crossings only consider zones owned by
+  // ITS fleet — cross-fleet geometry must never fire ENTER/EXIT events for
+  // another tenant. NULL fleet (legacy/unassigned vehicles) keeps global scope.
+  const { rows: vrow } = await pool.query(`SELECT fleet_id FROM vehicles WHERE id=$1`, [vehicleId]);
+  const fences = await candidateGeofences(fixes, vrow[0]?.fleet_id ?? null);
   if (fences.length === 0) return [];
 
   // Status matrix: one row per (fix, fence) computed in Postgres so the geometry
