@@ -11,7 +11,7 @@
  * Usage: node scripts/dev-smoke.mjs [base-url]
  *   - no arg  -> in-process stubbed backend (works anywhere)
  *   - with arg -> live smoke against a real backend + DB, e.g.:
- *       ADMIN_EMAIL=admin@yet.local ADMIN_PASSWORD=adminpass123 \
+ *       ADMIN_EMAIL=admin@yet.local ADMIN_PASSWORD=change-me \
  *       node scripts/dev-smoke.mjs http://localhost:5173/api   # through the Vite proxy
  *       node scripts/dev-smoke.mjs http://localhost:3000       # direct backend
  */
@@ -47,7 +47,7 @@ async function startStubServer() {
     const scrypt = (pw) => { const salt = crypto.randomBytes(16); return `scrypt$${salt.toString('hex')}$${crypto.scryptSync(pw, salt, 64).toString('hex')}`; };
     store.users.push(
       { id: adminId, role: 'ADMIN', full_name: 'YET Admin', email: 'admin@yet.local', phone_e164: null,
-        password_hash: scrypt(process.env.ADMIN_PASSWORD || 'adminpass123'), locale: 'en', is_active: true, device_id: null },
+        password_hash: scrypt((process.env.ADMIN_PASSWORD ?? 'change-me')), locale: 'en', is_active: true, device_id: null },
       { id: driverId, role: 'DRIVER', full_name: 'Test Driver A', phone_e164: '+251900000001', email: null,
         password_hash: scrypt('dev-driver-secret'), locale: 'am', is_active: true, device_id: null });
     store.vehicles.push({ id: vehicleId, plate_number: 'AA-90001', fleet_name: 'Pilot Fleet', vehicle_type: 'TRUCK' });
@@ -248,7 +248,7 @@ async function runSuite(base) {
     const ok = await apiFetch(base, '/auth/login', {
       method: 'POST',
       body: JSON.stringify({ identifier: process.env.ADMIN_EMAIL || 'admin@yet.local',
-                             password: process.env.ADMIN_PASSWORD || 'adminpass123' }),
+                             password: (process.env.ADMIN_PASSWORD ?? 'change-me') }),
     });
     assert(ok.status === 200, `login status ${ok.status}: ${JSON.stringify(ok.body)}`);
     assert(typeof ok.body?.access_token === 'string', 'missing access_token');
