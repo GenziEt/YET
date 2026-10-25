@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { verifyAccessToken } from '../../lib/jwt.js';
+import { assertTargetInFleet, scopeFleetId } from '../../lib/tenant.js';
 import { pool } from '../../db/pool.js';
 import { audit } from '../../lib/audit.js';
 import { getTripStatusForVehicle, listTrips, getTripDetail } from './service.js';
@@ -36,8 +37,14 @@ export default async function tripRoutes(app) {
         if (!parsed.success)
             return reply.code(400).send({ error: 'invalid_query', detail: parsed.error.flatten() });
         const q = parsed.data;
+        // Tenant boundary (Phase 0): a named target must live in the caller's fleet;
+        // whole-collection reads are filtered to the caller's fleet unless ADMIN.
+        if (q.driver_id || q.vehicle_id) {
+            await assertTargetInFleet(claims, { driverId: q.driver_id, vehicleId: q.vehicle_id });
+        }
+        const fleetId = scopeFleetId(claims);
         const driverId = scopeFilter(claims, q.driver_id);
-        const trips = await listTrips({ ...q, driver_id: driverId });
+        const trips = await listTrips({ ...q, driver_id: driverId, fleet_id: fleetId });
         if (claims.role !== 'DRIVER') {
             await audit({ actorId: claims.sub, action: 'read_trips', targetUser: driverId ?? null,
                 ip: req.ip, detail: { count: trips.length, filter: q } });
@@ -60,6 +67,10 @@ export default async function tripRoutes(app) {
             return reply.code(404).send({ error: 'no_vehicle_for_driver' });
         if (claims.role === 'DRIVER' && parsed.data.driver_id && parsed.data.driver_id !== claims.sub)
             return reply.code(403).send({ error: 'forbidden_role' });
+        // Tenant boundary (Phase 0): live status names a vehicle — it must be in the
+        // caller's fleet (drivers resolve through their own assignment, so a driver
+        // naming someone else's vehicle is denied here too).
+        await assertTargetInFleet(claims, { driverId: parsed.data.driver_id ?? (claims.role === 'DRIVER' ? claims.sub : null), vehicleId });
         const status = await getTripStatusForVehicle(vehicleId);
         return status ?? { state: 'IDLE', vehicle_id: vehicleId, trip: null };
     });
@@ -74,6 +85,8 @@ export default async function tripRoutes(app) {
             return reply.code(404).send({ error: 'trip_not_found' });
         if (claims.role === 'DRIVER' && detail.trip.driver_id !== claims.sub)
             return reply.code(403).send({ error: 'forbidden_role' });
+        // Tenant boundary (Phase 0): the trip's driver must be in the caller's fleet.
+        await assertTargetInFleet(claims, { driverId: detail.trip.driver_id });
         if (claims.role !== 'DRIVER') {
             await audit({ actorId: claims.sub, action: 'read_trip_detail', targetUser: detail.trip.driver_id,
                 ip: req.ip, detail: { trip_id: parsed.data.trip_id } });

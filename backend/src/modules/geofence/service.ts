@@ -93,11 +93,11 @@ export async function createGeofence(actorId: string, fleetId: string, body: unk
     `SELECT ST_Y(c) AS lat, ST_X(c) AS lng FROM
        (SELECT ST_Centroid(ST_GeomFromGeoJSON($1)::geometry) c) s`, [gj]);
   const { rows } = await pool.query(
-    `INSERT INTO geofences (name, kind, category, geom, ring_json, center_lat, center_lng, created_by)
+    `INSERT INTO geofences (name, kind, category, geom, ring_json, center_lat, center_lng, created_by, fleet_id)
      VALUES ($1,'POLYGON',$2::geofence_category,
-             ST_SetSRID(ST_GeomFromGeoJSON($3), 4326), $3::jsonb, $4, $5, $6)
+             ST_SetSRID(ST_GeomFromGeoJSON($3), 4326), $3::jsonb, $4, $5, $6, $7)
      RETURNING *`,
-    [dto.name, dto.category, gj, Number(cen[0]?.lat ?? 0), Number(cen[0]?.lng ?? 0), actorId],
+    [dto.name, dto.category, gj, Number(cen[0]?.lat ?? 0), Number(cen[0]?.lng ?? 0), actorId, fleetId],
   );
   await audit({ actorId, action: 'geofence_create', detail: { geofence_id: rows[0].geofence_id, name: dto.name } });
   return rowToDto(rows[0]);

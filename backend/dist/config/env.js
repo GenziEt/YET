@@ -44,6 +44,20 @@ const EnvSchema = z.object({
     ERASURE_WINDOW_DAYS: z.coerce.number().int().positive().default(30), // §1.7 erasure horizon (Master spec)
     RETENTION_KEEP_EVERY_N: z.coerce.number().int().min(2).default(10), // §1.10.6 downsampling "every 10th"
     RETENTION_AGE_DAYS: z.coerce.number().int().positive().default(90), // §1.10.6 raw-fix age threshold
+    // --- Phase 0 compliance-skeleton knobs ----------------------------------------
+    // Read through process.env inside validateComplianceBoot() (live values at
+    // boot, so a test can mutate the environment and re-validate without module
+    // reload). Declared here so the contract is visible in one place and shows up
+    // in .env.example documentation:
+    //   ECA_REGISTRATION_STATUS      not_started|in_progress|submitted|completed
+    //   ECA_REGISTRATION_NUMBER      authority-assigned reference once submitted
+    //   PROCESSORS_ACTIVE            comma list of KNOWN_PROCESSORS identifiers
+    //   DPA_<PROCESSOR>_REFERENCE    signed processor-agreement reference per active processor
+    //   BREACH_NOTIFICATION_CONTACT  reachable email for the 72h ECA breach duty
+    ECA_REGISTRATION_STATUS: z.string().optional(),
+    ECA_REGISTRATION_NUMBER: z.string().optional(),
+    PROCESSORS_ACTIVE: z.string().optional(),
+    BREACH_NOTIFICATION_CONTACT: z.string().optional(),
 });
 const parsed = EnvSchema.safeParse(process.env);
 if (!parsed.success) {
@@ -53,4 +67,138 @@ if (!parsed.success) {
 }
 export const env = parsed.data;
 export const isProd = env.NODE_ENV === 'production';
+/* ---------------- Compliance skeleton: fail-closed boot validation ---------- */
+/* These are code-level gates (Phase 0 deliverable), not documentation. The
+ * process REFUSES TO START when a production compliance precondition is
+ * unmet — see docs/COMPLIANCE-PDPP.md for the organizational counterpart. */
+/** PDPP §1.7 data-residency allowlist: Ethiopian country codes. A DATABASE_URL
+ *  host that is not one of these (or an explicitly registered residency host)
+ *  means personal data collected in Ethiopia would leave the country, which
+ *  Proclamation No. 1321/2024 forbids without a lawful cross-border basis. */
+export const ETHIOPIA_RESIDENCY_COUNTRY_CODES = ['et'];
+/** Hostname suffixes known to terminate inside Ethiopia (hosting partner). */
+const RESIDENCY_HOST_SUFFIXES = ['.ethiotelecom.net', '.ethernet-et.co.et'];
+function hostnameOf(postgresUrl) {
+    try {
+        return new URL(postgresUrl).hostname.toLowerCase();
+    }
+    catch {
+        return null;
+    }
+}
+/** True when the DB host is acceptable for Ethiopian personal-data residency.
+ *  Loopback/private space is treated as "dev" (no real personal data flows). */
+export function isResidencyHostAllowed(host) {
+    if (/^(127\.|::1$|localhost$|0\.0\.0\.0$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host))
+        return true;
+    if (host.endsWith('.et'))
+        return true;
+    return RESIDENCY_HOST_SUFFIXES.some((s) => host.endsWith(s));
+}
+/**
+ * validateComplianceBoot runs every production compliance gate at startup and
+ * returns violations. buildApp() calls it and refuses to listen when `errors`
+ * is non-empty (fail-closed). In development/test these are surfaced as
+ * warnings so local work stays possible while the contract remains executable
+ * and unit-testable.
+ */
+export function validateComplianceBoot(e = env, prod = isProd) {
+    const errors = [];
+    const warnings = [];
+    // --- Secret hygiene: refuse weak/dev placeholders in production -------------
+    if (prod) {
+        if (e.JWT_SECRET.length < 32)
+            errors.push('JWT_SECRET must be >= 32 bytes in production');
+        if (/change-me|dev-only|yet-local/i.test(e.JWT_SECRET))
+            errors.push('JWT_SECRET still carries a template/dev placeholder value');
+        if (!e.ADMIN_BOOTSTRAP_EMAIL || !e.ADMIN_BOOTSTRAP_PASSWORD) {
+            errors.push('ADMIN_BOOTSTRAP_EMAIL and ADMIN_BOOTSTRAP_PASSWORD are required in production (administrator bootstrap hardening)');
+        }
+        else if (/change-me/i.test(e.ADMIN_BOOTSTRAP_PASSWORD)) {
+            errors.push('ADMIN_BOOTSTRAP_PASSWORD still carries a template placeholder value');
+        }
+    }
+    // --- Data residency (PDPP §1.7): primary + replica hosts --------------------
+    const primaryHost = hostnameOf(e.DATABASE_URL);
+    if (!primaryHost)
+        errors.push('DATABASE_URL host could not be parsed for residency validation');
+    else if (!isResidencyHostAllowed(primaryHost)) {
+        const msg = `DATABASE_URL host "${primaryHost}" is outside the Ethiopian data-residency allowlist (PDPP §1.7)`;
+        if (prod)
+            errors.push(msg);
+        else
+            warnings.push(msg);
+    }
+    if (e.READER_DATABASE_URL) {
+        const replicaHost = hostnameOf(e.READER_DATABASE_URL);
+        if (replicaHost && !isResidencyHostAllowed(replicaHost)) {
+            const msg = `READER_DATABASE_URL host "${replicaHost}" is outside the Ethiopian data-residency allowlist — replicas inherit sovereignty (PDPP §1.7)`;
+            if (prod)
+                errors.push(msg);
+            else
+                warnings.push(msg);
+        }
+    }
+    // --- ECA registration status (§1.2 / Phase 0 compliance deliverable) --------
+    // Code-level registry of the controller-registration lifecycle. Production
+    // refuses to start until the registration has at least been SUBMITTED to the
+    // Ethiopian Communications Authority; COMPLETED is expected before scale-up.
+    const ecaStatus = (process.env.ECA_REGISTRATION_STATUS ?? 'not_started').trim().toLowerCase();
+    const ecaNumber = process.env.ECA_REGISTRATION_NUMBER ?? '';
+    if (!ECA_STATUSES.includes(ecaStatus)) {
+        errors.push(`ECA_REGISTRATION_STATUS "${ecaStatus}" is not one of ${ECA_STATUSES.join('|')}`);
+    }
+    else if (prod) {
+        if (ecaStatus === 'not_started' || ecaStatus === 'in_progress') {
+            errors.push('Data-controller registration with the Ethiopian Communications Authority must be at least SUBMITTED before production boot (PDPP §1.2, 72h breach duty presupposes a registered controller)');
+        }
+        if ((ecaStatus === 'submitted' || ecaStatus === 'completed') && ecaNumber.length < 5) {
+            errors.push('ECA_REGISTRATION_NUMBER must record the authority-assigned reference once submitted');
+        }
+    }
+    else if (ecaStatus === 'not_started') {
+        warnings.push('ECA data-controller registration not started — required before pilot (tracked in docs/COMPLIANCE-PDPP.md)');
+    }
+    // --- Processor agreements (PDPP §1.7) ----------------------------------------
+    // Every third party processing personal data on YET's behalf needs a signed
+    // DPA recorded here. Production refuses to boot while a live processor has no
+    // agreement reference. Dev defaults to none-active so local stacks start.
+    const activeProcessors = parseProcessorList(process.env.PROCESSORS_ACTIVE);
+    for (const p of activeProcessors) {
+        const agreementRef = process.env[`DPA_${p.toUpperCase()}_REFERENCE`] ?? '';
+        if (agreementRef.length < 5) {
+            const msg = `Processor "${p}" is ACTIVE but has no signed processor agreement reference (set DPA_${p.toUpperCase()}_REFERENCE, PDPP §1.7)`;
+            if (prod)
+                errors.push(msg);
+            else
+                warnings.push(msg);
+        }
+    }
+    // --- Breach response readiness (§1.2: 72h ECA notification) ------------------
+    // The runbook exists in docs/COMPLIANCE-PDPP.md; the CODE artifact is the
+    // contact that must be reachable when a breach is declared. Production
+    // requires it to be configured; audit_log targeting (lib/audit.ts) supplies
+    // the affected-subject enumeration within the window.
+    const breachContact = process.env.BREACH_NOTIFICATION_CONTACT ?? '';
+    if (prod && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(breachContact)) {
+        errors.push('BREACH_NOTIFICATION_CONTACT must be a valid email in production (72h ECA notification duty, PDPP §1.2)');
+    }
+    else if (!breachContact) {
+        warnings.push('BREACH_NOTIFICATION_CONTACT unset — configure before pilot; see docs/COMPLIANCE-PDPP.md breach runbook');
+    }
+    return { errors, warnings };
+}
+export const ECA_STATUSES = ['not_started', 'in_progress', 'submitted', 'completed'];
+/** Known processors of personal data on YET's behalf (hosting partner, SMS
+ *  gateway, push provider). PROCESSORS_ACTIVE is a comma-separated list of
+ *  these identifiers; each active one must carry DPA_<NAME>_REFERENCE. */
+export const KNOWN_PROCESSORS = ['HOSTING_PARTNER', 'SMS_GATEWAY', 'FCM_PUSH'];
+export function parseProcessorList(raw) {
+    if (!raw)
+        return [];
+    return raw
+        .split(',')
+        .map((s) => s.trim().toUpperCase())
+        .filter((s) => KNOWN_PROCESSORS.includes(s));
+}
 //# sourceMappingURL=env.js.map

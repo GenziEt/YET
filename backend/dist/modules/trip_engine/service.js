@@ -352,6 +352,8 @@ export async function listTrips(q) {
         push('t.driver_id = $' + (params.length + 1), q.driver_id);
     if (q.vehicle_id)
         push('t.vehicle_id = $' + (params.length + 1), q.vehicle_id);
+    if (q.fleet_id)
+        push('u.fleet_id = $' + (params.length + 1), q.fleet_id);
     if (q.from)
         push('t.started_at >= $' + (params.length + 1), q.from);
     if (q.to)

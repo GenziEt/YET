@@ -35,6 +35,9 @@ const vehicleId = randomUUID();
 const driverId = randomUUID();
 const fenceCircle = randomUUID();
 const fencePolygon = randomUUID();
+// Phase 0 tenancy: geofences.fleet_id is NOT NULL (migration 0014) — fixtures
+// create a scratch tenant and attach both zones to it.
+const testFleetId = randomUUID();
 // Far-future base so fixtures never collide with real/gate data day-partitions.
 const BASE = Date.now() + 365 * 24 * 3600_000;
 
@@ -54,12 +57,17 @@ d('crossing evaluator (Postgres integration)', () => {
     persistCrossingEvents = mod.persistCrossingEvents;
     attributeTrip = mod.attributeTrip;
 
+    // Scratch tenant (FK target for geofences.fleet_id post-0014).
+    await poolX.query(
+      `INSERT INTO fleets (id, name, status) VALUES ($1,$2,'ACTIVE')
+       ON CONFLICT (id) DO NOTHING`, [testFleetId, `itest-fleet-${testFleetId.slice(0, 8)}`]);
+
     // Vehicle row (FK target) + one trip covering the whole corridor.
     // NOTE: vehicles PK column is `id` (not vehicle_id); trips.state is the enum
     // column; polygon geom must satisfy chk_circle_shape (ST_MultiPolygon).
     await poolX.query(
-      `INSERT INTO vehicles (id, plate_number) VALUES ($1,$2)
-       ON CONFLICT DO NOTHING`, [vehicleId, `T-${vehicleId.slice(0, 8)}`]);
+      `INSERT INTO vehicles (id, plate_number, fleet_id) VALUES ($1,$2,$3)
+       ON CONFLICT DO NOTHING`, [vehicleId, `T-${vehicleId.slice(0, 8)}`, testFleetId]);
     // Driver row: trips.driver_id has an FK to users(id).
     await poolX.query(
       `INSERT INTO users (id, role, full_name, password_hash, locale, is_active)
@@ -75,18 +83,18 @@ d('crossing evaluator (Postgres integration)', () => {
     // Circle zone: center east of start, radius 350 m. Point stays POINT after
     // geography→geometry round-trip, satisfying the CIRCLE branch of the check.
     await poolX.query(
-      `INSERT INTO geofences (geofence_id, name, kind, category, active, geom, radius_m, center_lat, center_lng)
+      `INSERT INTO geofences (geofence_id, name, kind, category, active, geom, radius_m, center_lat, center_lng, fleet_id)
        VALUES ($1,'itest-circle','CIRCLE','WAREHOUSE',true,
-               ST_SetSRID(ST_MakePoint($3,$2),4326)::geography::geometry, 350, $2, $3)`,
-      [fenceCircle, 9.0305, 38.7469]);
+               ST_SetSRID(ST_MakePoint($3,$2),4326)::geography::geometry, 350, $2, $3, $4)`,
+      [fenceCircle, 9.0305, 38.7469, testFleetId]);
     // Polygon zone: square ~300 m around (9.0325, 38.7469) — straddles the
     // corridor so the same drive crosses BOTH kinds (circle ENTER/EXIT at the
     // edge fix, polygon ENTER/EXIT one step later).
     await poolX.query(
-      `INSERT INTO geofences (geofence_id, name, kind, category, active, geom)
+      `INSERT INTO geofences (geofence_id, name, kind, category, active, geom, fleet_id)
        VALUES ($1,'itest-polygon','POLYGON','CUSTOMER_SITE',true,
-               ST_Multi(ST_SetSRID(ST_MakeEnvelope($2,$3,$4,$5),4326)))`,
-      [fencePolygon, 38.7454, 9.0311, 38.7484, 9.0339]);
+               ST_Multi(ST_SetSRID(ST_MakeEnvelope($2,$3,$4,$5),4326)), $6)`,
+      [fencePolygon, 38.7454, 9.0311, 38.7484, 9.0339, testFleetId]);
 
     // Corridor fixes: start outside both zones, drive ENE into circle then out,
     // one fix inside the polygon on the way (mixed ENTER/EXIT across two kinds).
@@ -133,6 +141,7 @@ d('crossing evaluator (Postgres integration)', () => {
     await poolX.query(`DELETE FROM location_fixes WHERE vehicle_id=$1`, [vehicleId]).catch(() => {});
     await poolX.query(`DELETE FROM trips WHERE vehicle_id=$1`, [vehicleId]).catch(() => {});
     await poolX.query(`DELETE FROM geofences WHERE geofence_id IN ($1,$2)`, [fenceCircle, fencePolygon]).catch(() => {});
+    await poolX.query(`DELETE FROM fleets WHERE id=$1`, [testFleetId]).catch(() => {});
     await poolX.query(`DELETE FROM vehicles WHERE vehicle_id=$1`, [vehicleId]).catch(() => {});
     await poolX.end();
   });

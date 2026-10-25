@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { verifyAccessToken } from '../../lib/jwt.js';
 import { audit } from '../../lib/audit.js';
 import { pool } from '../../db/pool.js';
-import { createGeofence, updateGeofence, deleteGeofence, getGeofence, listGeofences, vehicleGeofenceState, GeofenceValidationError, } from './service.js';
+import { createGeofence, updateGeofence, deleteGeofence, getGeofence, listGeofences, vehicleGeofenceState, GeofenceValidationError, assertGeofenceInFleet, resolveCreateFleet, } from './service.js';
+import { scopeFleetId } from '../../lib/tenant.js';
 /**
  * Module 4 — Geofence & Route HTTP surface (Phase 3).
  *   GET    /geofences                     → active zones (any authenticated role)
@@ -17,6 +18,16 @@ async function auth(req) {
     if (!header?.startsWith('Bearer '))
         throw Object.assign(new Error('unauthorized'), { statusCode: 401 });
     return verifyAccessToken(header.slice(7));
+}
+/** Vehicle-tenancy helper shared by :state route (kept local so the module does
+ *  not reach into another module's internals — lib/tenant is the seam). */
+async function assertTargetInFleetForVehicle(claims, vehicleId) {
+    const { pool } = await import('../../db/pool.js');
+    const { rows } = await pool.query(`SELECT fleet_id FROM vehicles WHERE id=$1`, [vehicleId]);
+    if (rows.length === 0)
+        throw Object.assign(new Error('target_not_found'), { statusCode: 404 });
+    if (!claims.fleetId || rows[0].fleet_id !== claims.fleetId)
+        throw Object.assign(new Error('cross_fleet_denied'), { statusCode: 403 });
 }
 const WRITE_ROLES = ['FLEET_MANAGER', 'ADMIN'];
 function requireWrite(claims) {
@@ -49,7 +60,10 @@ export default async function geofenceRoutes(app) {
         if (!parsed.success)
             return reply.code(400).send({ error: 'invalid_query' });
         const activeOnly = parsed.data.include_inactive !== 'true';
-        const geofences = await listGeofences({ active_only: activeOnly });
+        // Tenant boundary (Phase 0): FLEET_MANAGER/DRIVER see only their fleet's zones;
+        // ADMIN sees all. scopeFleetId fails closed for tenant tokens lacking a claim.
+        const fleetId = scopeFleetId(claims);
+        const geofences = await listGeofences({ active_only: activeOnly, fleet_id: fleetId });
         return { count: geofences.length, geofences };
     });
     /** Inside/outside state of a vehicle's latest fix — dashboard layer coloring. */
@@ -65,14 +79,21 @@ export default async function geofenceRoutes(app) {
             if (rows[0]?.vehicle_id !== parsed.data.vehicle_id)
                 return reply.code(403).send({ error: 'forbidden_role' });
         }
-        return vehicleGeofenceState(parsed.data.vehicle_id);
+        else if (claims.role === 'FLEET_MANAGER') {
+            // cross-fleet state reads are denied at the boundary (negative-tested).
+            await assertTargetInFleetForVehicle(claims, parsed.data.vehicle_id);
+        }
+        return vehicleGeofenceState(parsed.data.vehicle_id, scopeFleetId(claims));
     });
     /** Single geofence detail (ring geometry for the drawing tool to re-edit). */
     app.get('/geofences/:geofence_id', async (req, reply) => {
-        await auth(req);
+        const claims = await auth(req);
         const parsed = z.object({ geofence_id: z.string().uuid() }).safeParse(req.params);
         if (!parsed.success)
             return reply.code(400).send({ error: 'invalid_geofence_id' });
+        // Tenancy first: reading another tenant's zone geometry is a cross-fleet
+        // denial, not a public detail view.
+        await assertGeofenceInFleet(claims, parsed.data.geofence_id);
         const g = await getGeofence(parsed.data.geofence_id);
         if (!g)
             return reply.code(404).send({ error: 'geofence_not_found' });
@@ -82,11 +103,12 @@ export default async function geofenceRoutes(app) {
     app.post('/geofences', async (req, reply) => {
         const claims = await auth(req);
         requireWrite(claims);
-        const parsed = z.union([CircleBody, PolygonBody]).safeParse(req.body);
+        const parsed = z.discriminatedUnion('kind', [CircleBody, PolygonBody]).and(z.object({ owner_fleet_id: z.string().uuid().optional() })).safeParse(req.body);
         if (!parsed.success)
             return reply.code(400).send({ error: 'invalid_body', detail: parsed.error.flatten() });
         try {
-            const created = await createGeofence(claims.sub, parsed.data);
+            const ownerFleetId = await resolveCreateFleet(claims, parsed.data.owner_fleet_id ?? null);
+            const created = await createGeofence(claims.sub, ownerFleetId, parsed.data);
             return reply.code(201).send(created);
         }
         catch (err) {
@@ -106,7 +128,7 @@ export default async function geofenceRoutes(app) {
         if (!parsedBody.success)
             return reply.code(400).send({ error: 'invalid_body', detail: parsedBody.error.flatten() });
         try {
-            return await updateGeofence(claims.sub, parsedParams.data.geofence_id, parsedBody.data);
+            return await updateGeofence(claims.sub, parsedParams.data.geofence_id, parsedBody.data, claims);
         }
         catch (err) {
             if (err instanceof GeofenceValidationError)
@@ -124,7 +146,7 @@ export default async function geofenceRoutes(app) {
         const parsed = z.object({ geofence_id: z.string().uuid() }).safeParse(req.params);
         if (!parsed.success)
             return reply.code(400).send({ error: 'invalid_geofence_id' });
-        const done = await deleteGeofence(claims.sub, parsed.data.geofence_id);
+        const done = await deleteGeofence(claims.sub, parsed.data.geofence_id, claims);
         if (!done)
             return reply.code(404).send({ error: 'geofence_not_found' });
         await audit({ actorId: claims.sub, action: 'geofence_delete', ip: req.ip,

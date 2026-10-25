@@ -111,8 +111,9 @@ export default async function geofenceRoutes(app: FastifyInstance) {
   app.post('/geofences', async (req, reply) => {
     const claims = await auth(req);
     requireWrite(claims);
-    const parsed = z.union([CircleBody, PolygonBody]).extend({ owner_fleet_id: z.string().uuid().optional() })
-      .safeParse(req.body);
+    const parsed = z.discriminatedUnion('kind', [CircleBody, PolygonBody]).and(
+      z.object({ owner_fleet_id: z.string().uuid().optional() }),
+    ).safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_body', detail: parsed.error.flatten() });
     try {
       const ownerFleetId = await resolveCreateFleet(claims, parsed.data.owner_fleet_id ?? null);

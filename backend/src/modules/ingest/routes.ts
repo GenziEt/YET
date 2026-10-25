@@ -5,7 +5,7 @@ import {
   BatterySampleSchema, ingestBatteryBatch, DiagnosticsSchema, ingestDiagnostics,
 } from './service.js';
 import { FixQuerySchema, listActiveDrivers, listFixes } from './read_service.js';
-import { verifyAccessToken } from '../../lib/jwt.js';
+import { verifyAccessToken, type TokenClaims } from '../../lib/jwt.js';
 import { assertTargetInFleet, forbiddenCrossFleet, getDriverFleet } from '../../lib/tenant.js';
 import { assertConsentActive } from '../identity/consent.js';
 import { pool } from '../../db/pool.js';
@@ -41,9 +41,10 @@ async function consentGuard(driverId: string): Promise<void> {
        FROM users u LEFT JOIN fleets f ON f.id = u.fleet_id
       WHERE u.id = $1`, [driverId]);
   if (rows.length === 0) throw Object.assign(new Error('driver_not_found'), { statusCode: 404 });
-  if (rows[0].fleet_id && rows[0].status !== 'ACTIVE') {
+  const gate = rows[0];
+  if (gate?.fleet_id && gate.status !== 'ACTIVE') {
     await audit({ actorId: driverId, action: 'ingest_denied_fleet_suspended', targetUser: driverId,
-                  detail: { fleet_id: rows[0].fleet_id } });
+                  detail: { fleet_id: gate.fleet_id } });
     throw Object.assign(new Error('fleet_suspended'), { statusCode: 403 });
   }
 }
@@ -68,7 +69,7 @@ async function readAuth(req: any, targetDriverId: string): Promise<{ id: string;
 }
 
 /** Any authenticated principal (roster reads need identity for the audit row). */
-async function bearerClaims(req: any): Promise<{ sub: string; role: string }> {
+async function bearerClaims(req: any): Promise<TokenClaims> {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) throw Object.assign(new Error('unauthorized'), { statusCode: 401 });
   return verifyAccessToken(header.slice(7));
