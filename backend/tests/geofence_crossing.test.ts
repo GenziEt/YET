@@ -68,11 +68,13 @@ d('crossing evaluator (Postgres integration)', () => {
     await poolX.query(
       `INSERT INTO vehicles (id, plate_number, fleet_id) VALUES ($1,$2,$3)
        ON CONFLICT DO NOTHING`, [vehicleId, `T-${vehicleId.slice(0, 8)}`, testFleetId]);
-    // Driver row: trips.driver_id has an FK to users(id).
+    // Driver row: trips.driver_id has an FK to users(id). Post-0013 the
+    // user_fleet_membership trigger REQUIRES a non-null fleet_id for DRIVER
+    // role — attach the driver to the same scratch tenant as the fixtures.
     await poolX.query(
-      `INSERT INTO users (id, role, full_name, password_hash, locale, is_active)
-       VALUES ($1,'DRIVER','Integration Test Driver','not-a-hash','en',true)
-       ON CONFLICT (id) DO NOTHING`, [driverId]);
+      `INSERT INTO users (id, role, full_name, password_hash, locale, is_active, fleet_id)
+       VALUES ($1,'DRIVER','Integration Test Driver','not-a-hash','en',true,$2)
+       ON CONFLICT (id) DO NOTHING`, [driverId, testFleetId]);
     await poolX.query(
       `INSERT INTO trips (trip_id, vehicle_id, driver_id, started_at, ended_at, last_activity_at, state)
        VALUES ($1,$2,$3,$4,$5,$4,'MOVING')

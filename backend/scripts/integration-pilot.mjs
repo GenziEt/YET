@@ -35,14 +35,14 @@
  *
  * Usage:
  *   BASE_URL=http://127.0.0.1:3100 \
- *   DATABASE_URL=postgres://yet:yet_dev@127.0.0.1:5432/yet_test \
+ *   DATABASE_URL=postgres://yet:change-me@127.0.0.1:5432/yet_test \
  *   node scripts/integration-pilot.mjs
  * Exit 0 = all gates pass; non-zero with message on first failure.
  */
 import crypto from 'node:crypto';
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3000';
-const DB_URL = process.env.DATABASE_URL ?? 'postgres://yet:yet_dev@127.0.0.1:5432/yet_test';
+const DB_URL = process.env.DATABASE_URL ?? 'postgres://yet:change-me@127.0.0.1:5432/yet_test';
 
 // Seeded dev driver (identity ensureSeedDevDriver, dev/test only).
 const DRIVER = { identifier: '+251900000001', password: 'dev-driver-secret' };

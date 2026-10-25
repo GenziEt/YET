@@ -39,7 +39,7 @@
  *
  * Usage:
  *   BASE_URL=http://127.0.0.1:3199 \
- *   DATABASE_URL=postgres://yet:yet_dev@127.0.0.1:5432/yet \
+ *   DATABASE_URL=postgres://yet:change-me@127.0.0.1:5432/yet \
  *   MANAGER_EMAIL=smoke.mgr@yet.test MANAGER_PASSWORD=smoke-pass-1 \
  *   REDIS_URL=redis://localhost:6379 \
  *   node scripts/integration-phase5.mjs
@@ -51,7 +51,7 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3199';
-const DB_URL = process.env.DATABASE_URL ?? 'postgres://yet:yet_dev@127.0.0.1:5432/yet';
+const DB_URL = process.env.DATABASE_URL ?? 'postgres://yet:change-me@127.0.0.1:5432/yet';
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const DRIVER = { identifier: '+251900000001', password: 'dev-driver-secret' };
 const MANAGER = { identifier: process.env.MANAGER_EMAIL ?? 'smoke.mgr@yet.test',
@@ -289,7 +289,7 @@ async function main() {
   /* ========================= F. erasure endpoint ========================== */
   const adminLogin = await j('/auth/login', { method: 'POST',
     body: JSON.stringify({ identifier: process.env.ADMIN_EMAIL ?? 'admin@yet.local',
-                           password: process.env.ADMIN_PASSWORD ?? 'adminpass123' }) });
+                           password: (process.env.ADMIN_PASSWORD ?? 'change-me') }) });
   const atok = adminLogin.body?.access_token;
   check('admin login available for erasure gate', adminLogin.status === 200 && !!atok, `status=${adminLogin.status}`);
   const fakeDriver = uuid();

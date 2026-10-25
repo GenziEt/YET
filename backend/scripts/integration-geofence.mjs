@@ -22,7 +22,7 @@
  * Usage:
  *   BASE_URL=http://127.0.0.1:3000 \
  *   ADMIN_EMAIL=... ADMIN_PASSWORD=... \
- *   DATABASE_URL=postgres://yet:yet_dev@127.0.0.1:5432/yet_test \
+ *   DATABASE_URL=postgres://yet:change-me@127.0.0.1:5432/yet_test \
  *   REDIS_URL=redis://127.0.0.1:6379 \
  *   node scripts/integration-geofence.mjs
  * Exit 0 = all gates pass; non-zero with message on first failure.
@@ -30,7 +30,7 @@
 import crypto from 'node:crypto';
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3000';
-const DB_URL = process.env.DATABASE_URL ?? 'postgres://yet:yet_dev@127.0.0.1:5432/yet_test';
+const DB_URL = process.env.DATABASE_URL ?? 'postgres://yet:change-me@127.0.0.1:5432/yet_test';
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? '';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? '';

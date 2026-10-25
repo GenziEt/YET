@@ -123,7 +123,7 @@ async function main() {
   try {
     const { default: pkg } = await import('pg');
     const { Pool } = pkg;
-    const dbUrl = process.env.DATABASE_URL ?? 'postgres://yet:yet_dev@127.0.0.1:5432/yet';
+    const dbUrl = process.env.DATABASE_URL ?? 'postgres://yet:change-me@127.0.0.1:5432/yet';
     const db = new Pool({ connectionString: dbUrl });
     const { rows } = await db.query(
       `SELECT count(*)::int AS n FROM audit_log

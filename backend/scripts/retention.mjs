@@ -25,7 +25,7 @@
  * crash can never leave deleted data without a receipt.
  *
  * Usage:
- *   DATABASE_URL=postgres://yet:yet_dev@127.0.0.1:5432/yet \
+ *   DATABASE_URL=postgres://yet:change-me@127.0.0.1:5432/yet \
  *   [RETENTION_AGE_DAYS=90] [RETENTION_KEEP_EVERY_N=10] [DRY_RUN=1] [--dry-run] \
  *   node --import tsx scripts/retention.mjs        # or: npm run retention
  * Exit 0 on success; non-zero with message on failure.
@@ -42,7 +42,7 @@ const args = new Set(process.argv.slice(2));
 const DRY_RUN = args.has('--dry-run') || process.env.DRY_RUN === '1' || process.env.DRY_RUN === 'true';
 const AGE_DAYS = intEnv('RETENTION_AGE_DAYS', 90);
 const KEEP_EVERY_N = Math.max(2, intEnv('RETENTION_KEEP_EVERY_N', 10));
-const DB_URL = process.env.DATABASE_URL ?? 'postgres://yet:yet_dev@127.0.0.1:5432/yet';
+const DB_URL = process.env.DATABASE_URL ?? 'postgres://yet:change-me@127.0.0.1:5432/yet';
 
 function intEnv(name, dflt) {
   const v = Number.parseInt(process.env[name] ?? '', 10);
