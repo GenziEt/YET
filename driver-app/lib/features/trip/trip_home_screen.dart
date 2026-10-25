@@ -164,7 +164,8 @@ class _TripHomeScreenState extends State<TripHomeScreen>
             children: [
               Text(l.tripReadyTitle, style: Theme.of(context).textTheme.headlineSmall),
               const SizedBox(height: 8),
-              // Offline banner placeholder — driven by connectivity_plus stream in P4.
+              // Offline/pending-sync banner: count comes from the real local
+              // cache via AppRuntime.pendingFixes (SyncWorker.pendingCount).
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(color: Colors.amber.shade100, borderRadius: BorderRadius.circular(8)),

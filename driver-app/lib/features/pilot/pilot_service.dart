@@ -26,6 +26,23 @@ class BatteryReading {
 
 typedef BatteryReader = Future<BatteryReading> Function();
 
+/// Default [BatteryReader] used when the host has not injected the real
+/// `battery_plus` reader. Returns an unreadable sentinel (level -1, not
+/// charging) so every call site's existing guard applies its documented
+/// honest-skip policy (-1 → sample omitted; diagnostics omit the optional
+/// fields) instead of fabricating a level. The production bootstrap ALWAYS
+/// injects `BatteryPlusReader().asReader()` (lib/platform/battery_source.dart);
+/// this class exists only for headless test harnesses that construct
+/// PilotService directly.
+class UnavailableBatteryReader {
+  const UnavailableBatteryReader();
+
+  /// Sentinel battery reading: level -1 is skipped by postBatterySample and
+  /// charging reports false — no telemetry is emitted for an unread device.
+  Future<BatteryReading> read() async =>
+      const BatteryReading(levelPct: -1, charging: false);
+}
+
 /// Cached vehicle assignment shown on the trip screen (one-tap start, §1.2
 /// max-3-taps + Phase 4 "confirms vehicle assignment"). Mirrors GET /me's
 /// `vehicle` object (`backend/src/modules/identity/routes.ts`).
@@ -137,7 +154,7 @@ class PilotService {
   PilotService({
     required TokenStore tokenStore,
     http.Client? client,
-    BatteryReader? batteryReader,
+    BatteryReader batteryReader = const UnavailableBatteryReader().read,
     String Function()? networkTypeProvider,
   })  : _tokens = tokenStore,
         _client = client ?? http.Client(),
@@ -146,7 +163,7 @@ class PilotService {
 
   final TokenStore _tokens;
   final http.Client _client;
-  final BatteryReader? _batteryReader;
+  final BatteryReader _batteryReader;
   final String Function()? _networkTypeProvider;
 
   static const _kVehicle = 'pilot_vehicle_v1';
@@ -200,9 +217,7 @@ class PilotService {
 
   Future<double> _readLevel() async {
     try {
-      final r = _batteryReader != null
-          ? await _batteryReader!()
-          : await _platformBattery();
+      final r = await _batteryReader();
       return r.levelPct.clamp(0, 100).toDouble();
     } catch (_) {
       return -1; // sentinel: postBatterySample skips samples with pct < 0 below
@@ -211,20 +226,11 @@ class PilotService {
 
   Future<bool> _readCharging() async {
     try {
-      final r = _batteryReader != null
-          ? await _batteryReader!()
-          : await _platformBattery();
+      final r = await _batteryReader();
       return r.charging;
     } catch (_) {
       return false;
     }
-  }
-
-  /// Device wiring point for battery_plus / BatteryManager. Kept out-of-band so
-  /// analyze-only sandbox builds compile: on device replace with a real reader
-  /// passed into the constructor (preferred) or implement this channel call.
-  Future<BatteryReading> _platformBattery() async {
-    throw UnsupportedError('wire battery_plus reader on device');
   }
 
   // ── One-tap Start Trip: vehicle-assignment confirmation (§1.2) ─────────────
@@ -308,9 +314,7 @@ class PilotService {
     double? batteryPct;
     bool? charging;
     try {
-      final r = _batteryReader != null
-          ? await _batteryReader!()
-          : await _platformBattery();
+      final r = await _batteryReader();
       batteryPct = r.levelPct.clamp(0, 100).toDouble();
       charging = r.charging;
     } catch (_) {

@@ -31,10 +31,11 @@ class PushMessage {
       );
 }
 
-/// Seam for the FCM plugin (firebase_messaging), deliberately NOT imported here:
-/// the sandbox analyze harness has no Flutter SDK/plugins, and Phase 4 set the
-/// precedent of typedef injection (see pilot_service.dart BatteryReader). On
-/// device, main.dart wires a FirebaseMessaging-backed implementation.
+/// Seam for the FCM plugin (firebase_messaging), deliberately NOT imported
+/// here: push registration is a Phase 5 deliverable and this module must stay
+/// compilable until then. Following the typedef-injection precedent (see
+/// pilot_service.dart BatteryReader), the Phase 5 bootstrap wires a
+/// FirebaseMessaging-backed implementation into [PushService].
 abstract class PushTokenSource {
   /// Current FCM registration token (min 20 chars server-side; TokenSchema in
   /// backend/src/modules/notification/routes.ts).
