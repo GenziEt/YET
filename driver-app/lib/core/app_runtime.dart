@@ -50,6 +50,8 @@ class AppRuntime extends ChangeNotifier {
     DatabaseFactory? dbFactory,
     http.Client? httpClient,
     SensorStreamFactory? sensorSource,
+    BatteryReader? batteryReader,
+    String Function()? networkTypeProvider,
   }) async {
     final path = dbPathOverride ?? await defaultDbPath();
     final db = await (dbFactory ?? databaseFactory).openDatabase(
@@ -83,7 +85,12 @@ class AppRuntime extends ChangeNotifier {
 
     final gps = GpsCollector(dao: dao, positionSource: positionSource);
     final sensors = SensorCollector(dao: sensorDao, source: sensorSource);
-    final pilot = PilotService(tokenStore: tokenStore, client: httpClient);
+    final pilot = PilotService(
+      tokenStore: tokenStore,
+      client: httpClient,
+      batteryReader: batteryReader ?? const UnavailableBatteryReader().read,
+      networkTypeProvider: networkTypeProvider,
+    );
     return AppRuntime._(
       dao: dao,
       sensorDao: sensorDao,
