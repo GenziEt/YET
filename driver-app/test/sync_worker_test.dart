@@ -21,12 +21,113 @@ class FakeDb implements Database {
   int lastDeleteCount = 0;
   int lastInsertId = 1;
 
+  /// In-memory tables so txn.query claims and txn.update/delete state changes
+  /// behave like real SQLite for the offline-contract tests.
+  final Map<String, List<Map<String, Object?>>> tables = {};
+
+  void _seed(String table, List<Map<String, Object?>> rows) =>
+      tables[table] = rows.map(Map<String, Object?>.from).toList();
+
+  static bool _matches(Map<String, Object?> row, String where,
+      [List<Object?>? args]) {
+    if (where.isEmpty) return true;
+    var i = 0;
+    for (final clause in where.split(' AND ')) {
+      final c = clause.trim();
+      final upper = c.toUpperCase();
+      if (upper.contains(' IN (')) {
+        final col = c.substring(0, c.indexOf(' IN')).trim();
+        final vals = (args?[i++] as Iterable).cast<Object?>().toSet();
+        if (!vals.contains(row[col])) return false;
+      } else if (upper.contains(' IS NOT NULL')) {
+        final col = c
+            .substring(0, c.toUpperCase().indexOf(' IS NOT NULL'))
+            .trim();
+        if (row[col] == null) return false;
+      } else if (c.contains('>=')) {
+        final p = c.split('>=');
+        if (row[p[0].trim()] is Comparable &&
+            Comparable.compare(row[p[0].trim()] as Comparable, p[1].trim()) <
+                0) return false;
+      } else if (c.contains('<=')) {
+        final p = c.split('<=');
+        if (row[p[0].trim()] is Comparable &&
+            Comparable.compare(row[p[0].trim()] as Comparable, p[1].trim()) >
+                0) return false;
+      } else if (c.contains('<')) {
+        final p = c.split('<');
+        if (row[p[0].trim()] is Comparable &&
+            Comparable.compare(row[p[0].trim()] as Comparable, p[1].trim()) >=
+                0) return false;
+      } else if (c.contains('=')) {
+        final p = c.split('=');
+        final col = p[0].trim();
+        final lit = p[1].trim();
+        final expected = lit == '?' ? args![i++] : _unquote(lit);
+        if (row[col]?.toString() != expected?.toString()) return false;
+      } else {
+        return false; // unsupported predicate — fail loudly via empty result
+      }
+    }
+    return true;
+  }
+
+  static Object? _unquote(String lit) {
+    if (lit.startsWith("'") && lit.endsWith("'")) {
+      return lit.substring(1, lit.length - 1);
+    }
+    return int.tryParse(lit) ?? lit;
+  }
+
+  List<Map<String, Object?>> _select(String table,
+      {String? where,
+      List<Object?>? whereArgs,
+      String? orderBy,
+      int? limit}) {
+    final rows = tables[table] ?? const [];
+    var out = where == null || where.isEmpty
+        ? rows.toList()
+        : rows.where((r) => _matches(r, where, whereArgs)).toList();
+    if (orderBy != null && orderBy.isNotEmpty) {
+      final parts = orderBy.split(',').first.trim().split(' ');
+      final col = parts[0];
+      final desc = parts.length > 1 && parts[1].toUpperCase() == 'DESC';
+      out.sort((a, b) {
+        final x = a[col], y = b[col];
+        final cmp = Comparable.compare(x as Comparable, y as Comparable);
+        return desc ? -cmp : cmp;
+      });
+    }
+    if (limit != null && out.length > limit) out = out.sublist(0, limit);
+    return out.map(Map<String, Object?>.from).toList();
+  }
+
+  int _update(String table, Map<String, Object?> values, String? where,
+      List<Object?>? whereArgs) {
+    final rows = tables[table];
+    if (rows == null) return 0;
+    var n = 0;
+    for (final r in rows) {
+      if (where == null || _matches(r, where, whereArgs)) {
+        r.addAll(values);
+        n++;
+      }
+    }
+    return n;
+  }
+
+  int _delete(String table, String? where, List<Object?>? whereArgs) {
+    final rows = tables[table];
+    if (rows == null) return 0;
+    final before = rows.length;
+    rows.removeWhere((r) => where == null || _matches(r, where, whereArgs));
+    return before - rows.length;
+  }
+
   @override
   String get path => 'fake.db';
   @override
   bool get isOpen => true;
-  @override
-  int get version => 1;
 
   @override
   Future<void> execute(String sql, [List<Object?>? arguments]) async {
@@ -55,7 +156,7 @@ class FakeDb implements Database {
       int? limit,
       int? offset}) async {
     queries.add('query:$table where=$where orderBy=$orderBy limit=$limit');
-    return const [];
+    return _select(table, where: where, whereArgs: whereArgs, orderBy: orderBy, limit: limit);
   }
 
   @override
@@ -67,16 +168,10 @@ class FakeDb implements Database {
   }
 
   @override
-  Future<Map<String, Object?>?> rawQueryFirst(String sql,
-      [List<Object?>? args]) async {
-    final rows = await rawQuery(sql, args);
-    return rows.isEmpty ? null : rows.first;
-  }
-
-  @override
   Future<int> insert(String table, Map<String, Object?> values,
       {String? nullColumnHack, ConflictAlgorithm? conflictAlgorithm}) async {
     queries.add('insert:$table state=${values['sync_state']}');
+    tables.putIfAbsent(table, () => []).add(Map<String, Object?>.from(values));
     return lastInsertId++;
   }
 
@@ -86,12 +181,18 @@ class FakeDb implements Database {
       List<Object?>? whereArgs,
       ConflictAlgorithm? conflictAlgorithm}) async {
     queries.add('update:$table set=${values['sync_state']} where=$where');
+    final stamped = Map<String, Object?>.from(values);
+    if (stamped['sync_state'] == 'ACKED' && !stamped.containsKey('acked_at')) {
+      stamped['acked_at'] = DateTime.now().toUtc().toIso8601String();
+    }
+    lastUpdateCount = _update(table, stamped, where, whereArgs);
     return lastUpdateCount;
   }
 
   @override
   Future<int> delete(String table, {String? where, List<Object?>? whereArgs}) async {
     queries.add('delete:$table where=$where');
+    lastDeleteCount = _delete(table, where, whereArgs);
     return lastDeleteCount;
   }
 
@@ -143,6 +244,11 @@ class _FakeTxn implements Transaction {
   final FakeDb db;
 
   @override
+  Future<void> execute(String sql, [List<Object?>? arguments]) async {
+    db.executed.add(sql);
+  }
+
+  @override
   Future<List<Map<String, Object?>>> query(String table,
           {bool? distinct,
           List<String>? columns,
@@ -181,9 +287,7 @@ class _FakeTxn implements Transaction {
           List<Object?>? whereArgs,
           ConflictAlgorithm? conflictAlgorithm}) =>
       db.update(table, values,
-          where: where,
-          whereArgs: whereArgs,
-          conflictAlgorithm: conflictAlgorithm);
+          where: where, whereArgs: whereArgs, conflictAlgorithm: conflictAlgorithm);
 
   @override
   Future<int> delete(String table, {String? where, List<Object?>? whereArgs}) =>
@@ -220,21 +324,89 @@ class _FakeTxn implements Transaction {
   Future<QueryCursor> rawQueryCursor(String sql, List<Object?>? arguments,
           {int? bufferSize}) =>
       throw UnimplementedError('rawQueryCursor not used by the sync pipeline');
-
-  @override
-  Future<void> commit({bool? exclusive, bool? noResult, bool? continueOnError}) async {}
-
-  @override
-  Future<T> devInvokeMethod<T>(String method, [Object? arguments]) =>
-      throw UnimplementedError('dev helpers are test-only');
-
-  @override
-  Future<T> devInvokeSqlMethod<T>(String method, String sql,
-          [Object? arguments]) =>
-      throw UnimplementedError('dev helpers are test-only');
 }
 
-Map<String, Object?> row(int id, String ts, {String state = 'PENDING', int attempts = 0}) =>
+/// Minimal in-memory [Batch] used by the DAO pruning path. Records the number
+/// of queued operations so tests can assert pruning behaviour without a real
+/// SQLite engine.
+class _FakeBatch implements Batch {
+  @override
+  int length = 0;
+
+  @override
+  void execute(String sql, [List<Object?>? arguments]) {
+    length++;
+  }
+
+  @override
+  void delete(String table, {String? where, List<Object?>? whereArgs}) {
+    length++;
+  }
+
+  @override
+  void rawDelete(String sql, [List<Object?>? arguments]) {
+    length++;
+  }
+
+  @override
+  void insert(String table, Object? values,
+      {String? nullColumnHack, ConflictAlgorithm? conflictAlgorithm}) {
+    length++;
+  }
+
+  @override
+  void rawInsert(String sql, [List<Object?>? arguments]) {
+    length++;
+  }
+
+  @override
+  void update(String table, Object? values,
+      {String? where,
+      List<Object?>? whereArgs,
+      String? nullColumnHack,
+      ConflictAlgorithm? conflictAlgorithm}) {
+    length++;
+  }
+
+  @override
+  void rawUpdate(String sql, [List<Object?>? arguments]) {
+    length++;
+  }
+
+  @override
+  void query(String table,
+      {bool? distinct,
+      List<String>? columns,
+      String? where,
+      List<Object?>? whereArgs,
+      String? groupBy,
+      String? having,
+      String? orderBy,
+      int? limit,
+      int? offset}) {
+    length++;
+  }
+
+  @override
+  void rawQuery(String sql, [List<Object?>? arguments]) {
+    length++;
+  }
+
+  @override
+  Future<List<Object?>> commit(
+      {bool? exclusive, bool? noResult, bool? continueOnError}) async {
+    length = 0;
+    return const [];
+  }
+
+  @override
+  Future<List<Object?>> apply(
+          {bool? noResult, bool? continueOnError}) async =>
+      commit(noResult: noResult, continueOnError: continueOnError);
+}
+
+Map<String, Object?> row(int id, String ts,
+        {String state = 'PENDING', int attempts = 0, String? batch}) =>
     {
       'id': id,
       'lat': 9.0 + id / 10000,
@@ -246,7 +418,7 @@ Map<String, Object?> row(int id, String ts, {String state = 'PENDING', int attem
       'altitude_m': 2400.0,
       'provider': 'gps',
       'sync_state': state,
-      'batch_id': null,
+      'batch_id': batch,
       'upload_attempts': attempts,
     };
 
@@ -280,8 +452,7 @@ void main() {
     });
 
     test('claimBatch orders by fix_timestamp ASC (event time, §1.8.3)', () async {
-      final db = FakeDb();
-      db.rawResults.add([]); // consume any stray raw first
+      final db = FakeDb().._seed('location_fixes', [row(1, '2026-10-23T07:00:00.000Z')]);
       final dao = FixDao(db);
       // query() returns [] by default -> empty claim, no update issued.
       final claimed = await dao.claimBatch('b-1', 100);
@@ -395,9 +566,7 @@ void main() {
     });
 
     test('success path: claim -> upload -> markBatchAcked (UPLOADING->ACKED)', () async {
-      final db = FakeDb();
-      // claimBatch: SELECT returns one PENDING row; then UPDATE stamps it.
-      db.rawResults.add([row(1, '2026-10-23T07:00:00.000Z')]);
+      final db = FakeDb().._seed('location_fixes', [row(1, '2026-10-23T07:00:00.000Z')]);
       String? seenBatchId;
       final w = SyncWorker(
         dao: FixDao(db),
@@ -419,8 +588,7 @@ void main() {
     });
 
     test('server idempotency replay: already_received ACK still marks rows ACKED (§1.8.2)', () async {
-      final db = FakeDb();
-      db.rawResults.add([row(2, '2026-10-23T07:00:10.000Z')]);
+      final db = FakeDb().._seed('location_fixes', [row(2, '2026-10-23T07:00:10.000Z')]);
       final w = SyncWorker(
         dao: FixDao(db),
         uploader: (id, fixes) async =>
@@ -431,8 +599,7 @@ void main() {
     });
 
     test('failure path: rows released back to PENDING with attempts++ (§1.8.1)', () async {
-      final db = FakeDb();
-      db.rawResults.add([row(3, '2026-10-23T07:00:20.000Z')]);
+      final db = FakeDb().._seed('location_fixes', [row(3, '2026-10-23T07:00:20.000Z')]);
       final w = SyncWorker(
         dao: FixDao(db),
         uploader: (id, fixes) async =>
@@ -447,8 +614,7 @@ void main() {
     });
 
     test('permanent failure releases rows but blocks for the full cap', () async {
-      final db = FakeDb();
-      db.rawResults.add([row(4, '2026-10-23T07:00:30.000Z')]);
+      final db = FakeDb().._seed('location_fixes', [row(4, '2026-10-23T07:00:30.000Z')]);
       final w = SyncWorker(
         dao: FixDao(db),
         uploader: (id, fixes) async =>
@@ -484,7 +650,13 @@ void main() {
     test('prune: age-based delete runs; budget eviction only past warn level (§1.8.6)', () async {
       // Under the 80MB warn threshold -> only the age prune fires.
       final small = FakeDb()
-        ..lastDeleteCount = 4
+        .._seed('location_fixes', [
+          row(1, '2026-10-15T07:00:00.000Z', state: 'ACKED'),
+          row(2, '2026-10-15T07:00:10.000Z', state: 'ACKED'),
+          row(3, '2026-10-15T07:00:20.000Z', state: 'ACKED'),
+          row(4, '2026-10-15T07:00:30.000Z', state: 'ACKED'),
+          row(5, '2026-10-23T07:00:00.000Z', state: 'PENDING'),
+        ])
         ..rawResults.add([{'page_count': 100}]) // pages
         ..rawResults.add([{'page_size': 4096}]); // bytes/page -> 409KB total
       final wSmall = SyncWorker(
@@ -498,7 +670,10 @@ void main() {
 
       // Over 80MB -> warn + evict to 50MB budget.
       final big = FakeDb()
-        ..lastDeleteCount = 2
+        .._seed('location_fixes', [
+          for (var i = 0; i < 6; i++)
+            row(i + 1, '2026-10-23T07:00:00.000Z', state: 'ACKED'),
+        ])
         ..rawResults.add([{'page_count': 30000}]) // ~117MB
         ..rawResults.add([{'page_size': 4096}])
         ..rawResults.add([{'page_count': 12000}]) // after eviction ~48MB
@@ -531,14 +706,14 @@ void main() {
   // ── Phase 4: sensor offline durability (§1.8.5) — same FakeDb harness ─────
 
   Map<String, Object?> srow(int id, String ts,
-          {String kind = 'accelerometer', String state = 'PENDING', int attempts = 0}) =>
+          {String kind = 'accelerometer', String state = 'PENDING', int attempts = 0, String? batch}) =>
       {
         'id': id,
         'kind': kind,
         'event_timestamp': ts,
         'payload_json': '{"variance":0.03}',
         'sync_state': state,
-        'batch_id': null,
+        'batch_id': batch,
         'upload_attempts': attempts,
       };
 
@@ -603,8 +778,8 @@ void main() {
     });
 
     test('releaseBatchForRetry: PENDING + attempts++ per row (§1.8.1)', () async {
-      final db = FakeDb()..lastUpdateCount = 1;
-      db.rawResults.add([srow(7, '2026-10-23T07:00:00.000Z', state: 'UPLOADING', attempts: 2)]);
+      final db = FakeDb()
+        .._seed('sensor_events', [srow(7, '2026-10-23T07:00:00.000Z', state: 'UPLOADING', attempts: 2, batch: 'b-3')]);
       final dao = SensorDao(db);
       expect(await dao.releaseBatchForRetry('b-3'), 1);
       // The update carries attempts = old + 1 via whereArgs-free values map;
@@ -638,12 +813,11 @@ void main() {
     });
 
     test('runSensorOnce success: claim -> upload -> markBatchAcked', () async {
-      final db = FakeDb();
-      db.rawResults.add([srow(1, '2026-10-23T07:00:00.000Z')]);
+      final db = FakeDb().._seed('sensor_events', [srow(1, '2026-10-23T07:00:00.000Z')]);
       String? seenBatchId;
       final w = SyncWorker(
         dao: FixDao(FakeDb()),
-        uploader: (_, __) async => IngestAck(batchId: 'unused', accepted: 0, alreadyReceived: false),
+        uploader: (_, __) async => const IngestAck(batchId: 'unused', accepted: 0, alreadyReceived: false),
         sensorDao: SensorDao(db),
         sensorUploader: (id, events) async {
           seenBatchId = id;
@@ -659,8 +833,7 @@ void main() {
     });
 
     test('runSensorOnce retryable failure: release to PENDING + backoff read', () async {
-      final db = FakeDb();
-      db.rawResults.add([srow(2, '2026-10-23T07:00:10.000Z')]);
+      final db = FakeDb().._seed('sensor_events', [srow(2, '2026-10-23T07:00:10.000Z')]);
       final w = SyncWorker(
         dao: FixDao(FakeDb()),
         uploader: (_, __) async => throw UnimplementedError(),
@@ -675,8 +848,7 @@ void main() {
     });
 
     test('runSensorOnce permanent failure blocks for the full cap', () async {
-      final db = FakeDb();
-      db.rawResults.add([srow(3, '2026-10-23T07:00:20.000Z')]);
+      final db = FakeDb().._seed('sensor_events', [srow(3, '2026-10-23T07:00:20.000Z')]);
       final w = SyncWorker(
         dao: FixDao(FakeDb()),
         uploader: (_, __) async => throw UnimplementedError(),
@@ -703,11 +875,17 @@ void main() {
 
     test('prune covers BOTH tables: age delete runs on sensors too', () async {
       final fixDb = FakeDb()
-        ..lastDeleteCount = 3
+        .._seed('location_fixes', [
+          for (var i = 0; i < 3; i++)
+            row(i + 1, '2026-10-15T07:00:00.000Z', state: 'ACKED'),
+        ])
         ..rawResults.add([{'page_count': 100}])
         ..rawResults.add([{'page_size': 4096}]);
       final sensorDb = FakeDb()
-        ..lastDeleteCount = 5
+        .._seed('sensor_events', [
+          for (var i = 0; i < 5; i++)
+            srow(i + 1, '2026-10-15T07:00:00.000Z', state: 'ACKED'),
+        ])
         ..rawResults.add([{'page_count': 100}])
         ..rawResults.add([{'page_size': 4096}]);
       final w = SyncWorker(
@@ -853,7 +1031,7 @@ void main() {
 
     test('Addis center falls inside the corridor tile ranges at z=12', () {
       const b = TileBounds.addisCorridor;
-      final xr = b.xRange(12), yr = b.yRange(12);
+      final xr = b.xRange(12);
       // Web-Mercator x for lng 38.75 @ z12 ≈ (38.75+180)/360*4096 ≈ 2494
       expect(xr[0] <= 2494 && 2494 <= xr[1], isTrue);
     });
