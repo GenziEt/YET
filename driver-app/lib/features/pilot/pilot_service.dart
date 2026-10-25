@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io' show Directory, File, Platform;
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -154,7 +153,7 @@ class PilotService {
   PilotService({
     required TokenStore tokenStore,
     http.Client? client,
-    BatteryReader batteryReader = const UnavailableBatteryReader().read,
+    BatteryReader? batteryReader,
     String Function()? networkTypeProvider,
   })  : _tokens = tokenStore,
         _client = client ?? http.Client(),

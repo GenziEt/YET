@@ -1,3 +1,5 @@
+import 'package:flutter/material.dart';
+
 import '../../core/app_runtime.dart';
 import '../../l10n/app_localizations.dart';
 

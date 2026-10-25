@@ -47,14 +47,13 @@ class AppRuntime extends ChangeNotifier {
     required TokenStore tokenStore,
     String? dbPathOverride,
     PositionStreamFactory? positionSource,
-    DatabaseFactory? dbFactory,
     http.Client? httpClient,
     SensorStreamFactory? sensorSource,
     BatteryReader? batteryReader,
     String Function()? networkTypeProvider,
   }) async {
     final path = dbPathOverride ?? await defaultDbPath();
-    final db = await (dbFactory ?? databaseFactory).openDatabase(
+    final db = await openDatabase(
       path,
       version: FixDao.dbVersion,
       onCreate: (db, v) async {

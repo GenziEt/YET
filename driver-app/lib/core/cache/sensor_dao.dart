@@ -126,7 +126,7 @@ class SensorDao {
 
   /// Open + crash recovery (§1.8.1). Call once at startup alongside FixDao.open.
   static Future<SensorDao> openAndRecover(String path) async {
-    final db = await databaseFactory.openDatabase(
+    final db = await openDatabase(
       path,
       version: dbVersion,
       onCreate: onCreate,

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:geolocator/geolocator.dart';
+import 'package:geolocator_android/geolocator_android.dart';
 
 import '../features/trip/gps_collector.dart';
 
@@ -43,12 +44,13 @@ class GeolocatorPositionSource {
           locationSettings: AndroidSettings(
             accuracy: desiredAccuracy,
             distanceFilter: distanceFilterMeters,
-            // Foreground-service lifecycle (§Phase 1): keep delivering fixes
-            // while the notification-backed foreground service is running.
+            intervalDuration: const Duration(seconds: 2),
+            // Foreground-service lifecycle (§Phase 1): collect with a
+            // persistent driver-visible notification so Android keeps the
+            // location stream alive when the app backgrounds mid-trip.
             foregroundNotificationConfig: const ForegroundNotificationConfig(
               notificationTitle: 'YET tracking',
-              notificationBody: 'Trip recording active',
-              enableLaunch: false,
+              notificationText: 'Trip recording active',
             ),
           ),
         ).listen(
@@ -80,8 +82,8 @@ class GeolocatorPositionSource {
         longitude: p.longitude,
         timestampUtc: p.timestamp.toUtc(),
         speedMps: p.speed.isFinite ? p.speed : null,
-        accuracyM: p.accuracyMeters.isFinite ? p.accuracyMeters : null,
-        headingDeg: p.headingDegrees.isFinite ? p.headingDegrees : null,
+        accuracyM: p.accuracy.isFinite ? p.accuracy : null,
+        headingDeg: p.heading.isFinite ? p.heading : null,
         altitudeM: p.altitude.isFinite ? p.altitude : null,
         // Mock providers never enter the audit trail as 'gps'.
         provider: p.isMocked ? 'network' : 'gps',

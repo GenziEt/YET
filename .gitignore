@@ -1,3 +1,8 @@
-node_modules/
-dist/
-.env
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.idea/
+.vscode/
+*.iml
+.DS_Store
