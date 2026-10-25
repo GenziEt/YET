@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { verifyAccessToken, type TokenClaims } from '../../lib/jwt.js';
-import { assertTargetInFleet, scopeFleetId } from '../../lib/tenant.js';
+import { assertTargetInFleet, deny, isDenial, scopeFleetId } from '../../lib/tenant.js';
 import { pool } from '../../db/pool.js';
 import { audit } from '../../lib/audit.js';
 import { getTripStatusForVehicle, listTrips, getTripDetail } from './service.js';
@@ -28,7 +28,13 @@ export default async function tripRoutes(app: FastifyInstance) {
   /** GET /trips?driver_id=&vehicle_id=&from=&to=&status=&limit= — p95 ≤ 200 ms budget
    *  covers 50 rows (§1.9.4); idx_trips_*_time keep ORDER BY started_at DESC cheap. */
   app.get('/trips', async (req, reply) => {
-    const claims = await auth(req);
+    let claims;
+    try {
+      claims = await auth(req);
+    } catch (e) {
+      if (isDenial(e)) return deny(reply, e.message);
+      throw e;
+    }
     const parsed = z.object({
       driver_id: z.string().uuid().optional(),
       vehicle_id: z.string().uuid().optional(),
@@ -41,10 +47,16 @@ export default async function tripRoutes(app: FastifyInstance) {
     const q = parsed.data;
     // Tenant boundary (Phase 0): a named target must live in the caller's fleet;
     // whole-collection reads are filtered to the caller's fleet unless ADMIN.
-    if (q.driver_id || q.vehicle_id) {
-      await assertTargetInFleet(claims, { driverId: q.driver_id, vehicleId: q.vehicle_id });
+    let fleetId: string | undefined;
+    try {
+      if (q.driver_id || q.vehicle_id) {
+        await assertTargetInFleet(claims, { driverId: q.driver_id, vehicleId: q.vehicle_id });
+      }
+      fleetId = scopeFleetId(claims);
+    } catch (e) {
+      if (isDenial(e)) return deny(reply, e.message);
+      throw e;
     }
-    const fleetId = scopeFleetId(claims);
     const driverId = scopeFilter(claims, q.driver_id);
     const trips = await listTrips({ ...q, driver_id: driverId, fleet_id: fleetId });
     if (claims.role !== 'DRIVER') {
@@ -73,7 +85,12 @@ export default async function tripRoutes(app: FastifyInstance) {
     // Tenant boundary (Phase 0): live status names a vehicle — it must be in the
     // caller's fleet (drivers resolve through their own assignment, so a driver
     // naming someone else's vehicle is denied here too).
-    await assertTargetInFleet(claims, { driverId: parsed.data.driver_id ?? (claims.role === 'DRIVER' ? claims.sub : null), vehicleId });
+    try {
+      await assertTargetInFleet(claims, { driverId: parsed.data.driver_id ?? (claims.role === 'DRIVER' ? claims.sub : null), vehicleId });
+    } catch (e) {
+      if (isDenial(e)) return deny(reply, e.message);
+      throw e;
+    }
     const status = await getTripStatusForVehicle(vehicleId);
     return status ?? { state: 'IDLE', vehicle_id: vehicleId, trip: null };
   });
@@ -88,7 +105,12 @@ export default async function tripRoutes(app: FastifyInstance) {
     if (claims.role === 'DRIVER' && detail.trip.driver_id !== claims.sub)
       return reply.code(403).send({ error: 'forbidden_role' });
     // Tenant boundary (Phase 0): the trip's driver must be in the caller's fleet.
-    await assertTargetInFleet(claims, { driverId: detail.trip.driver_id });
+    try {
+      await assertTargetInFleet(claims, { driverId: detail.trip.driver_id });
+    } catch (e) {
+      if (isDenial(e)) return deny(reply, e.message);
+      throw e;
+    }
     if (claims.role !== 'DRIVER') {
       await audit({ actorId: claims.sub, action: 'read_trip_detail', targetUser: detail.trip.driver_id,
                     ip: req.ip, detail: { trip_id: parsed.data.trip_id } });

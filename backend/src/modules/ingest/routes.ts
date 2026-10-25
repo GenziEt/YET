@@ -6,7 +6,7 @@ import {
 } from './service.js';
 import { FixQuerySchema, listActiveDrivers, listFixes } from './read_service.js';
 import { verifyAccessToken, type TokenClaims } from '../../lib/jwt.js';
-import { assertTargetInFleet, forbiddenCrossFleet, getDriverFleet } from '../../lib/tenant.js';
+import { assertTargetInFleet, deny, forbiddenCrossFleet, getDriverFleet, isDenial } from '../../lib/tenant.js';
 import { assertConsentActive } from '../identity/consent.js';
 import { pool } from '../../db/pool.js';
 import { audit } from '../../lib/audit.js';
@@ -82,8 +82,14 @@ export default async function ingestRoutes(app: FastifyInstance) {
   app.post('/ingest/locations', {
     config: { rateLimit: { max: env.INGEST_RATE_LIMIT_PER_MIN, timeWindow: '1 minute' } },
   }, async (req, reply) => {
-    const auth = await driverAuth(req);
-    await consentGuard(auth.id); // collection guard: no consent ⇒ no ingest (§1.7)
+    let auth: { id: string; role: string };
+    try {
+      auth = await driverAuth(req);
+      await consentGuard(auth.id); // collection guard (§1.7)
+    } catch (e) {
+      if (isDenial(e)) return deny(reply, e.message);
+      throw e;
+    }
     const parsed = BatchSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_batch', detail: parsed.error.flatten() });
 
@@ -113,8 +119,14 @@ export default async function ingestRoutes(app: FastifyInstance) {
   app.post('/ingest/sensors', {
     config: { rateLimit: { max: env.INGEST_RATE_LIMIT_PER_MIN, timeWindow: '1 minute' } },
   }, async (req, reply) => {
-    const auth = await driverAuth(req);
-    await consentGuard(auth.id); // collection guard (§1.7) — sensors too
+    let auth: { id: string; role: string };
+    try {
+      auth = await driverAuth(req);
+      await consentGuard(auth.id); // collection guard (§1.7)
+    } catch (e) {
+      if (isDenial(e)) return deny(reply, e.message);
+      throw e;
+    }
     const parsed = SensorBatchSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_batch', detail: parsed.error.flatten() });
 
@@ -146,8 +158,14 @@ export default async function ingestRoutes(app: FastifyInstance) {
   app.post('/ingest/battery', {
     config: { rateLimit: { max: env.INGEST_RATE_LIMIT_PER_MIN, timeWindow: '1 minute' } },
   }, async (req, reply) => {
-    const auth = await driverAuth(req);
-    await consentGuard(auth.id); // collection guard (§1.7) — battery telemetry too
+    let auth: { id: string; role: string };
+    try {
+      auth = await driverAuth(req);
+      await consentGuard(auth.id); // collection guard (§1.7)
+    } catch (e) {
+      if (isDenial(e)) return deny(reply, e.message);
+      throw e;
+    }
     const parsed = BatterySampleSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_batch', detail: parsed.error.flatten() });
     const { rows: asg } = await pool.query(
@@ -171,8 +189,14 @@ export default async function ingestRoutes(app: FastifyInstance) {
   app.post('/ingest/diagnostics', {
     config: { rateLimit: { max: env.INGEST_RATE_LIMIT_PER_MIN, timeWindow: '1 minute' } },
   }, async (req, reply) => {
-    const auth = await driverAuth(req);
-    await consentGuard(auth.id); // collection guard (§1.7) — diagnostics too
+    let auth: { id: string; role: string };
+    try {
+      auth = await driverAuth(req);
+      await consentGuard(auth.id); // collection guard (§1.7)
+    } catch (e) {
+      if (isDenial(e)) return deny(reply, e.message);
+      throw e;
+    }
     const parsed = DiagnosticsSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_payload', detail: parsed.error.flatten() });
     const { rows: asg } = await pool.query(
@@ -189,14 +213,26 @@ export default async function ingestRoutes(app: FastifyInstance) {
    *  Phase 5 (C): this returns names of real people, so it now requires a token
    *  and lands a read_roster audit row like every other personal-data read
    *  (PDPP §1.7: "Ingest module logs all access"). */
-  app.get('/ingest/drivers', async (req) => {
-    const claims = await bearerClaims(req);
+  app.get('/ingest/drivers', async (req, reply) => {
+    let claims;
+    try {
+      claims = await bearerClaims(req);
+    } catch (e) {
+      if (isDenial(e)) return deny(reply, e.message);
+      throw e;
+    }
     const q = z.object({ since: z.string().datetime().optional() }).parse(req.query);
     const since = q.since ?? new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
     // Tenant scoping (Phase 0): FLEET_MANAGER sees only their fleet's roster;
     // ADMIN sees all. The roster names real people, so it is a personal-data
     // read path and must not leak across tenants.
-    const fleetId = claims.role === 'ADMIN' ? undefined : (claims.fleetId ?? forbiddenCrossFleet());
+    let fleetId: string | undefined;
+    try {
+      fleetId = claims.role === 'ADMIN' ? undefined : (claims.fleetId ?? forbiddenCrossFleet());
+    } catch (e) {
+      if (isDenial(e)) return deny(reply, e.message);
+      throw e;
+    }
     const drivers = await listActiveDrivers(since, fleetId);
     await audit({ actorId: claims.sub, action: 'read_roster', targetUser: null,
                   ip: req.ip, detail: { since, count: drivers.length, fleet_scoped: !!fleetId } });
@@ -212,7 +248,13 @@ export default async function ingestRoutes(app: FastifyInstance) {
   app.get('/ingest/fixes', async (req, reply) => {
     const parsed = FixQuerySchema.safeParse(req.query);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_query', detail: parsed.error.flatten() });
-    const auth = await readAuth(req, parsed.data.driver_id);
+    let auth: { id: string; role: string };
+    try {
+      auth = await readAuth(req, parsed.data.driver_id);
+    } catch (e) {
+      if (isDenial(e)) return deny(reply, e.message);
+      throw e;
+    }
     const fixes = await listFixes(parsed.data);
     await audit({ actorId: auth.id, action: 'read_locations', targetUser: parsed.data.driver_id,
                   ip: req.ip, detail: { from: parsed.data.from, to: parsed.data.to, count: fixes.length } });

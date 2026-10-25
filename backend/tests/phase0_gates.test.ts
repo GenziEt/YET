@@ -178,6 +178,15 @@ d('Phase 0 gates (Postgres integration)', () => {
     await poolX.query(`DELETE FROM ingest_batches WHERE driver_id IN ($1,$2)`, [driverA, driverB]);
     await poolX.query(`DELETE FROM driver_vehicle_assignments WHERE driver_id IN ($1,$2)`, [driverA, driverB]);
     await poolX.query(`DELETE FROM consent_records WHERE driver_id IN ($1,$2)`, [driverA, driverB]);
+    // The cross-fleet test inserts a trip for driver A (trips.driver_id FK blocks
+    // user deletion until removed); trip_events/separations hang off trips.
+    await poolX.query(`DELETE FROM trip_events WHERE trip_id IN (SELECT trip_id FROM trips WHERE driver_id IN ($1,$2))`, [driverA, driverB]).catch(() => {});
+    await poolX.query(`DELETE FROM separation_incidents WHERE driver_id IN ($1,$2)`, [driverA, driverB]).catch(() => {});
+    await poolX.query(`DELETE FROM trips WHERE driver_id IN ($1,$2)`, [driverA, driverB]).catch(() => {});
+    // Notification side-effects (target_user FK) and refresh tokens from logins in this suite.
+    await poolX.query(`DELETE FROM notification_log WHERE target_user IN ($1,$2)`, [driverA, driverB]).catch(() => {});
+    await poolX.query(`DELETE FROM user_push_tokens WHERE user_id IN ($1,$2)`, [driverA, driverB]).catch(() => {});
+    await poolX.query(`DELETE FROM refresh_tokens WHERE user_id IN ($1,$2)`, [driverA, driverB]).catch(() => {});
     await poolX.query(`DELETE FROM vehicles WHERE id = $1`, [vehicleA]);
     await poolX.query(`DELETE FROM users WHERE id IN ($1,$2)`, [driverA, driverB]);
     await poolX.query(`DELETE FROM fleets WHERE id IN ($1,$2)`, [fleetA, fleetB]);
@@ -294,7 +303,10 @@ d('Phase 0 gates (Postgres integration)', () => {
     expect(fixes.statusCode).toBe(403);
     expect(JSON.parse(fixes.body).error).toBe('cross_fleet_denied');
 
-    const pilot = await app.inject({ method: 'GET', url: `/reports/pilot?driver_id=${driverA}`, headers: hdr });
+    // PilotQuerySchema requires from/to (400 without them) — supply a window so the
+    // request reaches the tenant guard and the denial under test is 403, not 400.
+    const win = `from=2000-01-01T00:00:00Z&to=2100-01-01T00:00:00Z`;
+    const pilot = await app.inject({ method: 'GET', url: `/reports/pilot?${win}&driver_id=${driverA}`, headers: hdr });
     expect(pilot.statusCode).toBe(403);
 
     // Roster reads are FILTERED to the caller's fleet — driver A must not appear.
