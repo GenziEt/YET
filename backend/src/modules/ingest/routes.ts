@@ -31,6 +31,21 @@ async function driverAuth(req: any): Promise<{ id: string; role: string }> {
  */
 async function consentGuard(driverId: string): Promise<void> {
   await assertConsentActive(driverId);
+  // Tenant suspension gate (Phase 0, mirrors the login denial in identity):
+  // while a fleet is SUSPENDED no data may be collected from its drivers —
+  // ingest fails closed with 403 fleet_suspended. ADMIN tokens have no fleet
+  // claim and are never denied here. The lookup rides the same users row the
+  // consent path already joins, so it adds one indexed PK/FK read per batch.
+  const { rows } = await pool.query<{ status: string; fleet_id: string | null }>(
+    `SELECT f.status, u.fleet_id
+       FROM users u LEFT JOIN fleets f ON f.id = u.fleet_id
+      WHERE u.id = $1`, [driverId]);
+  if (rows.length === 0) throw Object.assign(new Error('driver_not_found'), { statusCode: 404 });
+  if (rows[0].fleet_id && rows[0].status !== 'ACTIVE') {
+    await audit({ actorId: driverId, action: 'ingest_denied_fleet_suspended', targetUser: driverId,
+                  detail: { fleet_id: rows[0].fleet_id } });
+    throw Object.assign(new Error('fleet_suspended'), { statusCode: 403 });
+  }
 }
 
 /** Reads of personal location data require an explicit role (§1.7). Drivers may read

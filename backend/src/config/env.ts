@@ -51,6 +51,21 @@ const EnvSchema = z.object({
   ERASURE_WINDOW_DAYS: z.coerce.number().int().positive().default(30),   // §1.7 erasure horizon (Master spec)
   RETENTION_KEEP_EVERY_N: z.coerce.number().int().min(2).default(10),    // §1.10.6 downsampling "every 10th"
   RETENTION_AGE_DAYS: z.coerce.number().int().positive().default(90),    // §1.10.6 raw-fix age threshold
+
+  // --- Phase 0 compliance-skeleton knobs ----------------------------------------
+  // Read through process.env inside validateComplianceBoot() (live values at
+  // boot, so a test can mutate the environment and re-validate without module
+  // reload). Declared here so the contract is visible in one place and shows up
+  // in .env.example documentation:
+  //   ECA_REGISTRATION_STATUS      not_started|in_progress|submitted|completed
+  //   ECA_REGISTRATION_NUMBER      authority-assigned reference once submitted
+  //   PROCESSORS_ACTIVE            comma list of KNOWN_PROCESSORS identifiers
+  //   DPA_<PROCESSOR>_REFERENCE    signed processor-agreement reference per active processor
+  //   BREACH_NOTIFICATION_CONTACT  reachable email for the 72h ECA breach duty
+  ECA_REGISTRATION_STATUS: z.string().optional(),
+  ECA_REGISTRATION_NUMBER: z.string().optional(),
+  PROCESSORS_ACTIVE: z.string().optional(),
+  BREACH_NOTIFICATION_CONTACT: z.string().optional(),
 });
 
 const parsed = EnvSchema.safeParse(process.env);
