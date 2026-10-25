@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io' show Directory, File, Platform;
 import 'dart:math' as math;
 
-import 'package:http/http.dart' as http';
+import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
