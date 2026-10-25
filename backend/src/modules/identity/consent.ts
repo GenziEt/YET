@@ -77,7 +77,7 @@ export interface EffectiveConsent {
 
 /** Latest grant for a driver, evaluated against the live policy version. */
 export async function getEffectiveConsent(driverId: string): Promise<EffectiveConsent> {
-  const { rows } = await pool.query<EffectiveConsent['record']>(
+  const res = await pool.query(
     `SELECT policy_version, locale, granted_scopes,
             granted_at::text AS granted_at, revoked_at::text AS revoked_at
        FROM consent_records
@@ -86,7 +86,7 @@ export async function getEffectiveConsent(driverId: string): Promise<EffectiveCo
       LIMIT 1`,
     [driverId],
   );
-  const record = rows[0] ?? null;
+  const record = (res.rows[0] as EffectiveConsent['record']) ?? null;
   return { hasCurrent: isGrantValid(record), record };
 }
 

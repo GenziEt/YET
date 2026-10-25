@@ -45,13 +45,13 @@ export async function resolveTargetFleet(target: { driverId?: string | null; veh
     const { rows } = await pool.query<{ fleet_id: string | null }>(
       `SELECT fleet_id FROM users WHERE id = $1`, [target.driverId]);
     if (rows.length === 0) throw Object.assign(new Error('target_not_found'), { statusCode: 404 });
-    return rows[0].fleet_id;
+    return rows[0]?.fleet_id ?? null;
   }
   if (target.vehicleId) {
     const { rows } = await pool.query<{ fleet_id: string | null }>(
       `SELECT fleet_id FROM vehicles WHERE id = $1`, [target.vehicleId]);
     if (rows.length === 0) throw Object.assign(new Error('target_not_found'), { statusCode: 404 });
-    return rows[0].fleet_id;
+    return rows[0]?.fleet_id ?? null;
   }
   return null; // whole-tenant-list read — caller must require an unscoped admin OR pass fleet filter
 }

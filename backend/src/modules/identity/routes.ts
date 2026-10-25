@@ -94,7 +94,9 @@ export default async function identityRoutes(app: FastifyInstance) {
       // Superseded text can no longer be granted — force the app to re-render.
       return reply.code(409).send({ error: 'consent_superseded', current: CURRENT_CONSENT_POLICY.id });
     }
-    const missing = CURRENT_CONSENT_POLICY.requiredScopes.filter((s) => !body.granted_scopes.includes(s));
+    const missing = CURRENT_CONSENT_POLICY.requiredScopes.filter(
+      (s) => !body.granted_scopes.includes(s as (typeof body.granted_scopes)[number]),
+    );
     if (missing.length > 0) {
       return reply.code(400).send({ error: 'missing_required_scopes', missing });
     }

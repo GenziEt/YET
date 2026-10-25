@@ -6,6 +6,7 @@ import { PilotQuerySchema, getPilotSummary } from './pilot_service.js';
 import { getTripReport, getSeparationIncidents, getFleetOverview } from './service.js';
 import { FLEET_STATE_CACHE_KEY } from './kernel.js';
 import { cacheDel } from '../../lib/redis.js';
+import { assertTargetInFleet, scopeFleetId } from '../../lib/tenant.js';
 
 /**
  * Module 6 (Reporting) HTTP surface — Phase 4 pilot dashboard reads.

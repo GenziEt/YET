@@ -3,7 +3,7 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import sensible from '@fastify/sensible';
-import { isProd } from './config/env.js';
+import { isProd, validateComplianceBoot } from './config/env.js';
 import { checkDb, pool } from './db/pool.js';
 import identityRoutes, { ensureBootstrapAdmin, ensureSeedDevDriver } from './modules/identity/routes.js';
 import ingestRoutes from './modules/ingest/routes.js';
@@ -23,6 +23,24 @@ import { recomputeVehicleWindow } from './modules/trip_engine/service.js';
  * import another module's internals — only shared lib/ and db/pool (the seam).
  */
 export async function buildApp() {
+    // --- Phase 0 compliance gate (fail-closed) ----------------------------------
+    // validateComplianceBoot() is the executable counterpart of docs/COMPLIANCE-
+    // PDPP.md: secret strength + placeholder rejection, administrator-bootstrap
+    // hardening, Ethiopian data-residency allowlist for primary AND replica DBs,
+    // ECA controller-registration status, processor-agreement references, and the
+    // breach-response contact. In production ANY error aborts boot before a socket
+    // opens; in development/test the same report is surfaced as warnings so local
+    // work stays possible while the contract remains unit-testable.
+    const compliance = validateComplianceBoot();
+    if (compliance.errors.length > 0) {
+        // eslint-disable-next-line no-console
+        console.error('REFUSING TO START — compliance precondition failures:', compliance.errors);
+        throw new Error(`compliance_boot_failed: ${compliance.errors.join('; ')}`);
+    }
+    for (const w of compliance.warnings) {
+        // eslint-disable-next-line no-console
+        console.warn(`[compliance] ${w}`);
+    }
     const app = Fastify({
         logger: {
             level: isProd ? 'info' : 'debug',
@@ -105,6 +123,14 @@ export async function buildApp() {
             return reply.code(400).send({ error: 'validation_failed', detail: e.issues });
         if (e?.statusCode === 401)
             return reply.code(401).send({ error: 'unauthorized' });
+        // Machine-readable denial reasons must survive serialization — the driver
+        // app branches on `consent_required` (re-show consent screen) and
+        // `fleet_suspended`; the dashboard branches on `cross_fleet_denied`.
+        const KNOWN_DENIALS = ['consent_required', 'fleet_suspended', 'cross_fleet_denied',
+            'forbidden_role', 'target_not_found'];
+        if (typeof e?.message === 'string' && KNOWN_DENIALS.includes(e.message)) {
+            return reply.code(e.statusCode ?? 403).send({ error: e.message });
+        }
         req.log.error(err);
         return reply.code(e?.statusCode ?? 500).send({ error: 'internal' });
     });
