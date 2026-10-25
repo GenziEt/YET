@@ -7,7 +7,7 @@ import {
   createGeofence, updateGeofence, deleteGeofence, getGeofence, listGeofences,
   vehicleGeofenceState, GeofenceValidationError, assertGeofenceInFleet, resolveCreateFleet,
 } from './service.js';
-import { scopeFleetId } from '../../lib/tenant.js';
+import { deny, isDenial, scopeFleetId } from '../../lib/tenant.js';
 
 /**
  * Module 4 — Geofence & Route HTTP surface (Phase 3).
@@ -60,9 +60,21 @@ const UpdateBody = z.union([CircleBody, PolygonBody]).or(
              category: CATEGORY.optional(),
              active: z.boolean().optional() }).partial());
 
+/** Run a route body whose guards may throw machine-readable denials; translate
+ *  them into direct {error:<code>} replies (see lib/tenant.ts deny()). */
+async function withDenials(reply: any, fn: () => Promise<any>) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (isDenial(e)) return deny(reply, e.message);
+    throw e;
+  }
+}
+
 export default async function geofenceRoutes(app: FastifyInstance) {
   /** List active geofences (+ optionally inactive for managers). */
   app.get('/geofences', async (req, reply) => {
+    return withDenials(reply, async () => {
     const claims = await auth(req);
     const parsed = z.object({ include_inactive: z.enum(['true', 'false']).optional() })
       .safeParse(req.query);
@@ -73,10 +85,12 @@ export default async function geofenceRoutes(app: FastifyInstance) {
     const fleetId = scopeFleetId(claims);
     const geofences = await listGeofences({ active_only: activeOnly, fleet_id: fleetId });
     return { count: geofences.length, geofences };
+    });
   });
 
   /** Inside/outside state of a vehicle's latest fix — dashboard layer coloring. */
   app.get('/geofences/state', async (req, reply) => {
+    return withDenials(reply, async () => {
     const claims = await auth(req);
     const parsed = z.object({ vehicle_id: z.string().uuid() }).safeParse(req.query);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_query' });
@@ -92,10 +106,12 @@ export default async function geofenceRoutes(app: FastifyInstance) {
       await assertTargetInFleetForVehicle(claims, parsed.data.vehicle_id);
     }
     return vehicleGeofenceState(parsed.data.vehicle_id, scopeFleetId(claims));
+    });
   });
 
   /** Single geofence detail (ring geometry for the drawing tool to re-edit). */
   app.get('/geofences/:geofence_id', async (req, reply) => {
+    return withDenials(reply, async () => {
     const claims = await auth(req);
     const parsed = z.object({ geofence_id: z.string().uuid() }).safeParse(req.params);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_geofence_id' });
@@ -105,10 +121,12 @@ export default async function geofenceRoutes(app: FastifyInstance) {
     const g = await getGeofence(parsed.data.geofence_id);
     if (!g) return reply.code(404).send({ error: 'geofence_not_found' });
     return g;
+    });
   });
 
   /** Create — fleet manager/admin only (drivers never define zones). */
   app.post('/geofences', async (req, reply) => {
+    return withDenials(reply, async () => {
     const claims = await auth(req);
     requireWrite(claims);
     const parsed = z.discriminatedUnion('kind', [CircleBody, PolygonBody]).and(
@@ -124,10 +142,12 @@ export default async function geofenceRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: 'geofence_invalid', detail: err.detail });
       throw err;
     }
+    });
   });
 
   /** Update (geometry or metadata; partial merge allowed). */
   app.put('/geofences/:geofence_id', async (req, reply) => {
+    return withDenials(reply, async () => {
     const claims = await auth(req);
     requireWrite(claims);
     const parsedParams = z.object({ geofence_id: z.string().uuid() }).safeParse(req.params);
@@ -143,10 +163,12 @@ export default async function geofenceRoutes(app: FastifyInstance) {
       if (status === 404) return reply.code(404).send({ error: 'geofence_not_found' });
       throw err;
     }
+    });
   });
 
   /** Soft-delete (deactivate): history stays interpretable (§1.7). */
   app.delete('/geofences/:geofence_id', async (req, reply) => {
+    return withDenials(reply, async () => {
     const claims = await auth(req);
     requireWrite(claims);
     const parsed = z.object({ geofence_id: z.string().uuid() }).safeParse(req.params);
@@ -156,5 +178,6 @@ export default async function geofenceRoutes(app: FastifyInstance) {
     await audit({ actorId: claims.sub, action: 'geofence_delete', ip: req.ip,
                   detail: { geofence_id: parsed.data.geofence_id } });
     return { deleted: true, mode: 'deactivated' };
+    });
   });
 }

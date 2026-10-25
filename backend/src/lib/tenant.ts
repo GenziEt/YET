@@ -1,5 +1,27 @@
+import type { FastifyReply } from 'fastify';
 import { pool } from '../db/pool.js';
 import type { TokenClaims } from './jwt.js';
+
+/** Machine-readable denial codes serialized at the route boundary as
+ *  `{ error: <code> }`. The app-level error handler keeps a matching
+ *  KNOWN_DENIALS list as defense-in-depth, but guards prefer returning this
+ *  reply directly so behavior never depends on setErrorHandler-vs-plugin
+ *  registration order (@fastify/sensible otherwise renders thrown Errors as
+ *  {error:'Forbidden', message:<code>}, breaking client-side branching). */
+export const DENIAL_CODES = ['consent_required', 'fleet_suspended', 'cross_fleet_denied',
+                             'forbidden_role', 'target_not_found'] as const;
+export type DenialCode = (typeof DENIAL_CODES)[number];
+
+const DENIAL_STATUS: Record<DenialCode, number> = {
+  consent_required: 403, fleet_suspended: 403, cross_fleet_denied: 403,
+  forbidden_role: 403, target_not_found: 404,
+};
+
+/** Send a machine-readable denial and return the reply so callers can
+ *  `return deny(reply, code)` inside a route handler. */
+export function deny(reply: FastifyReply, code: DenialCode): ReturnType<FastifyReply['send']> {
+  return reply.code(DENIAL_STATUS[code]).send({ error: code });
+}
 
 /**
  * Phase 0 — Fleet/tenant scoping helpers (shared lib, so every module enforces
@@ -15,6 +37,30 @@ import type { TokenClaims } from './jwt.js';
  *  - resolveTargetFleet: canonical "which fleet owns this read target" lookup.
  *  - getDriverFleet / getVehicleFleet: single source for those joins.
  */
+
+/** True when `e` is one of our machine-readable denials (thrown by guards that
+ *  run outside a reply context, e.g. background loops). Routes in request
+ *  scope should catch these and `return deny(reply, ...)` instead of letting
+ *  them reach the error handler. */
+export function isDenial(e: unknown): e is Error & { message: DenialCode } {
+  const msg = (e as Error | undefined)?.message;
+  return typeof msg === 'string' && (DENIAL_CODES as readonly string[]).includes(msg);
+}
+
+/** Run an async guard whose denials are thrown; translate any thrown denial
+ *  into a direct machine-readable reply via `onDeny`. Non-denial errors
+ *  propagate untouched to the app error handler. This keeps serialization of
+ *  {error:<code>} independent of setErrorHandler-vs-plugin registration order
+ *  (@fastify/sensible otherwise renders thrown Errors as
+ *  {error:'Forbidden', message:<code>}). */
+export async function guard<T>(fn: () => Promise<T>, onDeny: (code: DenialCode) => T): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (isDenial(e)) return onDeny(e.message);
+    throw e;
+  }
+}
 
 export function forbiddenCrossFleet(): never {
   throw Object.assign(new Error('cross_fleet_denied'), { statusCode: 403 });
