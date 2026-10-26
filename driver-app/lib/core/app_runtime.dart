@@ -159,20 +159,34 @@ class AppRuntime extends ChangeNotifier {
 
   /// Connectivity callback (connectivity_plus on device): any usable network
   /// change to Wi-Fi/3G+ schedules an immediate drain (§1.8.1 trigger list).
-  void onNetworkAvailable() => worker.onNetworkAvailable();
+  /// The Phase 4 feedback retry queue rides the same trigger: a report the
+  /// driver tapped while off-grid is delivered as soon as signal returns
+  /// ("will retry when you have signal" — backed by PilotService.flushFeedbackQueue).
+  void onNetworkAvailable() {
+    worker.onNetworkAvailable();
+    unawaited(pilot.flushFeedbackQueue());
+  }
 
-  void onAppForeground() => worker.onAppForeground();
+  void onAppForeground() {
+    worker.onAppForeground();
+    unawaited(pilot.flushFeedbackQueue());
+  }
 
   int get pendingFixes => worker.pendingCount.value;
 
   /// One-tap trip toggle from the home screen (§1.2 max-3-taps budget).
   ///
-  /// START: confirm vehicle assignment via GET /me first — but NEVER block the
-  /// driver: offline/no-vehicle results are returned to the UI as a banner
-  /// while tracking begins anyway (a phone with no signal still caches fixes
-  /// per §1.8). Then stamp the battery-sample trip anchor, fire-and-forget the
-  /// trip-start battery sample, and begin GPS + motion-sensor collection
-  /// together with the 60 s sync cadence (§1.8.1 trigger list).
+  /// START: confirm vehicle assignment via GET /me first, then apply the
+  /// §Phase 4 hard gate — collection starts ONLY when a valid assignment
+  /// exists ([allowsTripStart]: server-confirmed or offline-cached). A driver
+  /// with no assigned vehicle gets `noVehicle` back and NOTHING is collected
+  /// (the backend would reject the ingest anyway with 409 no_vehicle_assignment;
+  /// gating client-side keeps the cache honest and tells the driver at tap
+  /// time). Offline-with-no-cache is likewise blocked for a fresh start —
+  /// returning `offlineUnknown` lets the UI explain "call your fleet manager"
+  /// once signal returns. When allowed: stamp the battery-sample trip anchor,
+  /// fire-and-forget the trip-start battery sample, and begin GPS + motion
+  /// sensor collection together with the 60 s sync cadence (§1.8.1 trigger list).
   /// Phase 2 fusion: before sensors start, refresh calibrated thresholds from
   /// GET /trips/classification-config (offline → last-cached → defaults),
   /// reset classifier run state, and bind the sensor stream THROUGH the
@@ -182,6 +196,7 @@ class AppRuntime extends ChangeNotifier {
   Future<AssignmentCheck> onTripToggled({required bool active}) async {
     if (active) {
       final check = await pilot.confirmVehicleAssignment();
+      if (!allowsTripStart(check)) return check; // HARD GATE: no collection
       pilot.markTripStartAnchor(DateTime.now().toUtc());
       unawaited(pilot.sampleTripStart());
       worker.startTripCadence();
