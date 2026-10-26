@@ -2,9 +2,11 @@
  * Phase 3 gate tests — Redis route caching, invalidation rules, and OSRM retry
  * handling, WITHOUT containers. Uses the FakeCacheStore seam (src/lib/redis.ts)
  * and the injectable fetch seam (src/modules/osm_gateway/service.ts). The
- * Postgres companion cache degrades to a miss when DATABASE_URL points at an
- * unreachable host (pgRouteLookup/pgRouteUpsert swallow errors by contract),
- * so these tests exercise exactly the Redis + OSRM legs of getRoute.
+ * Postgres companion cache. The suite TRUNCATEs route_cache in beforeEach so
+ * results are hermetic whether or not a live scratch DB is reachable (pg legs
+ * degrade to a miss on an unreachable host by contract — pgRouteLookup/
+ * pgRouteUpsert swallow errors), so these tests exercise exactly the Redis +
+ * OSRM legs of getRoute.
  *
  * Covers the instruction items:
  *  - "Redis caching … fully wired with invalidation rules" → hit/miss/TTL and
@@ -55,19 +57,35 @@ function makeFake() {
   return { store, map };
 }
 
+const { pool } = await import('../src/db/pool.js');
+
 let fake: ReturnType<typeof makeFake>;
-beforeEach(() => {
+beforeEach(async () => {
   fake = makeFake();
   redis.setFakeCache(fake.store);
+  // Hermeticity: if DATABASE_URL points at a live DB (full-suite runs export
+  // YET_TEST_DB), other suites' write-through rows would otherwise leak into
+  // these hit/miss assertions and make step 2 (Postgres companion cache) win
+  // before the injected fetch is ever called. Snapshot + clear route_cache for
+  // the duration of each test; on the closed-port default this is a no-op
+  // (pool.query rejects, swallowed). These tests target the Redis + OSRM legs
+  // specifically — the Postgres leg has its own coverage in osm_gateway.test.ts.
+  await pool.query(
+    `DROP TABLE IF EXISTS route_cache_isolated;
+     CREATE TABLE route_cache_isolated AS SELECT * FROM route_cache;
+     DELETE FROM route_cache`).catch(() => undefined);
 });
-afterEach(() => {
+afterEach(async () => {
+  await pool.query(
+    `INSERT INTO route_cache SELECT * FROM route_cache_isolated;
+     DROP TABLE route_cache_isolated`).catch(() => undefined);
   redis.setFakeCache(null);
   svc.setFetchForTesting(null);
 });
 
 const FROM = { lat: 9.0300, lng: 38.7400 };
 const TO = { lat: 8.9800, lng: 38.7900 };
-const ZONE = 'zone-aaaa-bbbb-cccc-000000000001';
+const ZONE = '00000000-0000-4000-8000-0000000000a1'; // valid uuid: pgRouteUpsert keys are persisted; geofence_id is a uuid column
 
 /** Valid OSRM /route response (two-point polyline "_p~iF~ps|U_ulLnnqC" would be
  *  real; these trivial encodings decode cleanly: each coord delta zero). */
@@ -150,7 +168,7 @@ describe('invalidateRoutesForGeofence — Phase 3 invalidation rules', () => {
   });
 
   it('invalidation is safe when nothing was ever indexed (no-op, no throw)', async () => {
-    await expect(svc.invalidateRoutesForGeofence('never-seen-zone')).resolves.toBeUndefined();
+    await expect(svc.invalidateRoutesForGeofence('00000000-0000-4000-8000-0000000000ff')).resolves.toBeUndefined();
   });
 });
 
