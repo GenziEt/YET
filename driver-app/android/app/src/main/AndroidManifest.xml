@@ -14,6 +14,12 @@
     <!-- Wake lock for the location foreground service (enableWakeLock in
          ForegroundNotificationConfig). -->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- §Phase 4 (G4): battery-optimization exemption prompt so Doze does not
+         kill the location foreground service during all-day pilot shifts.
+         Consumed by MainActivity.kt (ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+         Play-store policy note: pilots are distributed via enterprise/F-Droid
+         channel for the field pilot, so the exemption prompt ships enabled. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
 
     <application
         android:label="YET Driver"

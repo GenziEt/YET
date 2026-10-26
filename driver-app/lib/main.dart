@@ -4,6 +4,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:http/http.dart' as http;
 
 import 'core/app_runtime.dart';
 import 'core/config/app_config.dart';
@@ -85,6 +86,11 @@ class _YetAppState extends State<YetApp> {
   @override
   void initState() {
     super.initState();
+    // §Phase 4 (G5): banner bus is cheap to construct (no I/O in the ctor), so
+    // it exists before the first frame — anything that publishes on
+    // PushService.banners (Phase 5 FCM source, local event hooks, tests) has a
+    // live surface from t=0. Token registration itself stays post-consent.
+    _push = _makePushService()..start();
     if (_pipelineEnabled) {
       // Off the cold-start critical path (§1.9.1): first frame renders with a
       // null runtime; the cache opens right after and notifies this state.
@@ -183,6 +189,7 @@ class _YetAppState extends State<YetApp> {
     unawaited(_positionSource?.dispose());
     unawaited(_sensorSource?.dispose());
     _runtime?.dispose();
+    unawaited(_push?.dispose());
     super.dispose();
   }
 
@@ -205,7 +212,9 @@ class _YetAppState extends State<YetApp> {
         // Large touch targets & text for drivers on low-end phones while moving.
         snackBarTheme: const SnackBarThemeData(contentTextStyle: TextStyle(fontSize: 18)),
       ),
-      home: _rootForLocale(),
+      // §Phase 4 (G5): PushBannerHost wraps the flow root so a fleet alert is
+      // visible on ANY screen (consent, permissions, trip home, pushed routes).
+      home: PushBannerHost(push: _push!, child: _rootForLocale()),
     );
   }
 
@@ -227,6 +236,10 @@ class _YetAppState extends State<YetApp> {
       return PermissionsScreen(
         repo: widget.consent,
         onDone: () => setState(() {}),
+        // §Phase 4 (G4): real platform intents via the battery-exemption
+        // MethodChannel (Kotlin handler: MainActivity.kt). The seam stays
+        // injectable so headless tests never fire intents.
+        openPhoneSettings: _openPhoneSettings,
       );
     }
     return TripHomeScreen(
