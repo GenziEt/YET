@@ -72,7 +72,7 @@ void main() {
       // Same tap now SUCCEEDING: delivered live, queue untouched by a second
       // entry (success path must never enqueue).
       final s2 = await svc(MockClient((req) async =>
-          req.method.name == 'POST' && req.url.path.endsWith('/ingest/diagnostics')
+          req.method == 'POST' && req.url.path.endsWith('/ingest/diagnostics')
               ? http.Response('{"accepted":true}', 201)
               : http.Response('{}', 200)));
       expect(await s2.sendFeedback(
@@ -122,7 +122,7 @@ void main() {
         '[B, C] in order', () async {
       final seen = <String>[];
       final s = await svc(MockClient((req) async {
-        final body = jsonDecode(req.body!) as Map<String, dynamic>;
+        final body = jsonDecode(req.body) as Map<String, dynamic>;
         final id = body['batch_id'] as String;
         seen.add(id);
         return id == 'B' || id == 'C'

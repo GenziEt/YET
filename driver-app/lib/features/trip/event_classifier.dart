@@ -166,7 +166,6 @@ class EventClassifier {
 
   // ---- turns (sustained-gyro runs) ----
   _TurnRun? _turnRun;
-  DateTime? _lastGyroT;
 
   // ---- vibration gate (variance transitions) ----
   final List<double> _zBuf = [];
@@ -179,7 +178,6 @@ class EventClassifier {
     _harshRun = null;
     _lastHarshEmittedAt = null;
     _turnRun = null;
-    _lastGyroT = null;
     _zBuf.clear();
     _gateMoving = null;
   }
@@ -274,7 +272,7 @@ class EventClassifier {
         run.sign < 0 ? th.harshBrakeMps2 : th.harshAccelMps2;
     if (magnitude < limit) return;
     final sinceLast = _lastHarshEmittedAt == null
-        ? Duration(days: 365)
+        ? const Duration(days: 365)
         : run.extremeT.difference(_lastHarshEmittedAt!);
     if (sinceLast.inMilliseconds <= th.cooldownMs) return;
     _lastHarshEmittedAt = run.extremeT;
@@ -322,7 +320,6 @@ class EventClassifier {
       } else if (run != null && gapMs > th.maxSampleGapMs) {
         await _closeTurnRun();
       }
-      _lastGyroT = s.timestampUtc;
     }
     await _sink(s);
   }
@@ -401,7 +398,7 @@ class EventClassifier {
 }
 
 class _TimedSample {
-  _TimedSample(this.t, this.v);
+  const _TimedSample(this.t, this.v);
   final DateTime t;
   final List<double> v;
 }

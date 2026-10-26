@@ -80,7 +80,8 @@ void main() {
           body: SizedBox(
             width: 64,
             height: 64,
-            child: OfflineTileImage(directory: '/nonexistent/', z: 1, x: 1, y: 1),
+            child: OfflineTileImage(
+                directory: '/nonexistent/', z: 1, x: 1, y: 1),
           ),
         ),
       ));

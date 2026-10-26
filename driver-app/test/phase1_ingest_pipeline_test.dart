@@ -1,13 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/services.dart' show MethodChannel;
-import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'package:yet_driver/core/app_runtime.dart';
@@ -17,7 +15,7 @@ import 'package:yet_driver/core/config/app_config.dart';
 import 'package:yet_driver/core/sync/sync_state.dart';
 import 'package:yet_driver/core/sync/sync_worker.dart';
 import 'package:yet_driver/features/auth/token_store.dart';
-import 'package:yet_driver/features/trip/gps_collector.dart';
+import 'package:yet_driver/features/trip/gps_collector.dart' show RawPosition;
 import 'package:yet_driver/features/trip/sensor_collector.dart';
 
 /// Phase 1 completion-gate tests (implementation instruction §Phase 1):
@@ -45,7 +43,7 @@ void main() {
     late String dbPath;
 
     setUp(() async {
-      dir = await dbFactory.createTemporaryDatabaseDirectory();
+      dir = await Directory.systemTemp.createTemp('yet_test_db');
       dbPath = '${dir.path}/yet_cache.db';
     });
 
@@ -81,11 +79,13 @@ void main() {
         ));
       }
       for (var i = 0; i < 3; i++) {
-        await sdao.insertEvent(RawSensorSample(
+        await sdao.insertEvent(StoredSensorEvent(
+          id: 0,
           kind: 'accelerometer',
-          timestampUtc: DateTime.utc(2026, 10, 23, 7, 0, i),
-          values: const [0.1, 9.8, 0.2],
-        ).toStoredNew(id: 0, syncState: SyncState.pending));
+          eventTimestamp: DateTime.utc(2026, 10, 23, 7, 0, i),
+          payload: const {'values': [0.1, 9.8, 0.2]},
+          syncState: SyncState.pending,
+        ));
       }
       // Claim two batches, then "die" before any ACK arrives.
       final claimedFixes = await dao.claimBatch('crash-batch-1', 100);
@@ -124,8 +124,8 @@ void main() {
       final runtime = await AppRuntime.bootstrap(
         tokenStore: tokens,
         dbPathOverride: dbPath,
-        positionSource: const Stream.empty,
-        sensorSource: const Stream.empty,
+        positionSource: () => const Stream<RawPosition>.empty(),
+        sensorSource: () => const Stream<RawSensorSample>.empty(),
         httpClient: MockClient((_) async => http.Response('{}', 500)),
       );
       addTearDown(runtime.dispose);
@@ -176,8 +176,8 @@ void main() {
       final runtime = await AppRuntime.bootstrap(
         tokenStore: tokens,
         dbPathOverride: dbPath,
-        positionSource: const Stream.empty,
-        sensorSource: const Stream.empty,
+        positionSource: () => const Stream<RawPosition>.empty(),
+        sensorSource: () => const Stream<RawSensorSample>.empty(),
         httpClient: client,
       );
       addTearDown(runtime.dispose);
@@ -185,7 +185,7 @@ void main() {
 
       // Drain: worker claims fresh batches (new UUIDs — never the crashed one)
       // and POSTs the exact recovered rows.
-      final outcome = await runtime.worker.runOnceForTest();
+      final outcome = await runtime.worker.runOnce();
       expect(outcome, SyncOutcome.uploaded);
       expect(seenBatches.length, 1);
       final posted = seenBatches.values.single;
@@ -280,7 +280,7 @@ void main() {
             throw const RetryableUploadException('rate limited',
                 retryAfter: Duration(seconds: 11)),
       );
-      final outcome = await worker.runOnceForTest();
+      final outcome = await worker.runOnce();
       expect(outcome, SyncOutcome.failed);
       final rows = await db.query(FixDao.tableFixes);
       for (final r in rows) {
@@ -288,7 +288,7 @@ void main() {
         expect(r['upload_attempts'], 1);
       }
       // While blocked, further triggers are no-ops (no hammering the gateway).
-      expect(await worker.runOnceForTest(), SyncOutcome.nothingPending);
+      expect(await worker.runOnce(), SyncOutcome.nothingPending);
       await db.close();
     });
 
@@ -355,7 +355,7 @@ void main() {
 /// FFI-backed SQLite with the YET schema applied — used by the worker-level
 /// 429 test so claim/release/attempts++ run through real SQL.
 Future<Database> _freshFakeEngineDb() async {
-  final dir = await dbFactory.createTemporaryDatabaseDirectory();
+  final dir = await Directory.systemTemp.createTemp('yet_test_db');
   return databaseFactory.openDatabase(
     '${dir.path}/w.db',
     options: OpenDatabaseOptions(
