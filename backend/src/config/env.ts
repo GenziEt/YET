@@ -25,6 +25,11 @@ const EnvSchema = z.object({
   OSRM_BASE_URL: z.string().url().default('http://localhost:5000'),
   NOMINATIM_BASE_URL: z.string().url().default('http://localhost:8081'),
   OSM_USER_AGENT: z.string().default('YET-tracking/0.1 (ops-contact@yet.local)'),
+  // Phase 3 routing resilience: bounded retry on NETWORK-ABORT failures only
+  // (connection refused / DNS hiccup / timeout). HTTP responses — even 4xx/5xx
+  // with a body — are never retried; they descend the degradation ladder at once.
+  OSRM_RETRY_ATTEMPTS: z.coerce.number().int().min(0).max(3).default(1),
+  OSRM_RETRY_BACKOFF_MS: z.coerce.number().int().min(0).default(120),
 
   INGEST_RATE_LIMIT_PER_MIN: z.coerce.number().int().default(60), // §1.10.4
   INGEST_MAX_BATCH_FIXES: z.coerce.number().int().default(100),   // Phase 1 batch contract

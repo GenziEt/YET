@@ -1,5 +1,5 @@
 import { env } from '../../config/env.js';
-import { cacheGetJson, cacheSetJson } from '../../lib/redis.js';
+import { cacheGetJson, cacheSetJson, cacheKeysByPrefix, cacheDelMany } from '../../lib/redis.js';
 import { pool } from '../../db/pool.js';
 import { haversineM } from '../trip_engine/state_machine.js';
 import {
@@ -29,6 +29,65 @@ export const GEOCODE_TTL_S = 86_400; // 24 h
 const OSRM_TIMEOUT_MS = 1_500;       // > p95 uncached budget 800 ms, < request stall
 const NOMINATIM_TIMEOUT_MS = 2_500;
 
+/* --------------------------- fetch seam (testing) ---------------------------- */
+/** Injectable transport so the retry/degradation ladder is unit-testable without
+ *  a live OSRM/Nominatim container. Production bootstrap never touches this —
+ *  default is global fetch. */
+export type FetchLike = (url: string, init?: { signal?: AbortSignal; headers?: Record<string, string> })
+  => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+let fetchImpl: FetchLike = ((url, init) => fetch(url, init)) as FetchLike;
+export function setFetchForTesting(fn: FetchLike | null): void {
+  fetchImpl = fn ?? ((url, init) => fetch(url, init)) as FetchLike;
+}
+
+async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetchImpl(url, {
+      signal: ctrl.signal,
+      headers: { 'user-agent': env.OSM_USER_AGENT }, // §1.6 UA compliance (applies even self-hosted)
+    }) as unknown as Response;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * Bounded-retry wrapper for the OSRM leg (Phase 3: "failures, timeouts, and
+ * retries are handled"). Policy:
+ *   - RETRY ONLY network aborts: fetch rejects before any HTTP response exists
+ *     (connection refused, DNS failure, AbortController timeout). These are
+ *     transient container/network blips during a pilot.
+ *   - NEVER retry an HTTP response — even 4xx/5xx with a body. A routing-engine
+ *     error is deterministic per input; hammering it wastes the ≤800 ms budget.
+ *     Such responses throw RoutingHttpError, which skips the retry loop entirely.
+ *   - Backoff between attempts: OSRM_RETRY_BACKOFF_MS (default 120 ms), capped
+ *     total by OSRM_RETRY_ATTEMPTS (default 1 retry, max 3 via env validation).
+ */
+class RoutingHttpError extends Error {}
+
+async function fetchOsrmWithRetry(url: string): Promise<Response> {
+  const maxRetries = env.OSRM_RETRY_ATTEMPTS;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0 && env.OSRM_RETRY_BACKOFF_MS > 0) {
+      await new Promise((r) => setTimeout(r, env.OSRM_RETRY_BACKOFF_MS));
+    }
+    try {
+      const res = await fetchWithTimeout(url, OSRM_TIMEOUT_MS);
+      // An HTTP response exists ⇒ never retried (deterministic per input; a 5xx
+      // from the routing engine must descend the degradation ladder immediately).
+      if (!res.ok) throw new RoutingHttpError(`OSRM ${res.status}`);
+      return res;
+    } catch (err) {
+      if (err instanceof RoutingHttpError) throw err; // deterministic: fail to ladder now
+      lastErr = err; // network abort (incl. timeout) → bounded retry
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
 export interface RouteResult {
   from: LatLng;
   to: LatLng;
@@ -37,19 +96,6 @@ export interface RouteResult {
   geometry: [number, number][]; // decoded polyline [lat,lng][]
   source: 'redis' | 'postgres' | 'osrm' | 'stale_redis' | 'fallback_straight';
   cached_at: string;            // event-time-ish provenance for the dashboard badge
-}
-
-async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    return await fetch(url, {
-      signal: ctrl.signal,
-      headers: { 'user-agent': env.OSM_USER_AGENT }, // §1.6 UA compliance (applies even self-hosted)
-    });
-  } finally {
-    clearTimeout(t);
-  }
 }
 
 function straightLineFallback(from: LatLng, to: LatLng): RouteResult {
@@ -113,8 +159,15 @@ async function pgRouteUpsert(key: string, res: RouteResult): Promise<void> {
  * Route between two points via self-hosted OSRM with Redis-first caching.
  * `allowStale=true` (used by the ETA panel's poll loop) accepts an expired Redis
  * value when OSRM is down — a slightly old route beats no route during a pilot.
+ * `destinationGeofenceId` (set by GET /route?destination_geofence_id=…) records
+ * a write-through index key so a later geofence edit can invalidate exactly the
+ * route entries whose destination centroid came from that zone (§Phase 3
+ * invalidation rules — see invalidateRoutesForGeofence).
  */
-export async function getRoute(from: LatLng, to: LatLng, opts: { allowStale?: boolean } = {}): Promise<RouteResult> {
+export async function getRoute(
+  from: LatLng, to: LatLng,
+  opts: { allowStale?: boolean; destinationGeofenceId?: string } = {},
+): Promise<RouteResult> {
   const key = routeCacheKey(from, to);
 
   // 1) Fresh Redis hit — target ≤ 50 ms (§1.9.4).
@@ -123,19 +176,18 @@ export async function getRoute(from: LatLng, to: LatLng, opts: { allowStale?: bo
 
   // 2) Unexpired Postgres row (warm start after Redis flush).
   const pg = await pgRouteLookup(key);
-  if (pg) { void cacheSetJson(key, pg, ROUTE_TTL_S); return pg; }
+  if (pg) { void cacheSetJson(key, pg, ROUTE_TTL_S); void indexDest(key, opts); return pg; }
 
-  // 3) Live OSRM call.
+  // 3) Live OSRM call (bounded retry on network aborts only — fetchOsrmWithRetry).
   try {
     const url = `${env.OSRM_BASE_URL}/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}`
       + `?overview=full&geometries=polyline`;
-    const res = await fetchWithTimeout(url, OSRM_TIMEOUT_MS);
-    if (!res.ok) throw new Error(`OSRM ${res.status}`);
+    const res = await fetchOsrmWithRetry(url);
     const body = await res.json() as {
       code: string;
       routes?: { distance: number; duration: number; geometry: string }[];
     };
-    if (body.code !== 'Ok' || !body.routes?.length) throw new Error(`OSRM ${body.code}`);
+    if (body.code !== 'Ok' || !body.routes?.length) throw new RoutingHttpError(`OSRM ${body.code}`);
     const r = body.routes[0]!;
     const out: RouteResult = {
       from, to,
@@ -146,6 +198,7 @@ export async function getRoute(from: LatLng, to: LatLng, opts: { allowStale?: bo
       cached_at: new Date().toISOString(),
     };
     await cacheSetJson(key, out, ROUTE_TTL_S);
+    void indexDest(key, opts);
     void pgRouteUpsert(key, out);
     return out;
   } catch (err) {
@@ -159,7 +212,63 @@ export async function getRoute(from: LatLng, to: LatLng, opts: { allowStale?: bo
     const fb = straightLineFallback(from, to);
     // Cache the fallback briefly so a flapping OSRM doesn't multiply load.
     await cacheSetJson(key, fb, 30);
+    void indexDest(key, opts);
     return fb;
+  }
+}
+
+/* --------------------- Geofence-keyed invalidation index --------------------- */
+/** Redis index key for "route keys computed against this destination geofence".
+ *  Written on every getRoute write-through when the caller supplied the zone id
+ *  (the dashboard's select-geofence-as-destination flow). */
+export function destIndexKey(geofenceId: string): string {
+  return `yet:route:dest:${geofenceId}`;
+}
+
+async function indexDest(routeKey: string, opts: { destinationGeofenceId?: string }): Promise<void> {
+  if (!opts.destinationGeofenceId) return;
+  const idx = destIndexKey(opts.destinationGeofenceId);
+  try {
+    const members = await cacheGetJson<string[]>(idx);
+    const set = new Set(members ?? []);
+    set.add(routeKey);
+    // Index TTL ≥ route TTL so it always outlives the entries it references.
+    await cacheSetJson(idx, [...set], ROUTE_TTL_S + 60);
+  } catch { /* best-effort: worst case the entry expires by TTL */ }
+}
+
+/**
+ * Phase 3 cache-invalidation rule: when a geofence is edited (renamed, moved,
+ * resized) or deactivated, every route/ETA cached against its centroid must be
+ * dropped — a renamed/moved warehouse can never serve an ETA to stale geometry.
+ *   - deletes the Redis route entries listed in yet:route:dest:<id>,
+ *   - removes the dependent fleet-state snapshot so live-map badges rebuild,
+ *   - expires the matching Postgres route_cache rows (version bump = created_at
+ *     moves and expires_at collapses to now(); warm-start reads require
+ *     expires_at > now(), so the rows are superseded rather than deleted —
+ *     audit trail of routing calls preserved, §1.5).
+ * Called from updateGeofence/deleteGeofence AFTER the row change commits.
+ */
+export async function invalidateRoutesForGeofence(geofenceId: string): Promise<void> {
+  const idx = destIndexKey(geofenceId);
+  const members = await cacheGetJson<string[]>(idx).catch(() => null);
+  if (members && members.length > 0) await cacheDelMany(members);
+  await cacheDelMany([idx]);
+  // Fleet-state snapshots embed last-known route badges; force one-query refresh.
+  const fleetKeys = await cacheKeysByPrefix('fleet:state');
+  await cacheDelMany(fleetKeys);
+  try {
+    await pool.query(
+      `UPDATE route_cache SET expires_at = now(), created_at = now()
+        WHERE expires_at > now()
+          AND round(to_lat::numeric, 6) = round((SELECT center_lat FROM geofences WHERE geofence_id=$1)::numeric, 6)
+          AND round(to_lng::numeric, 6) = round((SELECT center_lng FROM geofences WHERE geofence_id=$1)::numeric, 6)`,
+      [geofenceId],
+    );
+  } catch (err) {
+    // DB hiccup on invalidation must not fail the geofence mutation — Redis
+    // entries are already gone and the rows expire within ROUTE_TTL_S anyway.
+    console.warn('[osm-gateway] route_cache expiry bump failed:', String(err));
   }
 }
 
