@@ -219,10 +219,12 @@ describe('rebuildTrip dedupe priority: device > server-fused > gps (§Phase 2)',
 
   it('device-reported HARSH_BRAKE suppresses the fused twin and enriches its payload', () => {
     const fixes = straightRun(6, T0);
-    // classifyHarshEvents needs >= 3 samples; a run at exactly -brake with x
-    // variance below z variance picks axis z (gravity constant ⇒ no false
-    // harsh-accel companion), mirroring a phone mounted sideways.
-    const brakeRun = [accel(T0 + 64 * S, 0, 9.81), accel(T0 + 65 * S, 0, 4.81), accel(T0 + 66 * S, 0, 4.81)];
+    // classifyHarshEvents needs >= 3 samples; the excursion runs on x while z
+    // stays constant at gravity ⇒ var(x) > var(z)=0 picks axis x, and the
+    // baseline sample closes the negative run cleanly (one event per excursion).
+    const brakeRun = [
+      accel(T0 + 64 * S, 0), accel(T0 + 65 * S, -5.0), accel(T0 + 66 * S, -5.0), accel(T0 + 67 * S, 0),
+    ];
     const deviceEvent: SensorIn = {
       t: T0 + 65 * S, kind: 'harsh_brake',
       payload: { magnitude_mps2: 5.0, threshold_mps2: TH.harshBrakeMps2, source_hint: 'device' },
