@@ -30,6 +30,17 @@ const EnvSchema = z.object({
     TRIP_RETURN_THRESHOLD_M: z.coerce.number().positive().default(30), // §1.4 hysteresis
     TRIP_IDLE_TIMEOUT_S: z.coerce.number().int().positive().default(1800), // auto-END gap
     TRIP_SEPARATION_NOTIFY_MIN: z.coerce.number().int().positive().default(45), // §1.4 45-min timer
+    // Module 3 — on-device sensor-fusion CLASSIFICATION thresholds (Phase 2, §1.3).
+    // These are the calibrated values published to the driver app via
+    // GET /trips/classification-config; the same numbers parameterize the device
+    // classifiers (lib/features/trip/event_classifier.dart) and the server-side
+    // fallback classifier over raw samples (classifyRawMotionEvents below).
+    // Nothing in the pipeline hard-codes them — configuration, not magic numbers.
+    HARSH_BRAKE_THRESHOLD_MPS2: z.coerce.number().positive().default(3.5), // longitudinal peak (§1.3)
+    HARSH_ACCEL_THRESHOLD_MPS2: z.coerce.number().positive().default(2.5), // longitudinal peak (§1.3)
+    TURN_RATE_THRESHOLD_DPS: z.coerce.number().positive().default(35), // gyro |z| deg/s …
+    TURN_MIN_DURATION_MS: z.coerce.number().int().positive().default(1000), // … sustained > 1 s (§1.3)
+    MOTION_VARIANCE_THRESHOLD: z.coerce.number().positive().default(0.05), // vibration gate variance
     // Module 5 — Notification (Phase 5). FCM is the primary push channel; when real
     // credentials are absent (dev, pre-pilot) dispatch runs in DRY-RUN mode: the full
     // template/dedupe/log pipeline executes and messages are recorded as QUEUED for a

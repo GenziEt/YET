@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:http/http.dart' as http;
+import 'package:sqflite/sqflite.dart';
 
 import '../../core/cache/sensor_dao.dart';
 import '../../core/config/app_config.dart';
@@ -144,9 +145,15 @@ class EventClassifier {
   EventClassifier({
     required ClassificationThresholds thresholds,
     required ClassifiedEventSink sink,
-  }) : th = thresholds;
+  })  : th = thresholds,
+        _sink = sink;
 
-  final ClassificationThresholds th;
+  /// Active threshold set. Mutable so AppRuntime can apply freshly fetched /
+  /// restored calibration at trip start without rebuilding the pipeline
+  /// (threshold changes take effect from the NEXT sample onward; call
+  /// [reset] alongside to clear any run state measured under old limits).
+  ClassificationThresholds th;
+
   final ClassifiedEventSink _sink;
 
   static const _gravity = 9.81;
@@ -430,34 +437,46 @@ class _TurnRun {
 }
 
 /// Local-only persistence of the last-fetched config so offline trips reuse the
-/// most recent calibrated thresholds (§1.8 offline-first). Stored as a plain
-/// key/value row in the sensor cache table under a NON-uploadable sentinel:
-/// SyncWorker claims PENDING rows, but these rows are inserted ACKED, so they
-/// ride none of the upload machinery.
+/// most recent calibrated thresholds (§1.8 offline-first). Stored in its own
+/// side table — NOT the sensor cache — so it can never inflate the driver-
+/// visible "records pending sync" backlog (SensorDao.pendingCount), leak into
+/// an upload batch (claimBatch), or be pruned by acked-retention housekeeping.
 class CachedConfigStore {
-  CachedConfigStore(this._dao);
-  final SensorDao _dao;
+  CachedConfigStore(this._db);
+  final Database _db;
 
-  static const _kind = 'classification_config';
+  static const tableConfig = 'classification_config_cache';
+
+  /// Schema for the side table; called from AppRuntime's onCreate/onUpgrade.
+  static Future<void> onCreate(Database db, int version) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $tableConfig (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        updated_at TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+      )
+    ''');
+  }
 
   Future<void> save(ClassificationThresholds th) async {
-    final db = _dao.db;
-    await db.delete(SensorDao.tableSensors,
-        where: 'kind = ?', whereArgs: [_kind]);
-    await db.insert(SensorDao.tableSensors, {
-      'kind': _kind,
-      'event_timestamp': DateTime.now().toUtc().toIso8601String(),
-      'payload_json': jsonEncode(th.toJson()),
-      'sync_state': 'ACKED', // never claimed for upload
-      'upload_attempts': 0,
-      'created_at': DateTime.now().toUtc().toIso8601String(),
-      'acked_at': DateTime.now().toUtc().toIso8601String(),
+    final now = DateTime.now().toUtc().toIso8601String();
+    await _db.transaction((txn) async {
+      final written = await txn.update(tableConfig,
+          {'updated_at': now, 'payload_json': jsonEncode(th.toJson())},
+          where: 'id = 1');
+      if (written == 0) {
+        await txn.insert(tableConfig, {
+          'id': 1,
+          'updated_at': now,
+          'payload_json': jsonEncode(th.toJson()),
+        });
+      }
     });
   }
 
   Future<ClassificationThresholds?> load() async {
-    final rows = await _dao.db.query(SensorDao.tableSensors,
-        where: 'kind = ?', whereArgs: [_kind], limit: 1);
+    final rows = await _db
+        .query(tableConfig, where: 'id = 1', limit: 1);
     if (rows.isEmpty) return null;
     try {
       final raw = jsonDecode(rows.first['payload_json'] as String);

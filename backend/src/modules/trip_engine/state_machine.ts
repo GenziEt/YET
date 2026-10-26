@@ -198,7 +198,7 @@ function sensorsActiveNear(sensors: SensorIn[], t: number, windowMs: number): bo
  *
  * The driver app classifies harsh braking / harsh acceleration / turns ON DEVICE
  * (lib/features/trip/event_classifier.dart) using the calibrated thresholds
- * published by GET /trips/classification-config (env.ts HARSH_*/TURN_*). Those
+ * published by GET /trips/classification-config (env.ts HARSH_* and TURN_*). Those
  * discrete events arrive as kind='harsh_brake' | 'harsh_accel' | 'turn' and are
  * passed through verbatim above. But §1.8.6 lets the client evict/downsample
  * under storage pressure and OEM ROMs occasionally kill the collector mid-trip,

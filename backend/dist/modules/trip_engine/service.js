@@ -1,7 +1,7 @@
 import { pool } from '../../db/pool.js';
 import { env } from '../../config/env.js';
 import { audit } from '../../lib/audit.js';
-import { rebuildTrip, DEFAULT_TRIP_CONFIG, } from './state_machine.js';
+import { rebuildTrip, DEFAULT_TRIP_CONFIG, DEFAULT_CLASSIFICATION_THRESHOLDS, } from './state_machine.js';
 /**
  * Module 3 — Trip Engine (§1.5). Consumes Ingest's raw data; owns trips,
  * trip_events, driver_separation_log. It NEVER trusts arrival order: every ingest
@@ -17,13 +17,50 @@ import { rebuildTrip, DEFAULT_TRIP_CONFIG, } from './state_machine.js';
  *    the recomputation far inside the API budget (§1.9.4); extraction trigger for
  *    a streaming rewrite is documented in docs/ARCHITECTURE.md.
  */
+/** Calibrated classification thresholds (§1.3) built from validated env config —
+ *  single source of truth shared by the server-side fusion kernel below and the
+ *  driver app via GET /trips/classification-config (routes.ts). No magic numbers
+ *  anywhere in the pipeline: maxSampleGapMs/cooldownMs keep their blueprint
+ *  defaults unless explicitly overridden. */
+export const CLASSIFICATION_CONFIG = {
+    ...DEFAULT_CLASSIFICATION_THRESHOLDS,
+    harshBrakeMps2: env.HARSH_BRAKE_THRESHOLD_MPS2,
+    harshAccelMps2: env.HARSH_ACCEL_THRESHOLD_MPS2,
+    turnRateDps: env.TURN_RATE_THRESHOLD_DPS,
+    turnMinDurationMs: env.TURN_MIN_DURATION_MS,
+};
 export const TRIP_CONFIG = {
     ...DEFAULT_TRIP_CONFIG,
     stoppedAfterS: env.TRIP_STOPPED_AFTER_S,
     separationThresholdM: env.TRIP_SEPARATION_THRESHOLD_M,
     returnThresholdM: env.TRIP_RETURN_THRESHOLD_M,
     idleTimeoutS: env.TRIP_IDLE_TIMEOUT_S,
+    // Phase 2 sensor fusion: raw-sample fallback classification runs with the
+    // SAME calibrated thresholds the device uses (see CLASSIFICATION_CONFIG).
+    classification: CLASSIFICATION_CONFIG,
 };
+/** Wire shape published by GET /trips/classification-config — the driver-app
+ *  classifier (lib/features/trip/event_classifier.dart) consumes exactly this;
+ *  vibrationGateVariance is consumed by the duty-cycle gate, not a classifier. */
+export function classificationConfigPayload() {
+    return {
+        policy: 'trip-classification-v1',
+        thresholds: {
+            harsh_brake_mps2: CLASSIFICATION_CONFIG.harshBrakeMps2,
+            harsh_accel_mps2: CLASSIFICATION_CONFIG.harshAccelMps2,
+            turn_rate_dps: CLASSIFICATION_CONFIG.turnRateDps,
+            turn_min_duration_ms: CLASSIFICATION_CONFIG.turnMinDurationMs,
+            max_sample_gap_ms: CLASSIFICATION_CONFIG.maxSampleGapMs,
+            cooldown_ms: CLASSIFICATION_CONFIG.cooldownMs,
+            vibration_gate_variance: env.MOTION_VARIANCE_THRESHOLD,
+        },
+        sampling: {
+            // Device-side downsampling contract (§1.8.5): persist at most one raw
+            // sample per kind per interval while trips are active.
+            sample_interval_ms: 2000,
+        },
+    };
+}
 async function loadWindow(vehicleId, fromMs, toMs) {
     const { rows: fixRows } = await pool.query(`SELECT fix_timestamp, lat, lng, speed_mps FROM location_fixes
       WHERE vehicle_id=$1 AND fix_timestamp >= $2 AND fix_timestamp <= $3
