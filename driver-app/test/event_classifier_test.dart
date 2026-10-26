@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -23,7 +22,7 @@ import 'package:yet_driver/features/trip/sensor_collector.dart';
 ///  * CachedConfigStore round-trip through a real SQLite engine (FFI);
 ///  * sensor-batch UUID idempotency at BOTH legs of §1.8.2: client-side
 ///    claimBatch/markBatchAcked double-ACK replay leaves the row set unchanged,
-///    and the encoded batch is byte-stable so a server replay hits the
+///    and the encoded batch is content-stable so a server replay hits the
 ///    ingest_batches.batch_id PK ON CONFLICT path (backend contract asserted in
 ///    backend/tests/sensor_batch_contract.test.ts).
 void main() {
@@ -47,59 +46,20 @@ void main() {
       kind: 'gyroscope', timestampUtc: t, values: [0, 0, zRadPerS]);
   double dps(double degPerSec) => degPerSec * 3.141592653589793 / 180.0;
 
-  /// Capturing sink + the raw pass-through stream for collector integration.
-  class _Harness {
-    final all = <RawSensorSample>[];
-    Future<void> sink(RawSensorSample e) async => all.add(e);
-    List<RawSensorSample> discrete() => all
-        .where((s) =>
-            s.kind == 'harsh_brake' ||
-            s.kind == 'harsh_accel' ||
-            s.kind == 'turn' ||
-            s.kind == 'vibration_gate')
-        .toList();
-  }
-
-  EventClassifier build(_Harness h, {ClassificationThresholds? th}) =>
-      EventClassifier(thresholds: th ?? ClassificationThresholds.defaults,
-          sink: h.sink);
-
-  group('EventClassifier threshold boundaries (§1.3, mirrors TS kernel)', () {
-    // Defaults: brake 3.5 · accel 2.5 · turn 35 dps/1000 ms · gap 2000 · cd 5000.
-
-    test('BELOW limit: -3.4 peak emits nothing', () async {
-      final h = _Harness();
-      final c = build(h);
-      for (final x in [0.0, -3.4, -3.4, 0.0]) {
-        await c.onSample(accel(t0.add(ms(calls++ * 1000)), x));
-      }
-      expect(h.discrete(), isEmpty);
-    }, skip: true); // replaced by loop-free version below
-  });
-
-  // The closure-capture trick above is awkward; run the boundary suite with an
-  // explicit step counter instead.
-  group('EventClassifier thresholds (explicit clock)', () {
-    Future<void> feed(EventClassifier c, List<double> xs,
-        {int startMs = 0, int stepMs = 1000}) async {
-      for (var i = 0; i < xs.length; i++) {
-        await c.onSample(accel(t0.add(ms(startMs + i * stepMs)), xs[i]));
-      }
-    }
+  group('EventClassifier thresholds (§1.3, mirrors TS kernel)', () {
+    // Defaults: brake 3.5 · accel 2.5 · turn 35 dps / 1000 ms · gap 2000 · cd 5000.
 
     test('BELOW limit: -3.4 peak emits no harsh event', () async {
       final h = _Harness();
-      final c = build(h);
-      await feed(c, [0.0, -3.4, -3.4, 0.0]);
-      await c.flush();
+      await _feed(h.classifier, [0.0, -3.4, -3.4, 0.0], t0);
+      await h.classifier.flush();
       expect(h.discrete().where((e) => e.kind.startsWith('harsh')), isEmpty);
     });
 
     test('AT limit: -3.5 exactly emits HARSH_BRAKE (inclusive crossing)', () async {
       final h = _Harness();
-      final c = build(h);
-      await feed(c, [0.0, -3.5, -3.5, 0.0]);
-      await c.flush();
+      await _feed(h.classifier, [0.0, -3.5, -3.5, 0.0], t0);
+      await h.classifier.flush();
       final brakes = h.discrete().where((e) => e.kind == 'harsh_brake').toList();
       expect(brakes.length, 1);
       expect(brakes.single.extra['magnitude_mps2'], 3.5);
@@ -109,9 +69,8 @@ void main() {
 
     test('ABOVE limit: -5.0 excursion emits one grouped HARSH_BRAKE at the peak', () async {
       final h = _Harness();
-      final c = build(h);
-      await feed(c, [0.0, -4.0, -5.0, -4.2, 0.0]);
-      await c.flush();
+      await _feed(h.classifier, [0.0, -4.0, -5.0, -4.2, 0.0], t0);
+      await h.classifier.flush();
       final brakes = h.discrete().where((e) => e.kind == 'harsh_brake').toList();
       expect(brakes.length, 1); // one event per excursion, not per sample
       expect(brakes.single.timestampUtc, t0.add(ms(2000))); // extreme sample time
@@ -120,9 +79,8 @@ void main() {
 
     test('harsh ACCEL positive side: +2.5 exactly emits HARSH_ACCEL', () async {
       final h = _Harness();
-      final c = build(h);
-      await feed(c, [0.0, 2.5, 2.5, 0.0]);
-      await c.flush();
+      await _feed(h.classifier, [0.0, 2.5, 2.5, 0.0], t0);
+      await h.classifier.flush();
       final accels = h.discrete().where((e) => e.kind == 'harsh_accel').toList();
       expect(accels.length, 1);
       expect(accels.single.extra['threshold_mps2'], 2.5);
@@ -130,41 +88,37 @@ void main() {
 
     test('cooldown: second excursion within cooldownMs is suppressed', () async {
       final h = _Harness();
-      final c = build(h);
       // Excursion 1 peaks at t+1s..t+2s (closed by baseline at t+3s), emits.
-      // Excursion 2 peaks at t+4s..t+5s — 2–3 s after the first emission ⇒
+      // Excursion 2 peaks at t+4s..t+5s — 2 s after the first emission ⇒
       // inside the 5000 ms cooldown ⇒ suppressed (peak-per-window rule).
-      await feed(c, [0.0, -5.0, -5.0, 0.0, -5.0, -5.0, 0.0]);
-      await c.flush();
+      await _feed(h.classifier, [0.0, -5.0, -5.0, 0.0, -5.0, -5.0, 0.0], t0);
+      await h.classifier.flush();
       expect(h.discrete().where((e) => e.kind == 'harsh_brake').length, 1);
     });
 
     test('past cooldown: excursions >5 s apart both emit', () async {
       final h = _Harness();
-      final c = build(h);
-      await feed(c, [0.0, -5.0, -5.0, 0.0]); // emits ~t+1s
-      await feed(c, [0.0, -4.0, 0.0], startMs: 10000); // emits ~t+11s (>5 s later)
-      await c.flush();
+      await _feed(h.classifier, [0.0, -5.0, -5.0, 0.0], t0); // emits ~t+1s
+      await _feed(h.classifier, [0.0, -4.0, 0.0], t0.add(ms(10000))); // emits ~t+11s
+      await h.classifier.flush();
       expect(h.discrete().where((e) => e.kind == 'harsh_brake').length, 2);
     });
 
     test('turn BELOW rate: 34 dps sustained emits nothing', () async {
       final h = _Harness();
-      final c = build(h);
       for (var i = 0; i <= 3; i++) {
-        await c.onSample(gyro(t0.add(ms(i * 500)), dps(34)));
+        await h.classifier.onSample(gyro(t0.add(ms(i * 500)), dps(34)));
       }
-      await c.flush();
+      await h.classifier.flush();
       expect(h.discrete().where((e) => e.kind == 'turn'), isEmpty);
     });
 
     test('turn AT rate + MIN duration: 35 dps for 1000 ms emits TURN right', () async {
       final h = _Harness();
-      final c = build(h);
       for (var i = 0; i <= 2; i++) {
-        await c.onSample(gyro(t0.add(ms(i * 500)), dps(35)));
+        await h.classifier.onSample(gyro(t0.add(ms(i * 500)), dps(35)));
       }
-      await c.flush();
+      await h.classifier.flush();
       final turns = h.discrete().where((e) => e.kind == 'turn').toList();
       expect(turns.length, 1);
       expect(turns.single.extra['direction'], 'right');
@@ -174,20 +128,18 @@ void main() {
 
     test('turn sustained but SHORT: < min duration emits nothing', () async {
       final h = _Harness();
-      final c = build(h);
-      await c.onSample(gyro(t0, dps(60)));
-      await c.onSample(gyro(t0.add(ms(500)), dps(60))); // only 500 ms span
-      await c.flush();
+      await h.classifier.onSample(gyro(t0, dps(60)));
+      await h.classifier.onSample(gyro(t0.add(ms(500)), dps(60))); // only 500 ms span
+      await h.classifier.flush();
       expect(h.discrete().where((e) => e.kind == 'turn'), isEmpty);
     });
 
     test('turn LEFT sign from negative yaw rate', () async {
       final h = _Harness();
-      final c = build(h);
       for (var i = 0; i <= 2; i++) {
-        await c.onSample(gyro(t0.add(ms(i * 500)), dps(-55)));
+        await h.classifier.onSample(gyro(t0.add(ms(i * 500)), dps(-55)));
       }
-      await c.flush();
+      await h.classifier.flush();
       final turns = h.discrete().where((e) => e.kind == 'turn').toList();
       expect(turns.single.extra['direction'], 'left');
       expect(turns.single.extra['peak_rate_dps'], 55.0);
@@ -195,15 +147,15 @@ void main() {
 
     test('vibration gate: parked→rumble transition opens, rumble→parked closes', () async {
       final h = _Harness();
-      final c = build(h);
       // Parked: constant z (zero variance).
       for (var i = 0; i < 4; i++) {
-        await c.onSample(accel(t0.add(ms(i * 100)), 0.0, 9.81));
+        await h.classifier.onSample(accel(t0.add(ms(i * 100)), 0.0, 9.81));
       }
       expect(h.discrete().where((e) => e.kind == 'vibration_gate'), isEmpty);
-      // Engine rumble: alternate ±0.5 → window variance 0.25 ≥ 0.05 ⇒ OPEN.
+      // Engine rumble: alternate ±0.5 around gravity → window variance
+      // 0.25 ≥ 0.05 ⇒ OPEN.
       for (var i = 4; i < 10; i++) {
-        await c.onSample(
+        await h.classifier.onSample(
             accel(t0.add(ms(i * 100)), 0.0, i.isOdd ? 10.31 : 9.31));
       }
       final gates = h.discrete().where((e) => e.kind == 'vibration_gate').toList();
@@ -212,7 +164,7 @@ void main() {
       expect(gates.single.extra['reason'], 'vibration_gate_open');
       // Back to parked stillness ⇒ CLOSE.
       for (var i = 10; i < 16; i++) {
-        await c.onSample(accel(t0.add(ms(i * 100)), 0.0, 9.81));
+        await h.classifier.onSample(accel(t0.add(ms(i * 100)), 0.0, 9.81));
       }
       final gates2 =
           h.discrete().where((e) => e.kind == 'vibration_gate').toList();
@@ -223,42 +175,43 @@ void main() {
 
     test('reset() clears run state and cooldown across trips', () async {
       final h = _Harness();
-      final c = build(h);
-      await feed(c, [0.0, -5.0, -5.0, 0.0]); // emits #1
-      await c.flush();
-      c.reset();
-      await feed(c, [0.0, -5.0, -5.0, 0.0], startMs: 2000); // would be cooldown-suppressed
-      await c.flush();
+      await _feed(h.classifier, [0.0, -5.0, -5.0, 0.0], t0); // emits #1
+      await h.classifier.flush();
+      h.classifier.reset();
+      await _feed(h.classifier, [0.0, -5.0, -5.0, 0.0], t0.add(ms(2000)));
+      // Without reset() this would be cooldown-suppressed; with it, it emits.
+      await h.classifier.flush();
       expect(h.discrete().where((e) => e.kind == 'harsh_brake').length, 2);
     });
 
     test('mutable th applies freshly fetched calibration from next sample on', () async {
       final h = _Harness();
-      final c = build(h,
-          th: const ClassificationThresholds(
-              harshBrakeMps2: 10, // impossible limit
-              harshAccelMps2: 2.5,
-              turnRateDps: 35,
-              turnMinDurationMs: 1000,
-              maxSampleGapMs: 2000,
-              cooldownMs: 5000,
-              vibrationGateVariance: 0.05));
-      await feed(c, [0.0, -5.0, -5.0, 0.0]);
+      final c = EventClassifier(
+        thresholds: const ClassificationThresholds(
+            harshBrakeMps2: 10, // impossible limit
+            harshAccelMps2: 2.5,
+            turnRateDps: 35,
+            turnMinDurationMs: 1000,
+            maxSampleGapMs: 2000,
+            cooldownMs: 5000,
+            vibrationGateVariance: 0.05),
+        sink: h.sink,
+      );
+      await _feed(c, [0.0, -5.0, -5.0, 0.0], t0);
       await c.flush();
       expect(h.discrete().where((e) => e.kind == 'harsh_brake'), isEmpty);
       // Re-calibrate to the default limit mid-life (AppRuntime does this at
       // trip start alongside reset()).
       c.th = ClassificationThresholds.defaults;
       c.reset();
-      await feed(c, [0.0, -5.0, -5.0, 0.0]);
+      await _feed(c, [0.0, -5.0, -5.0, 0.0], t0);
       await c.flush();
       expect(h.discrete().where((e) => e.kind == 'harsh_brake').length, 1);
     });
 
-    test('raw samples pass through the sink untouched (collector still caches them)', () async {
+    test('raw samples pass through untouched (collector still caches them)', () async {
       final h = _Harness();
-      final c = build(h);
-      await feed(c, [0.0, -5.0, -5.0, 0.0]);
+      await _feed(h.classifier, [0.0, -5.0, -5.0, 0.0], t0);
       expect(h.all.where((s) => s.kind == 'accelerometer').length, 4);
     });
   });
@@ -273,26 +226,26 @@ void main() {
       dbPath = '${dir.path}/cfg.db';
       db = await databaseFactory.openDatabase(dbPath,
           options: OpenDatabaseOptions(
-              version: 1, onCreate: (d, v) => CachedConfigStore.onCreate(d, v)));
+              version: 1,
+              onCreate: (d, v) => CachedConfigStore.onCreate(d as Database, v)));
     });
 
     tearDown(() async {
       await db.close();
-      await databaseFactory.deleteDatabase(file: dbPath);
+      await databaseFactory.deleteDatabase(dbPath);
     });
 
     test('fresh fetch wins and is persisted to cache', () async {
-      final payload = classificationConfigPayloadFixture();
       final store = CachedConfigStore(db);
       final th = await resolveThresholds(
-        source: _FakeSource(payload),
+        source: _FakeSource(classificationConfigPayloadFixture()),
         cache: store,
       );
       expect(th.harshBrakeMps2, 4.2);
       expect(th.turnRateDps, 40);
       // Persisted: a subsequent offline resolve restores it, not the defaults.
-      final restored = await resolveThresholds(
-          source: _FakeSource(null), cache: store);
+      final restored =
+          await resolveThresholds(source: _FakeSource(null), cache: store);
       expect(restored.harshBrakeMps2, 4.2);
     });
 
@@ -314,7 +267,8 @@ void main() {
       });
       final src = HttpClassificationConfigSource(
           client: client, accessToken: () => 'tok-1');
-      final th = await resolveThresholds(source: src, cache: CachedConfigStore(db));
+      final th =
+          await resolveThresholds(source: src, cache: CachedConfigStore(db));
       expect(th.harshBrakeMps2, 4.2);
       expect(th.vibrationGateVariance, 0.07);
     });
@@ -361,27 +315,30 @@ void main() {
       dir = await dbFactory.createTemporaryDatabaseDirectory();
       dbPath = '${dir.path}/sensors.db';
       final db = await databaseFactory.openDatabase(dbPath,
-          options: OpenDatabaseOptions(version: FixDao.dbVersion,
+          options: OpenDatabaseOptions(
+              version: FixDao.dbVersion,
               onCreate: (d, v) async {
-            await FixDao.onCreate(d, v);
-            await SensorDao.onCreate(d, v);
-          }));
+                await FixDao.onCreate(d as Database, v);
+                await SensorDao.onCreate(d as Database, v);
+              }));
       dao = SensorDao(db);
     });
 
     tearDown(() async {
       await dao.close();
-      await databaseFactory.deleteDatabase(file: dbPath);
+      await databaseFactory.deleteDatabase(dbPath);
     });
 
     Future<void> seedEvents(SensorDao d, int n, DateTime start) async {
       for (var i = 0; i < n; i++) {
-        final id = await d.insertEvent(StoredSensorEvent(
-          id: 0,
+        final id = await d.insertEvent(pendingSensorRow(
           kind: 'harsh_brake',
-          eventTimestamp: start.add(Duration(seconds: i)),
-          payload: {'values': [-5.0], 'magnitude_mps2': 5.0, 'source': 'device'},
-          syncState: SyncState.pending,
+          ts: start.add(Duration(seconds: i)),
+          payload: {
+            'values': [-5.0],
+            'magnitude_mps2': 5.0,
+            'source': 'device',
+          },
         ));
         expect(id, greaterThan(0));
       }
@@ -403,7 +360,8 @@ void main() {
 
       // A second claim can never re-upload ACKED rows (batch UUID already
       // consumed server-side): backlog is empty.
-      expect(await dao.claimBatch('9a8b7c6d-5555-4444-8888-111122223333', 10),
+      expect(
+          await dao.claimBatch('9a8b7c6d-5555-4444-8888-111122223333', 10),
           isEmpty);
       expect(await dao.pendingCount(), 0);
     });
@@ -422,13 +380,13 @@ void main() {
       // replaying the SAME b2 body is what the ON CONFLICT path absorbs.
     });
 
-    test('encodeSensorBatchBody is byte-stable under replay and matches wire schema shape', () async {
+    test('encodeSensorBatchBody is replay-stable and matches wire schema shape', () async {
       await seedEvents(dao, 2, t0);
       final batchId = 'deadbeef-1111-4222-8333-aabbccddeeff';
       final claimed = await dao.claimBatch(batchId, 10);
-      final first = encodeSensorBatchBody(batchId, claimed);
-      final replay = encodeSensorBatchBody(batchId, claimed);
-      final decoded = jsonDecode(first) as Map<String, Object?>;
+      final first = jsonDecode(encodeSensorBatchBody(batchId, claimed));
+      final replay = jsonDecode(encodeSensorBatchBody(batchId, claimed));
+      final decoded = first as Map<String, Object?>;
       expect(decoded['batch_id'], batchId);
       final events = decoded['events'] as List;
       expect(events.length, 2);
@@ -436,30 +394,37 @@ void main() {
       // Exact key set POST /ingest/sensors SensorBatchSchema requires.
       expect(ev.keys.toSet(), {'event_timestamp', 'kind', 'payload'});
       expect(ev['kind'], 'harsh_brake');
-      // Byte-identical replay ⇒ server-side PK conflict ⇒ already_received.
-      expect(
-          (jsonDecode(replay) as Map).cast<String, Object?>()['batch_id'],
-          decoded['batch_id']);
+      // Content-stable replay: only the volatile client_sent_at wall-clock may
+      // differ between encodes; every server-deduped byte (batch_id + ordered
+      // event bodies) is identical ⇒ a wire-level replay hits the
+      // ingest_batches.batch_id PK ON CONFLICT path ⇒ already_received
+      // (asserted against the real Fastify route in
+      // backend/tests/sensor_batch_contract.test.ts).
+      expect(decoded['batch_id'], (replay as Map<String, Object?>)['batch_id']);
+      expect(decoded['events'], replay['events']);
       // Deterministic content ordering (event-time ASC) between claims/replays.
-      expect(jsonDecode(first), jsonDecode(replay));
     });
 
     test('classifier emissions flow through SensorCollector.ingest unthrottled into the cache', () async {
-      final batchId = 'cafe1234-0000-4000-8000-abcdefabcdef';
-      await seedEvents(dao, 0, t0); // ensure DAO usable
       final collector = SensorCollector(
-          dao: dao, source: null, sampleInterval: const Duration(seconds: 2));
+          dao: dao, sampleInterval: const Duration(seconds: 2));
       await collector.beginCollection();
       final h = _Harness();
       final c = EventClassifier(
-          thresholds: ClassificationThresholds.defaults, sink: collector.ingestCompleter(h));
-      // Two raw samples 1 s apart (under the 2 s throttle) + a braking run.
+          thresholds: ClassificationThresholds.defaults,
+          sink: (s) async {
+            await collector.ingest(s);
+            await h.sink(s);
+          });
+      // Two raw accel samples 1 s apart (under the 2 s throttle) forming a
+      // braking run; the discrete event they produce must still be stored.
       await c.onSample(accel(t0, 0.0));
       await c.onSample(accel(t0.add(const Duration(seconds: 1)), -5.0));
       await c.onSample(accel(t0.add(const Duration(seconds: 2)), -5.0));
       await c.onSample(accel(t0.add(const Duration(seconds: 3)), 0.0));
       await c.flush();
       // Discrete harsh_brake bypasses throttling entirely (§Phase 2 contract).
+      final batchId = 'cafe1234-0000-4000-8000-abcdefabcdef';
       final stored = await dao.claimBatch(batchId, 10);
       expect(stored.map((e) => e.kind), contains('harsh_brake'));
       await collector.endCollection();
@@ -488,4 +453,35 @@ class _FakeSource implements ClassificationConfigSource {
   final Map<String, Object?>? payload;
   @override
   Future<Map<String, Object?>?> fetch() async => payload;
+}
+
+/// Capturing sink for classifier emissions + raw pass-through samples.
+class _Harness {
+  _Harness() {
+    classifier = EventClassifier(
+        thresholds: ClassificationThresholds.defaults, sink: sink);
+  }
+
+  final all = <RawSensorSample>[];
+  late final EventClassifier classifier;
+
+  Future<void> sink(RawSensorSample e) async => all.add(e);
+
+  List<RawSensorSample> discrete() => all
+      .where((s) =>
+          s.kind == 'harsh_brake' ||
+          s.kind == 'harsh_accel' ||
+          s.kind == 'turn' ||
+          s.kind == 'vibration_gate')
+      .toList();
+}
+
+Future<void> _feed(EventClassifier c, List<double> xs, DateTime t0,
+    {int stepMs = 1000}) async {
+  for (var i = 0; i < xs.length; i++) {
+    await c.onSample(RawSensorSample(
+        kind: 'accelerometer',
+        timestampUtc: t0.add(Duration(milliseconds: i * stepMs)),
+        values: [xs[i], 0, 9.81]));
+  }
 }
