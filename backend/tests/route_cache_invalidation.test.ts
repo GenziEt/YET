@@ -40,7 +40,7 @@ function makeFake() {
       if (e.expiresAt <= now()) { map.delete(key); return null; }
       return e.v;
     },
-    set(key, value, ttlSeconds) { map.set(key, value, { expiresAt: now() + ttlSeconds * 1000 }); },
+    set(key, value, ttlSeconds) { map.set(key, { v: value, expiresAt: now() + ttlSeconds * 1000 }); },
     del(key) { map.delete(key); },
     keys(pattern) {
       const re = new RegExp('^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');

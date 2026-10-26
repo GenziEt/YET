@@ -48,6 +48,9 @@ const adminId = randomUUID();
 // consent" state delete the rows first; other suites may legitimately hold
 // consent for their own drivers, so we never TRUNCATE shared tables.
 const FIX_CONSENT = [driverA, driverB];
+// Users created INSIDE tests (managers, route-scope principals) — tracked here
+// so afterAll can delete them before their tenant fleets (FK order).
+const extraUserIds: string[] = [];
 
 function scrypt(pw: string): string {
   // Must match identity/routes.ts hashPassword format so verifyPassword accepts it.
@@ -172,23 +175,30 @@ d('Phase 0 gates (Postgres integration)', () => {
 
   afterAll(async () => {
     if (app) await app.close();
-    // Remove fixtures (children first).
-    await poolX.query(`DELETE FROM audit_log WHERE actor_id = ANY($1::uuid[]) OR target_user = ANY($1::uuid[])`, [FIX_CONSENT]).catch(() => {});
+    // Remove fixtures (children first). The mgrA/mgrB/admin users inserted
+    // inside tests are captured here and deleted BEFORE fleets — a stray FK
+    // error in teardown would otherwise fail the suite even when every test
+    // passed (and poison re-runs of the by-name purge in beforeAll).
+    const FIX_USERS = [driverA, driverB, adminId, ...extraUserIds];
+    await poolX.query(`DELETE FROM audit_log WHERE actor_id = ANY($1::uuid[]) OR target_user = ANY($1::uuid[])`, [FIX_USERS]).catch(() => {});
     await poolX.query(`DELETE FROM location_fixes WHERE vehicle_id = $1 OR driver_id IN ($2,$3)`, [vehicleA, driverA, driverB]).catch(() => {});
     await poolX.query(`DELETE FROM ingest_batches WHERE driver_id IN ($1,$2)`, [driverA, driverB]);
-    await poolX.query(`DELETE FROM driver_vehicle_assignments WHERE driver_id IN ($1,$2)`, [driverA, driverB]);
+    await poolX.query(`DELETE FROM driver_vehicle_assignments WHERE driver_id IN ($1,$2) OR vehicle_id = $3`, [driverA, driverB, vehicleA]);
     await poolX.query(`DELETE FROM consent_records WHERE driver_id IN ($1,$2)`, [driverA, driverB]);
     // The cross-fleet test inserts a trip for driver A (trips.driver_id FK blocks
     // user deletion until removed); trip_events/separations hang off trips.
-    await poolX.query(`DELETE FROM trip_events WHERE trip_id IN (SELECT trip_id FROM trips WHERE driver_id IN ($1,$2))`, [driverA, driverB]).catch(() => {});
-    await poolX.query(`DELETE FROM separation_incidents WHERE driver_id IN ($1,$2)`, [driverA, driverB]).catch(() => {});
-    await poolX.query(`DELETE FROM trips WHERE driver_id IN ($1,$2)`, [driverA, driverB]).catch(() => {});
+    await poolX.query(`DELETE FROM trip_events WHERE trip_id IN (SELECT trip_id FROM trips WHERE driver_id = ANY($1::uuid[]))`, [FIX_USERS]).catch(() => {});
+    await poolX.query(`DELETE FROM separation_incidents WHERE driver_id = ANY($1::uuid[])`, [FIX_USERS]).catch(() => {});
+    await poolX.query(`DELETE FROM trips WHERE driver_id = ANY($1::uuid[])`, [FIX_USERS]).catch(() => {});
     // Notification side-effects (target_user FK) and refresh tokens from logins in this suite.
-    await poolX.query(`DELETE FROM notification_log WHERE target_user IN ($1,$2)`, [driverA, driverB]).catch(() => {});
-    await poolX.query(`DELETE FROM user_push_tokens WHERE user_id IN ($1,$2)`, [driverA, driverB]).catch(() => {});
-    await poolX.query(`DELETE FROM refresh_tokens WHERE user_id IN ($1,$2)`, [driverA, driverB]).catch(() => {});
+    await poolX.query(`DELETE FROM notification_log WHERE target_user = ANY($1::uuid[])`, [FIX_USERS]).catch(() => {});
+    await poolX.query(`DELETE FROM user_push_tokens WHERE user_id = ANY($1::uuid[])`, [FIX_USERS]).catch(() => {});
+    await poolX.query(`DELETE FROM refresh_tokens WHERE user_id = ANY($1::uuid[])`, [FIX_USERS]).catch(() => {});
+    // Geofences created by the Phase 3 /route scoping tests hang off fleets via
+    // fleet_id — drop them before the tenants.
+    await poolX.query(`DELETE FROM geofences WHERE fleet_id IN ($1,$2)`, [fleetA, fleetB]).catch(() => {});
     await poolX.query(`DELETE FROM vehicles WHERE id = $1`, [vehicleA]);
-    await poolX.query(`DELETE FROM users WHERE id IN ($1,$2)`, [driverA, driverB]);
+    await poolX.query(`DELETE FROM users WHERE id = ANY($1::uuid[])`, [FIX_USERS]);
     await poolX.query(`DELETE FROM fleets WHERE id IN ($1,$2)`, [fleetA, fleetB]);
     await poolX.end();
   });
@@ -288,6 +298,7 @@ d('Phase 0 gates (Postgres integration)', () => {
     // Provision managers in each tenant directly (registration API covers drivers).
     const mgrA = randomUUID();
     const mgrB = randomUUID();
+    extraUserIds.push(mgrA, mgrB);
     await poolX.query(
       `INSERT INTO users (id, role, full_name, email, password_hash, locale, is_active, fleet_id)
        VALUES ($1,'FLEET_MANAGER','P0G Manager A',$3,$4,'en',true,$5),
@@ -335,6 +346,7 @@ d('Phase 0 gates (Postgres integration)', () => {
 
   it('same-fleet FLEET_MANAGER is ALLOWED on the same paths (positive control)', async () => {
     const mgrA = randomUUID();
+    extraUserIds.push(mgrA);
     await poolX.query(
       `INSERT INTO users (id, role, full_name, email, password_hash, locale, is_active, fleet_id)
        VALUES ($1,'FLEET_MANAGER','P0G Manager A2',$2,$3,'en',true,$4)
@@ -349,7 +361,60 @@ d('Phase 0 gates (Postgres integration)', () => {
     expect(trips.statusCode).toBe(200);
   });
 
-  /* ---------------- 4. Compliance-boot unit matrix (pure, no DB) ------------- */
+  /* ---------------- 4. Phase 3 — /route & ETA fleet scoping (negative) -------- */
+
+  it('GET /route: cross-fleet destination geofence → 404; cross-fleet vehicle → 403; same-fleet allowed', async () => {
+    // NOTE: this suite runs with NO OSRM container and DATABASE_URL pointed at
+    // the scratch DB, so getRoute() always lands on the honest straight-line
+    // fallback (source='fallback_straight'). The assertions below are all about
+    // the AUTHZ boundary in front of that pipeline — denials must happen BEFORE
+    // any routing work, which is exactly what we assert via status codes.
+    const mgrB = randomUUID();
+    const mgrA = randomUUID();
+    extraUserIds.push(mgrB, mgrA);
+    await poolX.query(
+      `INSERT INTO users (id, role, full_name, email, password_hash, locale, is_active, fleet_id)
+       VALUES ($1,'FLEET_MANAGER','P0G Route Mgr B',$3,$4,'en',true,$5),
+              ($2,'FLEET_MANAGER','P0G Route Mgr A',$6,$4,'en',true,$7)`,
+      [mgrB, mgrA, `p0g-rb-${mgrB.slice(0,8)}@yet.local`, scrypt('phase0-mgr-pw'), fleetB,
+       `p0g-ra-${mgrA.slice(0,8)}@yet.local`, fleetA]);
+    const { signAccessToken } = await import('../src/lib/jwt.js');
+    const tokB = { authorization: `Bearer ${signAccessToken({ sub: mgrB, role: 'FLEET_MANAGER', locale: 'en', fleetId: fleetB })}` };
+    const tokA = { authorization: `Bearer ${signAccessToken({ sub: mgrA, role: 'FLEET_MANAGER', locale: 'en', fleetId: fleetA })}` };
+
+    // Fleet-A warehouse zone (circle geometry like tests/geofence_crossing.test.ts).
+    const zoneA = randomUUID();
+    await poolX.query(
+      `INSERT INTO geofences (geofence_id, name, kind, category, active, geom, radius_m, center_lat, center_lng, fleet_id)
+       VALUES ($1,'p0g-route-zoneA','CIRCLE','WAREHOUSE',true,
+               ST_SetSRID(ST_MakePoint($3,$2),4326)::geography::geometry, 350, $2, $3, $4)`,
+      [zoneA, 9.0305, 38.7469, fleetA]);
+
+    const RT = 'from=9.01,38.71&to=9.02,38.72';
+
+    // (a) Manager B naming fleet A's zone as destination ⇒ SAME 404 as a
+    //     nonexistent id — no existence oracle (§1.7 minimization).
+    const deniedZone = await app.inject({ method: 'GET', url: `/route?${RT}&destination_geofence_id=${zoneA}`, headers: tokB });
+    expect(deniedZone.statusCode).toBe(404);
+    expect(JSON.parse(deniedZone.body).error).toBe('geofence_not_found');
+
+    // (b) Manager B naming fleet A's VEHICLE for the ETA ⇒ 403 cross_fleet_denied
+    //     (assertTargetInFleet on the route/ETA read path — live speed/trip state
+    //     is personal data).
+    const deniedEta = await app.inject({ method: 'GET', url: `/route?${RT}&vehicle_id=${vehicleA}`, headers: tokB });
+    expect(deniedEta.statusCode).toBe(403);
+    expect(JSON.parse(deniedEta.body).error).toBe('cross_fleet_denied');
+
+    // (c) Positive control: manager A may use its own zone AND its own vehicle.
+    const okZone = await app.inject({ method: 'GET', url: `/route?${RT}&destination_geofence_id=${zoneA}`, headers: tokA });
+    expect(okZone.statusCode).toBe(200);
+    expect(okZone.json().to).toEqual({ lat: 9.0305, lng: 38.7469 }); // centroid resolved server-side
+    const okEta = await app.inject({ method: 'GET', url: `/route?${RT}&vehicle_id=${vehicleA}`, headers: tokA });
+    expect(okEta.statusCode).toBe(200);
+    expect(okEta.json().eta).not.toBeNull();
+  });
+
+  /* ---------------- 5. Compliance-boot unit matrix (pure, no DB) ------------- */
 
   it('validateComplianceBoot: production error matrix + residency allowlist', async () => {
     const { validateComplianceBoot, isResidencyHostAllowed } = await import('../src/config/env.js');
