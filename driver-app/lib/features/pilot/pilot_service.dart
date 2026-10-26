@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io' show Directory, File, Platform;
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -68,12 +69,19 @@ class VehicleAssignment {
       : '$plateNumber · $fleetName';
 }
 
-/// Outcome of the one-tap "Start Trip" assignment confirmation.
+/// Outcome of the one-tap "Start Trip" assignment confirmation. Under the
+/// §Phase 4 hard gate these values split into ALLOW (confirmed, offlineCached)
+/// and BLOCK (noVehicle, offlineUnknown) for trip START; trip END is never
+/// blocked — see [allowsTripStart] / [allowsTripEnd].
 enum AssignmentCheck {
-  confirmed, // driver has an active vehicle — tracking may begin
-  noVehicle, // fleet manager must assign a vehicle first (still allow tracking)
+  confirmed, // server-verified active vehicle — tracking may begin
+  noVehicle, // server says no assignment — START BLOCKED until the fleet
+             // manager assigns a vehicle (backend ingest would 409 anyway)
   offlineCached, // network failed but a cached assignment exists → proceed
-  offlineUnknown, // network failed AND nothing cached → warn, still allow tap
+                 // (valid as of the last online check)
+  offlineUnknown, // network failed AND nothing cached → START BLOCKED for a
+                  // fresh trip (nothing proves an assignment exists); the UI
+                  // asks the driver to contact their fleet manager
 }
 
 /// §Phase 4 hard gate: "Assignment enforcement prevents collection or trip
