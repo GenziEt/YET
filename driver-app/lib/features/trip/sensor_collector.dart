@@ -11,6 +11,7 @@ class RawSensorSample {
     required this.kind,
     required this.timestampUtc,
     required this.values,
+    this.extra = const {},
   });
 
   final String kind; // must be in StoredSensorEvent.allowedKinds
@@ -18,8 +19,11 @@ class RawSensorSample {
   /// accelerometer: [x,y,z] m/s² · gyroscope: [x,y,z] rad/s ·
   /// vibration_gate: [state 0|1] · harsh/turn events: [severity].
   final List<double> values;
+  /// Optional classifier metadata (magnitude, threshold, direction, source…)
+  /// merged into the uploaded payload. Empty for raw samples.
+  final Map<String, Object?> extra;
 
-  Map<String, Object?> toPayload() => {'values': values};
+  Map<String, Object?> toPayload() => {'values': values, ...extra};
 }
 
 /// Source of sensor samples: injected stream in tests, real sensors_plus event
@@ -48,7 +52,7 @@ class SensorCollector {
   static const continuousKinds = {'accelerometer', 'gyroscope'};
 
   final SensorDao _dao;
-  final SensorStreamFactory? _source;
+  SensorStreamFactory? _source;
   final Duration _sampleInterval;
 
   StreamSubscription<RawSensorSample>? _sub;
@@ -71,6 +75,19 @@ class SensorCollector {
     await _resubscribe();
   }
 
+  /// Rebind the live producer after construction (AppRuntime wires the stream
+  /// THROUGH the Phase 2 classifier, which is built after this collector).
+  /// If a subscription is live it is restarted against the new source.
+  Future<void> setSource(SensorStreamFactory? source) async {
+    if (_source == source) return;
+    _source = source;
+    if (_active) {
+      await _sub?.cancel();
+      _sub = null;
+      await _resubscribe();
+    }
+  }
+
   /// Trip ended → stop sensing immediately (battery budget); cached rows flush
   /// through SyncWorker like everything else — never discarded here.
   Future<void> endCollection() async {
@@ -81,7 +98,8 @@ class SensorCollector {
 
   /// Test seam + live stream sink: push one sample through the exact write path.
   /// Returns the stored row id, or -1 when gated off (inactive / throttled /
-  /// unknown kind).
+  /// unknown kind). Discrete event kinds (harsh_brake, harsh_accel, turn,
+  /// vibration_gate) are NEVER throttled — every classified event is kept.
   Future<int> ingest(RawSensorSample s) async {
     if (!_active) return -1;
     if (!StoredSensorEvent.allowedKinds.contains(s.kind)) return -1;
@@ -92,6 +110,14 @@ class SensorCollector {
         return -1;
       }
       _lastStoredAt[s.kind] = s.timestampUtc;
+    } else {
+      // A discrete event must not suppress the raw-sample cadence clock, and a
+      // raw sample older than an already-stored discrete event must never
+      // regress it (keeps throttle monotonic under interleaved producers).
+      final prevAccel = _lastStoredAt['accelerometer'];
+      if (prevAccel == null || prevAccel.isBefore(s.timestampUtc)) {
+        _lastStoredAt['accelerometer'] = s.timestampUtc;
+      }
     }
     _storedThisTrip++;
     return _dao.insertEvent(StoredSensorEvent(

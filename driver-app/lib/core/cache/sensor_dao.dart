@@ -41,7 +41,6 @@ class StoredSensorEvent {
     'harsh_accel',
     'turn',
     'vibration_gate',
-    'audio_engine',
   };
 
   Map<String, Object?> toDbRow() => {

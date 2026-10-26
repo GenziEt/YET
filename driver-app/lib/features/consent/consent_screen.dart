@@ -21,7 +21,6 @@ class ConsentScreen extends StatefulWidget {
 }
 
 class _ConsentScreenState extends State<ConsentScreen> {
-  bool _audioOptIn = false;
   bool _submitting = false;
 
   @override
@@ -43,22 +42,17 @@ class _ConsentScreenState extends State<ConsentScreen> {
             _section(l.consentCollectHeading, l.consentCollectBody),
             _section(l.consentWhoHeading, l.consentWhoBody),
             _section(l.consentRetentionHeading, l.consentRetentionBody),
-            SwitchListTile(
-              title: Text(l.consentImproveMotion),
-              value: _audioOptIn,
-              onChanged: (v) => setState(() => _audioOptIn = v),
-            ),
             const SizedBox(height: 16),
             FilledButton(
               onPressed: _submitting
                   ? null
                   : () async {
                       setState(() => _submitting = true);
-                      // Mandatory scopes only unless audio explicitly opted in (§1.7).
+                      // Mandatory scopes only — engine-audio classification was
+                      // removed from the product surface (Phase 2, Option B).
                       await widget.repo.accept(scopes: [
                         'location',
                         'motion',
-                        if (_audioOptIn) 'audio',
                       ]);
                       if (context.mounted) widget.onAccepted();
                     },
