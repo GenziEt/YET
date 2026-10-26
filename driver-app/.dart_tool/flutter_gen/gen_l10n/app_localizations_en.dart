@@ -19,7 +19,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get consentCollectHeading => 'What we collect';
 
   @override
-  String get consentCollectBody => 'GPS location during trips, movement sensor data (accelerometer/gyroscope). Audio is NEVER collected unless you turn on \'Improve motion detection\' below.';
+  String get consentCollectBody => 'GPS location during trips, movement sensor data (accelerometer/gyroscope). Audio is NEVER collected.';
 
   @override
   String get consentWhoHeading => 'Who sees it';
@@ -32,9 +32,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get consentRetentionBody => 'Detailed location history for 90 days, then reduced to trip summaries. You can request deletion at any time; we complete it within 30 days.';
-
-  @override
-  String get consentImproveMotion => 'Improve motion detection (optional microphone sampling, 1–2 seconds)';
 
   @override
   String get consentAgree => 'I agree — start using YET';
@@ -143,6 +140,12 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get offlineMapAttribution => 'Map tiles © YET self-hosted tiles, based on OpenStreetMap data © OpenStreetMap contributors';
+
+  @override
+  String get offlineMapNoTiles => 'No cached map tiles yet — download maps before dropping a pin';
+
+  @override
   String get notifTripStartedTitle => 'Trip started';
 
   @override
@@ -159,4 +162,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get notifBannerFallback => 'Fleet notification';
+
+  @override
+  String get notifBannerDismiss => 'Dismiss';
 }

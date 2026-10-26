@@ -250,6 +250,10 @@ sqflite_common
 3.5
 file:///root/.pub-cache/hosted/pub.dev/sqflite_common-2.5.4+6/
 file:///root/.pub-cache/hosted/pub.dev/sqflite_common-2.5.4+6/lib/
+sqflite_common_ffi
+3.5
+file:///root/.pub-cache/hosted/pub.dev/sqflite_common_ffi-2.3.4+4/
+file:///root/.pub-cache/hosted/pub.dev/sqflite_common_ffi-2.3.4+4/lib/
 sqflite_darwin
 3.5
 file:///root/.pub-cache/hosted/pub.dev/sqflite_darwin-2.4.1+1/
@@ -258,6 +262,10 @@ sqflite_platform_interface
 3.5
 file:///root/.pub-cache/hosted/pub.dev/sqflite_platform_interface-2.4.0/
 file:///root/.pub-cache/hosted/pub.dev/sqflite_platform_interface-2.4.0/lib/
+sqlite3
+3.5
+file:///root/.pub-cache/hosted/pub.dev/sqlite3-2.9.4/
+file:///root/.pub-cache/hosted/pub.dev/sqlite3-2.9.4/lib/
 stack_trace
 2.18
 file:///root/.pub-cache/hosted/pub.dev/stack_trace-1.11.1/
@@ -300,8 +308,8 @@ file:///root/.pub-cache/hosted/pub.dev/vector_math-2.1.4/
 file:///root/.pub-cache/hosted/pub.dev/vector_math-2.1.4/lib/
 vm_service
 3.3
-file:///root/.pub-cache/hosted/pub.dev/vm_service-14.2.5/
-file:///root/.pub-cache/hosted/pub.dev/vm_service-14.2.5/lib/
+file:///root/.pub-cache/hosted/pub.dev/vm_service-14.2.4/
+file:///root/.pub-cache/hosted/pub.dev/vm_service-14.2.4/lib/
 web
 3.4
 file:///root/.pub-cache/hosted/pub.dev/web-1.1.1/
