@@ -16,7 +16,7 @@
  *    immediately; total failure yields the honest straight-line fallback.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 
 // env.ts fail-fasts at import time without these (inert contract, same pattern
 // as tests/osm_gateway.test.ts — no live connection is ever made for these paths).
@@ -60,25 +60,35 @@ function makeFake() {
 const { pool } = await import('../src/db/pool.js');
 
 let fake: ReturnType<typeof makeFake>;
+// The suite's Postgres companion-cache leg is exercised against a live scratch
+// DB when YET_TEST_DB/DATABASE_URL points at one (full-suite runs). To keep the
+// Redis + OSRM legs hermetic, snapshot route_cache once and TRUNCATE it for the
+// duration of the file; afterEach restores only rows this process created
+// (cache_key prefix 'r:' — foreign keys never reference route_cache, so a
+// truncate-restore cycle is safe). On the closed-port default every statement
+// rejects and is swallowed (no-op).
+async function pg(q: string): Promise<void> {
+  try { await pool.query(q); } catch { /* unreachable DB ⇒ no-op by contract */ }
+}
+
+beforeAll(async () => {
+  await pg(`DROP TABLE IF EXISTS route_cache_test_snapshot`);
+  await pg(`CREATE TABLE route_cache_test_snapshot AS SELECT * FROM route_cache WHERE cache_key LIKE 'yet:route%'`);
+  await pg(`DELETE FROM route_cache WHERE cache_key LIKE 'yet:route%'`);
+});
+
+afterAll(async () => {
+  await pg(`INSERT INTO route_cache SELECT * FROM route_cache_test_snapshot`);
+  await pg(`DROP TABLE route_cache_test_snapshot`);
+});
+
 beforeEach(async () => {
   fake = makeFake();
   redis.setFakeCache(fake.store);
-  // Hermeticity: if DATABASE_URL points at a live DB (full-suite runs export
-  // YET_TEST_DB), other suites' write-through rows would otherwise leak into
-  // these hit/miss assertions and make step 2 (Postgres companion cache) win
-  // before the injected fetch is ever called. Snapshot + clear route_cache for
-  // the duration of each test; on the closed-port default this is a no-op
-  // (pool.query rejects, swallowed). These tests target the Redis + OSRM legs
-  // specifically — the Postgres leg has its own coverage in osm_gateway.test.ts.
-  await pool.query(
-    `DROP TABLE IF EXISTS route_cache_isolated;
-     CREATE TABLE route_cache_isolated AS SELECT * FROM route_cache;
-     DELETE FROM route_cache`).catch(() => undefined);
+  // Per-test isolation within the file: drop rows written by earlier tests.
+  await pg(`DELETE FROM route_cache WHERE cache_key LIKE 'yet:route%'`);
 });
 afterEach(async () => {
-  await pool.query(
-    `INSERT INTO route_cache SELECT * FROM route_cache_isolated;
-     DROP TABLE route_cache_isolated`).catch(() => undefined);
   redis.setFakeCache(null);
   svc.setFetchForTesting(null);
 });

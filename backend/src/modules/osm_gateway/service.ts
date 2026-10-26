@@ -182,14 +182,25 @@ export async function getRoute(
   opts: { allowStale?: boolean; destinationGeofenceId?: string } = {},
 ): Promise<RouteResult> {
   const key = routeCacheKey(from, to);
+  // Cache-epoch gate: invalidateRoutesForGeofence bumps this below the route's
+  // own cached_at whenever a destination zone is edited. Any Redis/Postgres
+  // entry written before that bump is STALE for this read even if its TTL has
+  // not lapsed yet — serving it would hand back pre-edit geometry (the exact
+  // failure §Phase 3 invalidation rules exist to prevent). Missing epoch ⇒ no
+  // invalidation recorded ⇒ entries serve normally within their TTL.
+  const epoch = await cacheGetJson<number>('yet:route:epoch').catch(() => null);
+  const staleByEpoch = (cachedAtIso: string): boolean =>
+    epoch !== null && Date.parse(cachedAtIso) < epoch;
 
   // 1) Fresh Redis hit — target ≤ 50 ms (§1.9.4).
   const fresh = await cacheGetJson<RouteResult>(key);
-  if (fresh) return { ...fresh, source: 'redis' };
+  if (fresh && !staleByEpoch(fresh.cached_at)) return { ...fresh, source: 'redis' };
 
-  // 2) Unexpired Postgres row (warm start after Redis flush).
+  // 2) Unexpired Postgres row (warm start after Redis flush). The epoch gate
+  //    applies here too: a pre-edit companion-cache row must not resurrect
+  //    stale geometry after invalidateRoutesForGeofence dropped the Redis copy.
   const pg = await pgRouteLookup(key);
-  if (pg) { void cacheSetJson(key, pg, ROUTE_TTL_S); await indexDest(key, opts); return pg; }
+  if (pg && !staleByEpoch(pg.cached_at)) { void cacheSetJson(key, pg, ROUTE_TTL_S); await indexDest(key, opts); return pg; }
 
   // 3) Live OSRM call (bounded retry on network aborts only — fetchOsrmWithRetry).
   //    The try block wraps ONLY the transport leg: programming errors that leak
@@ -231,7 +242,7 @@ export async function getRoute(
   }
   await cacheSetJson(key, out, ROUTE_TTL_S);
   await indexDest(key, opts); // AWAITED: the dest-index is part of the write —
-  void pgRouteUpsert(key, out); // invalidateRoutesForGeofence must never race a fire-and-forget index write.
+  await pgRouteUpsert(key, out); // awaited so invalidateRoutesForGeofence can never race a fire-and-forget write-through (pgRouteUpsert swallows its own errors).
   return out;
 }
 
@@ -268,6 +279,11 @@ async function indexDest(routeKey: string, opts: { destinationGeofenceId?: strin
  * Called from updateGeofence/deleteGeofence AFTER the row change commits.
  */
 export async function invalidateRoutesForGeofence(geofenceId: string): Promise<void> {
+  // Bump the global route-cache epoch FIRST: reads reject any entry whose
+  // cached_at predates this instant, so even a Postgres companion row that the
+  // coordinate-bump below misses (e.g. zone centroid rounded differently) can
+  // never serve pre-edit geometry within its remaining TTL.
+  await cacheSetJson('yet:route:epoch', Date.now(), ROUTE_TTL_S * 4).catch(() => undefined);
   const idx = destIndexKey(geofenceId);
   const members = await cacheGetJson<string[]>(idx).catch(() => null);
   if (members && members.length > 0) await cacheDelMany(members);

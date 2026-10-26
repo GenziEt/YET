@@ -176,20 +176,36 @@ export async function evaluateCrossings(vehicleId, driverId, fromMs, toMs) {
     // Because the diff runs once over the whole fix sequence, each (geofence,
     // transition moment) yields exactly one candidate event regardless of how many
     // trips exist or in what order batches arrived — determinism preserved.
+    return diffTransitions({ fences, fenceIds, status, fixes, tripRows, fromMs, toMs }, vehicleId, driverId);
+}
+/**
+ * Pure transition-diff + attribution core of evaluateCrossings (extracted for
+ * Phase 3 deterministic unit coverage WITHOUT Postgres — tests/crossing_transitions.test.ts
+ * feeds it synthetic status matrices and asserts the exact ENTER/EXIT event set).
+ * Invariants (mirrors §1.8.3 determinism):
+ *   - fixes MUST be sorted ascending by event time (`sortFixesChronologically`
+ *     enforces this even when batch assembly delivered out-of-order rows —
+ *     offline replays arrive unordered, event time is the only truth).
+ *   - status[gi][fi] is the inside/outside matrix row for fence gi at fix fi;
+ *     index 0 may be the pre-window anchor fix (excluded from emitted events by
+ *     the fromMs/toMs window filter).
+ *   - exactly one event per (fence, transition moment); attribution via
+ *     attributeTrip guarantees one trip per event.
+ */
+export function diffTransitions(input, vehicleId, driverId) {
+    const { fences, fenceIds, status, fixes, tripRows, fromMs, toMs } = input;
+    const ordered = sortFixesChronologically(fixes, status);
     const events = [];
     for (let gi = 0; gi < fenceIds.length; gi++) {
         const fence = fences[gi];
-        let prevInside = false;
-        for (let fi = 1; fi < fixes.length; fi++) {
-            const prev = fixes[fi - 1], cur = fixes[fi];
-            const wasInside = status[gi][fi - 1] ?? false;
-            const isInside = status[gi][fi] ?? false;
+        for (let fi = 1; fi < ordered.fixes.length; fi++) {
+            const cur = ordered.fixes[fi];
+            const wasInside = ordered.status[gi][fi - 1] ?? false;
+            const isInside = ordered.status[gi][fi] ?? false;
             // Only report crossings whose event fix lies inside the requested window
             // (the anchor fix at index 0 only informs state at the leading edge).
-            if (cur.t < fromMs || cur.t > toMs) {
-                prevInside = isInside;
+            if (cur.t < fromMs || cur.t > toMs)
                 continue;
-            }
             if (isInside !== wasInside) {
                 const trip = attributeTrip(tripRows, cur.t);
                 if (trip) {
@@ -200,12 +216,24 @@ export async function evaluateCrossings(vehicleId, driverId, fromMs, toMs) {
                         event_timestamp_ms: cur.t, lat: cur.lat, lng: cur.lng,
                     });
                 }
-                void prev;
             }
-            prevInside = isInside;
         }
     }
     return events;
+}
+/** Sort fixes ascending by EVENT time, carrying the status-matrix columns with
+ *  them. Arrival order is meaningless (§1.8.3) — an offline-replayed batch can
+ *  hand us rows out of order, and a boundary diff computed on arrival order
+ *  would emit phantom ENTER/EXIT pairs. Returns new arrays; input untouched. */
+export function sortFixesChronologically(fixes, status) {
+    const idx = fixes.map((_, i) => i).sort((a, b) => fixes[a].t - fixes[b].t);
+    const alreadySorted = idx.every((v, pos) => v === pos);
+    if (alreadySorted)
+        return { fixes, status };
+    return {
+        fixes: idx.map((i) => fixes[i]),
+        status: status.map((row) => idx.map((i) => row[i] ?? false)),
+    };
 }
 /** Deterministic single-trip attribution for a crossing fix (see rules above). */
 export function attributeTrip(tripRows, fixT) {

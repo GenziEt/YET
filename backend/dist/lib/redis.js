@@ -27,7 +27,19 @@ export function getRedis() {
     }
     return client;
 }
+export async function cacheDel(key) {
+    try {
+        await getRedis().del(key);
+    }
+    catch { /* best-effort */ }
+}
+let fakeStore = null;
+export function setFakeCache(store) { fakeStore = store; }
 export async function cacheGetJson(key) {
+    if (fakeStore) {
+        const raw = fakeStore.get(key);
+        return raw ? JSON.parse(raw) : null;
+    }
     try {
         const raw = await getRedis().get(key);
         return raw ? JSON.parse(raw) : null;
@@ -37,6 +49,10 @@ export async function cacheGetJson(key) {
     }
 }
 export async function cacheSetJson(key, value, ttlSeconds) {
+    if (fakeStore) {
+        fakeStore.set(key, JSON.stringify(value), Math.max(1, Math.round(ttlSeconds)));
+        return;
+    }
     try {
         await getRedis().set(key, JSON.stringify(value), 'EX', Math.max(1, Math.round(ttlSeconds)));
     }
@@ -44,9 +60,36 @@ export async function cacheSetJson(key, value, ttlSeconds) {
         /* best-effort */
     }
 }
-export async function cacheDel(key) {
+/** Prefix scan for invalidation indexes (e.g. all route keys that were written
+ *  through a given destination geofence). Uses SCAN (non-blocking), never KEYS. */
+export async function cacheKeysByPrefix(prefix) {
+    if (fakeStore)
+        return fakeStore.keys(`${prefix}*`);
+    const redis = getRedis();
+    const out = [];
     try {
-        await getRedis().del(key);
+        let cursor = '0';
+        do {
+            const [next, found] = await redis.scan(cursor, 'MATCH', `${prefix}*`, 'COUNT', 200);
+            cursor = next;
+            out.push(...found);
+        } while (cursor !== '0');
+    }
+    catch {
+        return []; // degraded: invalidation falls back to TTL expiry only
+    }
+    return out;
+}
+export async function cacheDelMany(keys) {
+    if (keys.length === 0)
+        return;
+    if (fakeStore) {
+        for (const k of keys)
+            fakeStore.del(k);
+        return;
+    }
+    try {
+        await getRedis().del(...keys);
     }
     catch { /* best-effort */ }
 }
