@@ -9,12 +9,19 @@
  * is meaningless).
  */
 
+// env.ts fail-fasts at import time (crossing.ts → db/pool.ts → config/env.js).
+// These are inert contract values — no connection is made for pure functions.
+// NOTE: the module import below MUST stay dynamic (await import) because vitest
+// hoists static imports above this env setup — same pattern as
+// tests/route_cache_invalidation.test.ts.
+process.env.NODE_ENV ??= 'test';
+process.env.DATABASE_URL ??= 'postgres://yet:test@127.0.0.1:1/yet_none';
+process.env.JWT_SECRET ??= 'crossing-test-secret-0123456789abcdef';
+
 import { describe, it, expect } from 'vitest';
-import {
-  diffTransitions,
-  sortFixesChronologically,
-  attributeTrip,
-} from '../src/modules/geofence/crossing.js';
+
+const { diffTransitions, sortFixesChronologically, attributeTrip } =
+  await import('../src/modules/geofence/crossing.js');
 
 // Minute-offset event times: T(0)=08:00 ... T(90)=09:30 (2026-10-20 UTC).
 const T = (min: number) => Date.UTC(2026, 9, 20, 8, min);

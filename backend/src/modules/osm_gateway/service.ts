@@ -192,6 +192,10 @@ export async function getRoute(
   if (pg) { void cacheSetJson(key, pg, ROUTE_TTL_S); await indexDest(key, opts); return pg; }
 
   // 3) Live OSRM call (bounded retry on network aborts only — fetchOsrmWithRetry).
+  //    The try block wraps ONLY the transport leg: programming errors that leak
+  //    past fetchOsrmWithRetry's rethrow (non-network exceptions, malformed
+  //    responses) must NOT be masked by the degradation ladder.
+  let out: RouteResult;
   try {
     const url = `${env.OSRM_BASE_URL}/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}`
       + `?overview=full&geometries=polyline`;
@@ -202,7 +206,7 @@ export async function getRoute(
     };
     if (body.code !== 'Ok' || !body.routes?.length) throw new RoutingHttpError(`OSRM ${body.code}`);
     const r = body.routes[0]!;
-    const out: RouteResult = {
+    out = {
       from, to,
       distance_m: Math.round(r.distance),
       duration_s: Math.round(r.duration),
@@ -210,11 +214,8 @@ export async function getRoute(
       source: 'osrm',
       cached_at: new Date().toISOString(),
     };
-    await cacheSetJson(key, out, ROUTE_TTL_S);
-    await indexDest(key, opts); // AWAITED: the dest-index is part of the write —
-    void pgRouteUpsert(key, out); // invalidateRoutesForGeofence must never race a fire-and-forget index write.
-    return out;
   } catch (err) {
+    if (!(err instanceof RoutingHttpError) && !isTransientNetworkError(err)) throw err;
     // 4) Degradation ladder: expired-but-recent Postgres row, then honest
     //    straight-line fallback (labeled so the dashboard never claims routing).
     console.warn('[osm-gateway] OSRM unavailable:', String(err));
@@ -225,9 +226,13 @@ export async function getRoute(
     const fb = straightLineFallback(from, to);
     // Cache the fallback briefly so a flapping OSRM doesn't multiply load.
     await cacheSetJson(key, fb, 30);
-    await indexDest(key, opts); // awaited — see write-through note above
+    await indexDest(key, opts); // awaited — see write-through note below
     return fb;
   }
+  await cacheSetJson(key, out, ROUTE_TTL_S);
+  await indexDest(key, opts); // AWAITED: the dest-index is part of the write —
+  void pgRouteUpsert(key, out); // invalidateRoutesForGeofence must never race a fire-and-forget index write.
+  return out;
 }
 
 /* --------------------- Geofence-keyed invalidation index --------------------- */
