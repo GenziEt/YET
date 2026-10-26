@@ -6,7 +6,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -59,13 +58,13 @@ void main() {
     late String dbPath;
 
     setUp(() async {
-      dir = await dbFactory.createTemporaryDatabaseDirectory();
+      dir = await Directory.systemTemp.createTemp('yet_test_db');
       dbPath = '${dir.path}/yet_cache.db';
       SharedPreferences.setMockInitialValues({});
     });
 
     tearDown(() async {
-      await databaseFactory.deleteDatabase(file: dbPath);
+      await databaseFactory.deleteDatabase(dbPath);
     });
 
     Future<AppRuntime> boot(http.Client client) async =>
@@ -142,14 +141,14 @@ void main() {
     late String dbPath;
 
     setUp(() async {
-      dir = await dbFactory.createTemporaryDatabaseDirectory();
+      dir = await Directory.systemTemp.createTemp('yet_test_db');
       dbPath = '${dir.path}/yet_cache.db';
       SharedPreferences.setMockInitialValues(
           {'consent_accepted_v1': true, 'permissions_acknowledged': true});
     });
 
     tearDown(() async {
-      await databaseFactory.deleteDatabase(file: dbPath);
+      await databaseFactory.deleteDatabase(dbPath);
     });
 
     Future<AppRuntime> boot(http.Client client) async =>

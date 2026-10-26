@@ -212,9 +212,15 @@ class AppRuntime extends ChangeNotifier {
       }
       classifier.reset();
       final raw = _sensorSource;
+      // classifier.onSample is a Future<void> consumer — run it per sample
+      // while passing the sample through unchanged (asyncMap needs the
+      // element type preserved).
       await sensors.setSource(raw == null
           ? null
-          : () => raw().asyncMap(classifier.onSample));
+          : () => raw().asyncMap((s) async {
+                await classifier.onSample(s);
+                return s;
+              }));
       unawaited(gps.beginCollection());
       unawaited(sensors.beginCollection());
       return check;

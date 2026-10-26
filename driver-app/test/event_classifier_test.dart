@@ -1,9 +1,9 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'package:yet_driver/core/cache/fix_dao.dart';
@@ -222,12 +222,12 @@ void main() {
     late Database db;
 
     setUp(() async {
-      dir = await dbFactory.createTemporaryDatabaseDirectory();
+      dir = await Directory.systemTemp.createTemp('yet_test_db');
       dbPath = '${dir.path}/cfg.db';
       db = await databaseFactory.openDatabase(dbPath,
           options: OpenDatabaseOptions(
               version: 1,
-              onCreate: (d, v) => CachedConfigStore.onCreate(d as Database, v)));
+              onCreate: (d, v) => CachedConfigStore.onCreate(d, v)));
     });
 
     tearDown(() async {
@@ -312,14 +312,14 @@ void main() {
     late SensorDao dao;
 
     setUp(() async {
-      dir = await dbFactory.createTemporaryDatabaseDirectory();
+      dir = await Directory.systemTemp.createTemp('yet_test_db');
       dbPath = '${dir.path}/sensors.db';
       final db = await databaseFactory.openDatabase(dbPath,
           options: OpenDatabaseOptions(
               version: FixDao.dbVersion,
               onCreate: (d, v) async {
-                await FixDao.onCreate(d as Database, v);
-                await SensorDao.onCreate(d as Database, v);
+                await FixDao.onCreate(d, v);
+                await SensorDao.onCreate(d, v);
               }));
       dao = SensorDao(db);
     });
@@ -346,7 +346,7 @@ void main() {
 
     test('claimBatch stamps one UUID; double ACK replay changes nothing', () async {
       await seedEvents(dao, 4, t0);
-      final batchId = '3f2a7b6c-1111-4222-8333-aabbccddeeff';
+      const batchId = '3f2a7b6c-1111-4222-8333-aabbccddeeff';
       final claimed = await dao.claimBatch(batchId, 10);
       expect(claimed.length, 4);
       expect(claimed.every((e) => e.syncState == SyncState.uploading), isTrue);
@@ -368,11 +368,11 @@ void main() {
 
     test('process-death replay: unacked UPLOADING returns to PENDING and reclaims under a NEW uuid', () async {
       await seedEvents(dao, 3, t0);
-      final b1 = '11111111-2222-4333-8444-555555555555';
+      const b1 = '11111111-2222-4333-8444-555555555555';
       await dao.claimBatch(b1, 10);
       // Crash before ACK → reopen performs recovery (§1.8.1).
       expect(await dao.recoverUnackedUploads(), 3);
-      final b2 = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+      const b2 = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
       final reclaimed = await dao.claimBatch(b2, 10);
       expect(reclaimed.length, 3);
       expect(reclaimed.every((e) => e.batchId == b2), isTrue);
@@ -382,7 +382,7 @@ void main() {
 
     test('encodeSensorBatchBody is replay-stable and matches wire schema shape', () async {
       await seedEvents(dao, 2, t0);
-      final batchId = 'deadbeef-1111-4222-8333-aabbccddeeff';
+      const batchId = 'deadbeef-1111-4222-8333-aabbccddeeff';
       final claimed = await dao.claimBatch(batchId, 10);
       final first = jsonDecode(encodeSensorBatchBody(batchId, claimed));
       final replay = jsonDecode(encodeSensorBatchBody(batchId, claimed));
@@ -424,7 +424,7 @@ void main() {
       await c.onSample(accel(t0.add(const Duration(seconds: 3)), 0.0));
       await c.flush();
       // Discrete harsh_brake bypasses throttling entirely (§Phase 2 contract).
-      final batchId = 'cafe1234-0000-4000-8000-abcdefabcdef';
+      const batchId = 'cafe1234-0000-4000-8000-abcdefabcdef';
       final stored = await dao.claimBatch(batchId, 10);
       expect(stored.map((e) => e.kind), contains('harsh_brake'));
       await collector.endCollection();

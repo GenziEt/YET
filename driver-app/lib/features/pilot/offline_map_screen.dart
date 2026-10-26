@@ -188,14 +188,14 @@ class _OfflineMapScreenState extends State<OfflineMapScreen> {
       return;
     }
     if (!mounted) return;
+    // Refresh the root so the preview picks up freshly written files even
+    // if it had not resolved before the download started. The existence
+    // check must complete before setState (setState callbacks are sync).
+    final rootExists = await Directory(result.cacheRoot).exists();
     setState(() {
       _running = false;
       _progress = result;
-      // Refresh the root so the preview picks up freshly written files even
-      // if it had not resolved before the download started.
-      _cacheRoot = (await Directory(result.cacheRoot).exists())
-          ? result.cacheRoot
-          : _cacheRoot;
+      if (rootExists) _cacheRoot = result.cacheRoot;
     });
   }
 
