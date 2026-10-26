@@ -113,6 +113,19 @@ export const SensorBatchSchema = z.object({
   events: z.array(SensorEventSchema).min(1).max(env.INGEST_MAX_BATCH_SENSORS),
 });
 
+/**
+ * Pure wire-format check for a sensor batch, split out of [ingestSensorBatch]
+ * so the §1.8.2 replay-idempotency CONTRACT (batch envelope + per-event shape
+ * the driver app's SensorDao/encodeSensorBatchBody produces) is unit-testable
+ * without a database. The INSERT path below still enforces it at the boundary
+ * via SensorBatchSchema; this helper is the same ruleset used by tests and by
+ * any pre-flight validation callers. Duplicate-batch REPLAY itself is handled
+ * by the ingest_batches.batch_id PK: ON CONFLICT DO NOTHING → already_received.
+ */
+export function validateSensorBatchPayload(body: unknown): z.infer<typeof SensorBatchSchema> {
+  return SensorBatchSchema.parse(body);
+}
+
 async function ensureSensorPartitions(timestamps: string[]) {
   const months = new Set(timestamps.map((t) => t.slice(0, 7)));
   for (const m of months) await pool.query('SELECT ensure_month_partition($1,$2)', ['sensor_events', `${m}-01T00:00:00Z`]);
