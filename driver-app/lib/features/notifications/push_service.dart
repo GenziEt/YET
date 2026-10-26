@@ -57,8 +57,8 @@ typedef TokenRegistrar = Future<bool> Function(String token);
 
 /// Default registrar: plain HTTP POST with the driver JWT. Auth header supplied
 /// via [authHeaderProvider] seam so this file stays decoupled from the auth store.
-Future<TokenRegistrar> httpTokenRegistrar(
-    http.Client client, Future<String?> Function() authHeaderProvider) async {
+TokenRegistrar httpTokenRegistrar(
+    http.Client client, Future<String?> Function() authHeaderProvider) {
   return (String token) async {
     final auth = await authHeaderProvider();
     if (auth == null) return false; // signed out: nothing to register against
@@ -77,6 +77,29 @@ Future<TokenRegistrar> httpTokenRegistrar(
     // 201 first registration, 200 on UPSERT refresh — both mean "registered".
     return res.statusCode == 201 || res.statusCode == 200;
   };
+}
+
+/// Plugin-free default [PushTokenSource] for the Phase 4 bootstrap (§1.2 rule:
+/// no firebase_messaging in the dependency set until the Phase 5 push decision
+/// lands). It reports "no FCM token available" honestly — getToken() -> null
+/// makes PushService.registerFromDevice() a documented no-op rather than a
+/// fake success, and the foreground-message stream stays empty because there
+/// is no radio behind it yet. The banner surface ([PushService.banners]) is
+/// fully live for anything that DOES publish (tests, local event hooks), and
+/// Phase 5 replaces this class with a FirebaseMessaging-backed source without
+/// touching any other wiring.
+class IdlePushTokenSource implements PushTokenSource {
+  const IdlePushTokenSource();
+
+  @override
+  Future<String?> getToken() async => null;
+
+  @override
+  Stream<String> get onTokenRefresh => const Stream<String>.empty();
+
+  @override
+  Stream<PushMessage> get onForegroundMessage =>
+      const Stream<PushMessage>.empty();
 }
 
 /// Phase 5 (E) — push-token lifecycle + foreground banner bus.

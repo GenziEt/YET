@@ -340,6 +340,22 @@ class AppLocalizations {
         return 'Offline maps ready ($downloaded new, $failed failed)';
     }
   }
+  String get offlineMapAttribution {
+    switch (localeName) {
+      case 'am':
+        return 'ካርታዎች © YET የራስ-አስተዳደር ታይሎች፣ በOpenStreetMap መረጃ ላይ የተመሰረቱ © OpenStreetMap አበርካቾች';
+      default:
+        return 'Map tiles © YET self-hosted tiles, based on OpenStreetMap data © OpenStreetMap contributors';
+    }
+  }
+  String get offlineMapNoTiles {
+    switch (localeName) {
+      case 'am':
+        return 'እስካሁን የተቀመጡ ካርታ ታይሎች የሉም — ምልክት ከማጣትዎ በፊት ካርታዎችን ያውርዱ';
+      default:
+        return 'No cached map tiles yet — download maps before dropping a pin';
+    }
+  }
   String get notifTripStartedTitle {
     switch (localeName) {
       case 'am':
@@ -386,6 +402,14 @@ class AppLocalizations {
         return 'የአደሻ ማሳወቂያ';
       default:
         return 'Fleet notification';
+    }
+  }
+  String get notifBannerDismiss {
+    switch (localeName) {
+      case 'am':
+        return 'ዝጋ';
+      default:
+        return 'Dismiss';
     }
   }
 }

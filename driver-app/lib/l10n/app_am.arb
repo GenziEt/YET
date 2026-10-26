@@ -48,6 +48,8 @@
   "offlineMapStart": "ካርታዎችን አሁን አውርድ",
   "offlineMapProgress": "ካርታዎች በማውረድ ላይ፦ {done} ከ{total}",
   "offlineMapDone": "ያለ መስመር ካርታዎች ዝግጁ ({downloaded} አዲስ፣ {failed} ወድቀዋል)",
+  "offlineMapAttribution": "ካርታዎች © YET የራስ-አስተዳደር ታይሎች፣ በOpenStreetMap መረጃ ላይ የተመሰረቱ © OpenStreetMap አበርካቾች",
+  "offlineMapNoTiles": "እስካሁን የተቀመጡ ካርታ ታይሎች የሉም — ምልክት ከማጣትዎ በፊት ካርታዎችን ያውርዱ",
   "@tripStartConfirm": {
     "placeholders": {
       "vehicle": {
@@ -80,5 +82,6 @@
   "notifSeparationTitle": "የአሽከርካሪ መለያየት ማንቂያ",
   "notifGeofenceEnterTitle": "ወደ ግቢ ገብቷል",
   "notifGeofenceExitTitle": "ከግቢ ወጥቷል",
-  "notifBannerFallback": "የአደሻ ማሳወቂያ"
+  "notifBannerFallback": "የአደሻ ማሳወቂያ",
+  "notifBannerDismiss": "ዝጋ"
 }

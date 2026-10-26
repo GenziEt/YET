@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/app_runtime.dart';
@@ -9,6 +10,8 @@ import 'core/config/app_config.dart';
 import 'features/auth/token_store.dart';
 import 'features/consent/consent_repository.dart';
 import 'features/consent/consent_screen.dart';
+import 'features/notifications/push_banner.dart';
+import 'features/notifications/push_service.dart';
 import 'features/permissions/permissions_screen.dart';
 import 'features/trip/trip_home_screen.dart';
 import 'l10n/app_localizations.dart';
@@ -20,6 +23,27 @@ import 'platform/sensor_source.dart';
 /// low-end device, the app degrades to the proven Phase 0 flow (consent ->
 /// permissions -> trip home) instead of crash-looping.
 bool _pipelineEnabled = true;
+
+/// §Phase 4 (G4): platform bridge for battery-optimization exemption and
+/// "Allow all the time" location settings. Kotlin side:
+/// android/app/src/main/kotlin/com/yet/driver/MainActivity.kt handles
+/// ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS (with the POWER_MANAGER
+/// settings-screen fallback) and ACTION_LOCATION_SOURCE_SETTINGS. Kept as a
+/// plain MethodChannel call (no plugin dependency) so this package stays
+/// testable headless — off-platform the channel simply returns null and the
+/// explainer text + runbook fallback remain (§docs/PILOT-RUNBOOK.md).
+const batteryExemptionChannel = MethodChannel('yet.dev/battery_exemption');
+
+Future<void> _openPhoneSettings() async {
+  try {
+    await batteryExemptionChannel.invokeMethod<void>('requestIgnoreBatteryOptimizations');
+    await batteryExemptionChannel.invokeMethod<void>('openLocationSettings');
+  } catch (_) {
+    // Headless host / missing native handler: the screen's explainer copy and
+    // PILOT-RUNBOOK manual steps are the documented fallback. Never throw out
+    // of the UI thread — the driver must still be able to acknowledge.
+  }
+}
 
 /// YET driver app — Phase 0 + Phase 1 ingest pipeline.
 /// Cold-start budget (§1.9.1): <=3s to a usable screen on 2GB RAM Android 10.
@@ -51,6 +75,12 @@ class _YetAppState extends State<YetApp> {
   GeolocatorPositionSource? _positionSource;
   SensorsPlusSource? _sensorSource;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
+  /// §Phase 4 (G5): foreground push-banner bus. Constructed with the DEFAULT
+  /// plugin-free [IdlePushTokenSource] — FCM token registration itself is a
+  /// Phase 5 deliverable (firebase_messaging dependency decision lives there);
+  /// until then this keeps the banner surface + HTTP registrar real code paths
+  /// without pulling a plugin into the default bootstrap (§1.2 rule).
+  PushService? _push;
 
   @override
   void initState() {
@@ -60,6 +90,19 @@ class _YetAppState extends State<YetApp> {
       // null runtime; the cache opens right after and notifies this state.
       Future.microtask(_bootstrapPipeline);
     }
+  }
+
+  /// Build the foreground-banner bus once: real HTTP registrar against
+  /// POST /notifications/token, idle token source until Phase 5 wires FCM.
+  PushService _makePushService() {
+    final client = http.Client();
+    return PushService(
+      source: const IdlePushTokenSource(),
+      registrar: httpTokenRegistrar(client, () async {
+        final t = widget.tokenStore.accessToken;
+        return (t == null || t.isEmpty) ? null : 'Bearer $t';
+      }),
+    );
   }
 
   Future<void> _bootstrapPipeline() async {
