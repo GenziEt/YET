@@ -6,7 +6,7 @@ import '../../l10n/app_localizations.dart';
 import '../consent/consent_repository.dart';
 import '../pilot/feedback_screen.dart';
 import '../pilot/offline_map_screen.dart';
-import '../pilot/pilot_service.dart' show AssignmentCheck;
+import '../pilot/pilot_service.dart' show AssignmentCheck, allowsTripStart;
 
 /// Phase 1 trip screen. §1.2: max 3 taps to start a trip — here it is
 /// ONE tap once permissions are set. GPS collection feeds the SQLite cache;
@@ -40,21 +40,35 @@ class _TripHomeScreenState extends State<TripHomeScreen>
     with WidgetsBindingObserver {
   bool _tripActive = false;
   int _pendingSyncCount = 0; // fallback when no worker wired yet
-  /// Result of the one-tap GET /me vehicle-assignment confirm (§Phase 4).
+  /// Result of the most recent trip-toggle attempt (one-tap GET /me vehicle
+  /// assignment confirm, §Phase 4 hard gate).
   AssignmentCheck _assignment = AssignmentCheck.offlineUnknown;
 
-  /// Banner text for the assignment result; null = show nothing.
+  /// Banner text for the last toggle outcome; null = show nothing.
+  ///
+  /// The §Phase 4 hard gate means a BLOCKED start never flips [the trip] to
+  /// active — so blocked banners ([AssignmentCheck.noVehicle],
+  /// [AssignmentCheck.offlineUnknown]) show regardless of `_tripActive`, and
+  /// success banners only make sense while actually tracking.
   String? _assignmentBanner(AppLocalizations l) {
-    if (!_tripActive) return null;
     switch (_assignment) {
       case AssignmentCheck.confirmed:
+        if (!_tripActive) return null; // stale confirm after an end tap
         final v = widget.runtime?.pilot.cachedAssignment;
         return v == null ? null : l.tripStartConfirm(v.label);
       case AssignmentCheck.noVehicle:
+        // Hard-gated start: server says no assignment — tell the driver to
+        // call the fleet manager instead of collecting doomed fixes.
         return l.tripVehicleNone;
       case AssignmentCheck.offlineCached:
+        // Allowed via cache; no banner — never nag an offline driver (§1.8).
+        return null;
       case AssignmentCheck.offlineUnknown:
-        return null; // never nag a driver who has no signal (§1.8)
+        if (_tripActive) return null; // end tap returns this sentinel silently
+        // Blocked fresh start with zero connectivity: nothing proves an
+        // assignment exists. Same actionable copy as noVehicle — the driver
+        // must reach their fleet manager either way.
+        return l.tripVehicleNone;
     }
   }
 
@@ -105,18 +119,40 @@ class _TripHomeScreenState extends State<TripHomeScreen>
     super.dispose();
   }
 
-  void _toggleTrip() {
+  /// True while the async assignment confirm of a START tap is in flight —
+  /// guards against double-taps starting two cadences.
+  bool _toggling = false;
+
+  Future<void> _toggleTrip() async {
+    if (_toggling) return;
     final runtime = widget.runtime;
-    setState(() => _tripActive = !_tripActive);
     if (runtime != null) {
-      // One tap: /me assignment confirm + battery anchor + GPS/sensor/cadence
-      // start together; the result drives the vehicle banner below.
-      runtime.onTripToggled(active: _tripActive).then((check) {
+      if (!_tripActive) {
+        // START: run the §Phase 4 hard gate FIRST. AppRuntime returns the
+        // AssignmentCheck without collecting anything when the gate blocks,
+        // so the UI must NOT flip to "END TRIP" on a blocked start — the
+        // driver stays on the honest idle button plus the actionable banner.
+        setState(() => _toggling = true);
+        final check = await runtime.onTripToggled(active: true);
         if (!mounted) return;
-        setState(() => _assignment = check);
-      });
+        setState(() {
+          _toggling = false;
+          _assignment = check;
+          if (allowsTripStart(check)) _tripActive = true;
+        });
+        return;
+      }
+      // END: never blocked by assignment state (allowsTripEnd == true) — a
+      // driver whose assignment lapsed mid-trip must always be able to stop
+      // collection and flush the cache (§1.8 "no data loss on transitions").
+      setState(() => _tripActive = false);
+      final check = await runtime.onTripToggled(active: false);
+      if (!mounted) return;
+      setState(() => _assignment = check);
       return;
     }
+    // No runtime wired (tests / kill-switch fallback): plain UI + cadence.
+    setState(() => _tripActive = !_tripActive);
     final sync = widget.sync;
     // §1.8.1: 60 s cadence only while a trip is active; ending pushes the tail.
     if (sync != null) {
@@ -187,13 +223,18 @@ class _TripHomeScreenState extends State<TripHomeScreen>
               ],
               const Spacer(),
               FilledButton(
-                onPressed: _toggleTrip,
+                onPressed: _toggling ? null : _toggleTrip,
                 style: FilledButton.styleFrom(
                   minimumSize: const Size.fromHeight(88),
                   backgroundColor: _tripActive ? Colors.red.shade700 : Colors.green.shade700,
                   textStyle: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
                 ),
-                child: Text(_tripActive ? l.endTrip : l.startTrip),
+                child: _toggling
+                    ? const SizedBox(
+                        width: 28, height: 28,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 3, color: Colors.white))
+                    : Text(_tripActive ? l.endTrip : l.startTrip),
               ),
             ],
           ),
