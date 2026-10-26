@@ -76,6 +76,30 @@ enum AssignmentCheck {
   offlineUnknown, // network failed AND nothing cached → warn, still allow tap
 }
 
+/// §Phase 4 hard gate: "Assignment enforcement prevents collection or trip
+/// start when no valid assignment exists." The backend already refuses DRIVER
+/// ingest without an active assignment (`modules/ingest/service.ts` throws
+/// `no_vehicle_assignment`, HTTP 409) — this client gate stops the app from
+/// collecting data it could never legitimately upload, so the driver learns at
+/// TAP TIME ("call your fleet manager") instead of after a whole off-grid trip.
+///
+/// Pure function so widget/unit tests pin every branch:
+///  * [AssignmentCheck.confirmed]     → allowed
+///  * [AssignmentCheck.offlineCached] → allowed (cache survives offline starts;
+///    the driver had a valid assignment as of the last online check)
+///  * [AssignmentCheck.noVehicle]     → BLOCKED (server said: no assignment)
+///  * [AssignmentCheck.offlineUnknown]→ BLOCKED for a fresh start (nothing
+///    proves an assignment exists); END is always allowed — see
+///    [allowsTripEnd].
+bool allowsTripStart(AssignmentCheck check) =>
+    check == AssignmentCheck.confirmed ||
+    check == AssignmentCheck.offlineCached;
+
+/// Ending a trip is never blocked by assignment state: a driver whose
+/// assignment lapses mid-trip must be able to stop collection and flush the
+/// cache (§1.8 "no data loss on transitions").
+bool allowsTripEnd(AssignmentCheck check) => true;
+
 /// Web-Mercator tile math for the offline pre-download bounding box (§Phase 4:
 /// "Offline map tile cache for pilot region ... downloaded before departure
 /// using self-hosted tile server"). Pure + static so unit tests pin zoom-count
@@ -138,11 +162,16 @@ class TileProgress {
     required this.total,
     required this.failed,
     required this.finished,
+    this.cacheRoot = '',
   });
   final int done;
   final int total;
   final int failed;
   final bool finished;
+  /// Absolute path of the on-device tile cache directory the download wrote
+  /// into — the read path for [OfflineTileImage] (§Phase 4: map widget reads
+  /// from the downloaded cache directory when offline).
+  final String cacheRoot;
   double get fraction => total == 0 ? 1 : done / total;
 }
 
@@ -253,6 +282,15 @@ class PilotService {
     _prefsLoaded = true;
   }
 
+  /// Test seam: preload the assignment cache exactly like a previous online
+  /// `confirmed` result would have, without touching SharedPreferences. Lets
+  /// offline-path tests pin the §Phase 4 gate behaviour deterministically.
+  @visibleForTesting
+  void seedAssignmentCache(VehicleAssignment? a) {
+    _assignmentCache = a;
+    _prefsLoaded = true;
+  }
+
   /// Confirm the driver has an assigned vehicle BEFORE tracking starts, so the
   /// first fix lands stamped with a vehicle the fleet manager actually handed
   /// out. Offline tolerance is deliberate: a driver in a no-signal depot must
@@ -302,7 +340,11 @@ class PilotService {
   // ── Feedback diagnostics (§Phase 4 deliverable) ────────────────────────────
 
   /// Collect EXACTLY the DiagnosticsSchema fields (PDPP minimization) and POST
-  /// /ingest/diagnostics. Returns true only when the server accepted it.
+  /// /ingest/diagnostics. Returns true only when the server accepted it. On
+  /// failure the payload is parked in the persistent retry queue (§Phase 4
+  /// "submission, retry, and success/failure states") and flushed automatically
+  /// on the next connectivity-triggered drain — the l10n promise "will retry
+  /// when you have signal" is backed by this code path, not just the copy.
   Future<bool> sendFeedback({
     required String issue, // gps_not_working | battery_drain | sync_stuck | other
     required int pendingSyncCount,
@@ -332,11 +374,20 @@ class PilotService {
       appVersion: '0.1.0',
       detail: detail,
     );
-    return SyncWorker.postDiagnostics(
+    final ok = await SyncWorker.postDiagnostics(
       accessToken: () => _tokens.accessToken ?? '',
       payload: payload,
       client: _client,
     );
+    if (!ok) {
+      try {
+        await queueFeedbackRetry(payload);
+      } catch (_) {
+        // SharedPreferences unavailable (rare): dropping a queued diagnostic
+        // is acceptable — it was already going to be dropped without the queue.
+      }
+    }
+    return ok;
   }
 
   // ── Offline tile pre-download (§Phase 4 deliverable) ───────────────────────
@@ -383,8 +434,12 @@ class PilotService {
       // Throttle UI rebuilds: notify on every 25 tiles or completion.
       if (!finished && done - notifiedAt < 25) return;
       notifiedAt = done;
-      onProgress?.call(
-          TileProgress(done: done, total: total, failed: failed, finished: finished));
+      onProgress?.call(TileProgress(
+          done: done,
+          total: total,
+          failed: failed,
+          finished: finished,
+          cacheRoot: root.path));
     }
 
     Future<void> worker() async {
@@ -423,7 +478,85 @@ class PilotService {
     await Future.wait(List.generate(
         concurrency.clamp(1, 8), (_) => worker()));
     emit(true);
-    return TileProgress(done: done, total: total, failed: failed, finished: true);
+    return TileProgress(
+        done: done,
+        total: total,
+        failed: failed,
+        finished: true,
+        cacheRoot: root.path);
+  }
+
+  // ── One-tap feedback retry queue (§Phase 4: "submission, retry, and
+  // success/failure states") ─────────────────────────────────────────────────
+  //
+  // The l10n contract promises the driver "Could not send — will retry when
+  // you have signal"; this queue makes that promise real. Failed diagnostics
+  // are persisted in SharedPreferences (tiny JSON list, capped so storage can
+  // never grow unbounded) with their ORIGINAL batch_id — the backend treats
+  // /ingest/diagnostics as idempotent per batch, so a replayed report can
+  // never double-count in the triage queue. [flushFeedbackQueue] is invoked by
+  // AppRuntime on every connectivity-triggered drain (§1.8.1 trigger list).
+
+  static const _kFeedbackQueue = 'pilot_feedback_queue_v1';
+  static const _maxQueuedFeedback = 20;
+
+  /// Enqueue one unsent feedback payload for automatic retry later.
+  Future<void> queueFeedbackRetry(Map<String, Object?> payload) async {
+    final sp = await SharedPreferences.getInstance();
+    final queue = _readFeedbackQueue(sp);
+    // Dedupe on batch_id: re-tapping the same failing report must not stack.
+    queue.removeWhere((e) => e['batch_id'] == payload['batch_id']);
+    queue.add(payload);
+    while (queue.length > _maxQueuedFeedback) {
+      queue.removeAt(0); // oldest first — newest reports matter most in triage
+    }
+    await sp.setString(_kFeedbackQueue, jsonEncode(queue));
+  }
+
+  /// Number of reports waiting for signal (drives the UI count honestly).
+  Future<int> pendingFeedbackCount() async {
+    final sp = await SharedPreferences.getInstance();
+    return _readFeedbackQueue(sp).length;
+  }
+
+  List<Map<String, Object?>> _readFeedbackQueue(SharedPreferences sp) {
+    final raw = sp.getString(_kFeedbackQueue);
+    if (raw == null) return [];
+    try {
+      final j = jsonDecode(raw);
+      if (j is! List) return [];
+      return j.whereType<Map<String, Object?>>().toList();
+    } catch (_) {
+      return []; // corrupt queue → start clean rather than crash the pilot flow
+    }
+  }
+
+  /// Attempt to deliver every queued report, oldest first. Stops at the first
+  /// network failure (no point hammering an offline radio) and persists the
+  /// remaining queue. Returns how many were delivered.
+  Future<int> flushFeedbackQueue() async {
+    final sp = await SharedPreferences.getInstance();
+    final queue = _readFeedbackQueue(sp);
+    if (queue.isEmpty) return 0;
+    var delivered = 0;
+    final remaining = <Map<String, Object?>>[];
+    for (final entry in queue) {
+      final ok = await SyncWorker.postDiagnostics(
+        accessToken: () => _tokens.accessToken ?? '',
+        payload: entry,
+        client: _client,
+      );
+      if (ok) {
+        delivered++;
+      } else {
+        // Network/server rejected it: keep THIS one and everything after it,
+        // stop draining so ordering and Retry-After semantics stay honest.
+        remaining.addAll(queue.sublist(delivered));
+        break;
+      }
+    }
+    await sp.setString(_kFeedbackQueue, jsonEncode(remaining));
+    return delivered;
   }
 }
 
