@@ -1,2 +1,4 @@
-build/
-.flutter-plugins-dependencies
+node_modules/
+.env
+.env.local
+*.env.*
