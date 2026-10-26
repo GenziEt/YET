@@ -182,10 +182,35 @@ class FakeDb implements Database {
     return _select(table, where: where, whereArgs: whereArgs, orderBy: orderBy, limit: limit);
   }
 
+  /// Simulated SQLite page size for stateful PRAGMA answers (§1.8.6 budget
+  /// checks). page_count is derived from the live row count so the prune loop
+  /// converges exactly like real SQLite as rows are evicted.
+  int pragmaPageSize = 4096;
+  /// Rows below this count report an empty (4-page) database; above it the
+  /// fake grows one page per row — tests dial [pragmaPageSize] to place the
+  /// simulated DB under/over the 80 MB warn level.
+  int pragmaFillThreshold = 200;
+
   @override
   Future<List<Map<String, Object?>>> rawQuery(String sql,
       [List<Object?>? args]) async {
     queries.add('raw:$sql');
+    final upper = sql.trim().toUpperCase();
+    if (upper.startsWith('PRAGMA PAGE_COUNT')) {
+      var rows = 0;
+      tables.forEach((_, r) => rows += r.length);
+      final pages = rows <= pragmaFillThreshold
+          ? 4
+          : pragmaFillThreshold + (rows - pragmaFillThreshold);
+      return [
+        {'page_count': pages}
+      ];
+    }
+    if (upper.startsWith('PRAGMA PAGE_SIZE')) {
+      return [
+        {'page_size': pragmaPageSize}
+      ];
+    }
     final agg = _aggregate(sql, args);
     if (agg != null) return agg;
     if (rawResults.isNotEmpty) return rawResults.removeAt(0);
@@ -500,7 +525,7 @@ void main() {
       final db = FakeDb()
         .._seed('location_fixes', [
           for (var i = 1; i <= 7; i++)
-            row(i, '2026-10-23T07:0${i}:00.000Z', state: 'UPLOADING', batch: 'b-old'),
+            row(i, '2026-10-23T07:0$i:00.000Z', state: 'UPLOADING', batch: 'b-old'),
           row(8, '2026-10-23T07:10:00.000Z', state: 'PENDING'),
         ]);
       final dao = FixDao(db);
@@ -533,7 +558,7 @@ void main() {
       final db = FakeDb()
         .._seed('location_fixes', [
           for (var i = 1; i <= 3; i++)
-            row(i, '2026-10-23T07:0${i}:00.000Z', state: 'UPLOADING', batch: 'b-9'),
+            row(i, '2026-10-23T07:0$i:00.000Z', state: 'UPLOADING', batch: 'b-9'),
           row(4, '2026-10-23T07:04:00.000Z', state: 'UPLOADING', batch: 'b-other'),
         ]);
       final dao = FixDao(db);
@@ -548,7 +573,7 @@ void main() {
       final db = FakeDb()
         .._seed('location_fixes', [
           for (var i = 1; i <= 5; i++)
-            {...row(i, '2026-10-01T07:0${i}:00.000Z', state: 'ACKED'), 'acked_at': '2026-10-01T08:00:00.000Z'},
+            {...row(i, '2026-10-01T07:0$i:00.000Z', state: 'ACKED'), 'acked_at': '2026-10-01T08:00:00.000Z'},
           row(6, '2026-10-23T07:00:00.000Z', state: 'PENDING'),
           {...row(7, '2026-10-23T07:01:00.000Z', state: 'ACKED'), 'acked_at': '2026-10-23T08:00:00.000Z'},
         ]);
@@ -736,9 +761,7 @@ void main() {
           {...row(3, '2026-10-15T07:00:20.000Z', state: 'ACKED'), 'acked_at': '2026-10-15T08:00:00.000Z'},
           {...row(4, '2026-10-15T07:00:30.000Z', state: 'ACKED'), 'acked_at': '2026-10-15T08:00:00.000Z'},
           row(5, '2026-10-23T07:00:00.000Z', state: 'PENDING'),
-        ])
-        ..rawResults.add([{'page_count': 100}]) // pages
-        ..rawResults.add([{'page_size': 4096}]); // bytes/page -> 409KB total
+        ]); // stateful PRAGMAs report a tiny DB (well under the 80MB warn level)
       final wSmall = SyncWorker(
         dao: FixDao(small),
         uploader: (id, _) async => IngestAck(batchId: id, accepted: 0, alreadyReceived: false),
@@ -752,10 +775,10 @@ void main() {
       final big = FakeDb()
         .._seed('location_fixes', [
           for (var i = 0; i < 6; i++)
-            {...row(i + 1, '2026-10-23T07:00:00.000Z', state: 'ACKED'), 'acked_at': '2026-10-23T08:00:00.000Z'},
+            {...row(i + 1, '2026-10-23T07:0$i:00.000Z', state: 'ACKED'), 'acked_at': '2026-10-23T08:00:00.000Z'},
         ])
-        ..rawResults.add([{'page_count': 30000}]) // ~117MB
-        ..rawResults.add([{'page_size': 4096}]); // budget-evict loop reads stateful PRAGMAs
+        ..pragmaFillThreshold = 0 // every row owns a page
+        ..pragmaPageSize = 32 * 1024 * 1024; // 32 MiB/page → 6 pages ≈ 192 MB (>80MB warn)
       final wBig = SyncWorker(
         dao: FixDao(big),
         uploader: (id, _) async => IngestAck(batchId: id, accepted: 0, alreadyReceived: false),
@@ -856,7 +879,7 @@ void main() {
       final db = FakeDb()
         .._seed('sensor_events', [
           for (var i = 1; i <= 4; i++)
-            srow(i, '2026-10-23T07:0${i}:00.000Z', state: 'UPLOADING', batch: 'b-9'),
+            srow(i, '2026-10-23T07:0$i:00.000Z', state: 'UPLOADING', batch: 'b-9'),
           srow(5, '2026-10-23T07:05:00.000Z', state: 'UPLOADING', batch: 'b-other'),
         ]);
       final dao = SensorDao(db);
@@ -879,7 +902,7 @@ void main() {
       final db = FakeDb()
         .._seed('sensor_events', [
           for (var i = 1; i <= 6; i++)
-            {...srow(i, '2026-10-01T07:0${i}:00.000Z', state: 'ACKED'), 'acked_at': '2026-10-01T08:00:00.000Z'},
+            {...srow(i, '2026-10-01T07:0$i:00.000Z', state: 'ACKED'), 'acked_at': '2026-10-01T08:00:00.000Z'},
           srow(7, '2026-10-23T07:00:00.000Z', state: 'PENDING'),
         ]);
       final dao = SensorDao(db);
@@ -889,8 +912,12 @@ void main() {
 
     test('storageBytes multiplies page_count x page_size like FixDao', () async {
       final db = FakeDb()
-        ..rawResults.add([{'page_count': 1000}])
-        ..rawResults.add([{'page_size': 4096}]);
+        ..pragmaFillThreshold = 0 // every row owns a page
+        ..pragmaPageSize = 4096
+        .._seed('sensor_events', [
+          for (var i = 1; i <= 1000; i++)
+            srow(i, '2026-10-23T07:00:00.000Z', state: 'PENDING'),
+        ]);
       final dao = SensorDao(db);
       expect(await dao.storageBytes(), 1000 * 4096);
     });
