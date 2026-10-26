@@ -6,8 +6,8 @@ import { signAccessToken, verifyAccessToken } from '../../lib/jwt.js';
 import { audit } from '../../lib/audit.js';
 import { env, isProd } from '../../config/env.js';
 import {
-  CURRENT_CONSENT_POLICY, CONSENT_POLICY_VERSIONS, isValidPolicyVersion,
-  revokeSupersededConsents,
+  CURRENT_CONSENT_POLICY, CONSENT_POLICY_VERSIONS, GRANTABLE_CONSENT_SCOPES,
+  isValidPolicyVersion, revokeSupersededConsents,
 } from './consent.js';
 
 // ---- validation schemas -------------------------------------------------------
@@ -16,7 +16,11 @@ const LoginSchema = z.object({
   password: z.string().min(8),
 });
 
-const ConsentScope = z.enum(['location', 'motion', 'audio']);
+// Scopes a driver may GRANT under the current policy — derived from the consent
+// registry (consent.ts), never hard-coded here. Phase 2: 'audio' was removed from
+// the roadmap surface, so it is no longer grantable; legacy rows that carry it
+// remain readable (ALL_CONSENT_SCOPES in consent.ts).
+const ConsentScope = z.enum(GRANTABLE_CONSENT_SCOPES as unknown as [string, ...string[]]);
 const BootstrapSchema = z.object({
   identifier: z.string().min(3),                  // phone_e164 or email of pre-provisioned driver
   password: z.string().min(8),

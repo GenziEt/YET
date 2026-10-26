@@ -38,7 +38,12 @@ export const CONSENT_POLICY_VERSIONS: readonly ConsentPolicyVersion[] = [
     id: 'consent-v1',
     releasedAt: '2026-01-15',
     requiredScopes: ['location', 'motion'], // §1.7 minimization: mandatory set
-    optionalScopes: ['audio'],              // engine-audio confirmation is opt-in
+    // Phase 2 decision (Option B): engine-audio classification was REMOVED from
+    // the roadmap surface — no capture, no scope, no storage kind anywhere in
+    // the codebase. Historical consent rows that granted 'audio' remain valid
+    // read data (ALL_CONSENT_SCOPES below keeps the name for legacy validation);
+    // nothing new can be collected under it.
+    optionalScopes: [],
   },
 ];
 
@@ -48,10 +53,20 @@ export function isValidPolicyVersion(id: string): boolean {
   return CONSENT_POLICY_VERSIONS.some((v) => v.id === id);
 }
 
-/** All scope names ever defined across versions — used to validate payloads. */
+/** All scope names ever defined across versions — used to validate payloads.
+ *  'audio' is listed for LEGACY READ validation only: consent rows written while
+ *  the optional audio scope existed must keep parsing (Phase 2 removed the audio
+ *  surface entirely — POST /consent rejects it, and no collector or ingest path
+ *  accepts audio data). */
 export const ALL_CONSENT_SCOPES: readonly string[] = Array.from(
-  new Set(CONSENT_POLICY_VERSIONS.flatMap((v) => [...v.requiredScopes, ...v.optionalScopes])),
+  new Set([...CONSENT_POLICY_VERSIONS.flatMap((v) => [...v.requiredScopes, ...v.optionalScopes]), 'audio']),
 );
+
+/** Scopes a driver may GRANT under the CURRENT policy (legacy names excluded). */
+export const GRANTABLE_CONSENT_SCOPES: readonly string[] = [
+  ...CURRENT_CONSENT_POLICY.requiredScopes,
+  ...CURRENT_CONSENT_POLICY.optionalScopes,
+];
 
 /** A grant is valid only if it was issued FOR THE CURRENT policy version, is not
  *  revoked, and covers every scope the current policy requires. */

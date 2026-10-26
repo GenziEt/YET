@@ -4,7 +4,7 @@ import { verifyAccessToken, type TokenClaims } from '../../lib/jwt.js';
 import { assertTargetInFleet, deny, isDenial, scopeFleetId } from '../../lib/tenant.js';
 import { pool } from '../../db/pool.js';
 import { audit } from '../../lib/audit.js';
-import { getTripStatusForVehicle, listTrips, getTripDetail } from './service.js';
+import { getTripStatusForVehicle, listTrips, getTripDetail, classificationConfigPayload } from './service.js';
 
 /**
  * Module 3 — Trip Engine HTTP surface (Phase 2).
@@ -93,6 +93,21 @@ export default async function tripRoutes(app: FastifyInstance) {
     }
     const status = await getTripStatusForVehicle(vehicleId);
     return status ?? { state: 'IDLE', vehicle_id: vehicleId, trip: null };
+  });
+
+  /** GET /trips/classification-config — calibrated §1.3 classification thresholds
+   *  (Phase 2). Auth-guarded like every other trip read; the driver app fetches
+   *  this at trip start and feeds it to lib/features/trip/event_classifier.dart,
+   *  so device-side harsh/turn/vibration-gate classification uses the SAME numbers
+   *  as the server fusion kernel (no magic numbers on either side). */
+  app.get('/trips/classification-config', async (req, reply) => {
+    try {
+      await auth(req);
+    } catch (e) {
+      if (isDenial(e)) return deny(reply, e.message);
+      throw e;
+    }
+    return classificationConfigPayload();
   });
 
   /** GET /trips/:trip_id — detail: summary + full event timeline + separation incidents. */

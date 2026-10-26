@@ -103,7 +103,7 @@ export async function ingestLocationBatch(driverId: string, vehicleId: string | 
 
 export const SensorEventSchema = z.object({
   event_timestamp: z.string().datetime(),          // EVENT time (§1.8.3)
-  kind: z.enum(['accelerometer', 'gyroscope', 'harsh_brake', 'harsh_accel', 'turn', 'vibration_gate', 'audio_engine']),
+  kind: z.enum(['accelerometer', 'gyroscope', 'harsh_brake', 'harsh_accel', 'turn', 'vibration_gate']),
   payload: z.record(z.unknown()).default({}),      // samples/thresholds/metadata
 });
 
