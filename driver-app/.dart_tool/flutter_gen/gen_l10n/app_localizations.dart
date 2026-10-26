@@ -122,7 +122,7 @@ abstract class AppLocalizations {
   /// No description provided for @consentCollectBody.
   ///
   /// In en, this message translates to:
-  /// **'GPS location during trips, movement sensor data (accelerometer/gyroscope). Audio is NEVER collected unless you turn on \'Improve motion detection\' below.'**
+  /// **'GPS location during trips, movement sensor data (accelerometer/gyroscope). Audio is NEVER collected.'**
   String get consentCollectBody;
 
   /// No description provided for @consentWhoHeading.
@@ -148,12 +148,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Detailed location history for 90 days, then reduced to trip summaries. You can request deletion at any time; we complete it within 30 days.'**
   String get consentRetentionBody;
-
-  /// No description provided for @consentImproveMotion.
-  ///
-  /// In en, this message translates to:
-  /// **'Improve motion detection (optional microphone sampling, 1–2 seconds)'**
-  String get consentImproveMotion;
 
   /// No description provided for @consentAgree.
   ///
@@ -347,6 +341,18 @@ abstract class AppLocalizations {
   /// **'Offline maps ready ({downloaded} new, {failed} failed)'**
   String offlineMapDone(int downloaded, int failed);
 
+  /// No description provided for @offlineMapAttribution.
+  ///
+  /// In en, this message translates to:
+  /// **'Map tiles © YET self-hosted tiles, based on OpenStreetMap data © OpenStreetMap contributors'**
+  String get offlineMapAttribution;
+
+  /// No description provided for @offlineMapNoTiles.
+  ///
+  /// In en, this message translates to:
+  /// **'No cached map tiles yet — download maps before dropping a pin'**
+  String get offlineMapNoTiles;
+
   /// No description provided for @notifTripStartedTitle.
   ///
   /// In en, this message translates to:
@@ -382,6 +388,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Fleet notification'**
   String get notifBannerFallback;
+
+  /// No description provided for @notifBannerDismiss.
+  ///
+  /// In en, this message translates to:
+  /// **'Dismiss'**
+  String get notifBannerDismiss;
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {

@@ -19,7 +19,7 @@ class AppLocalizationsAm extends AppLocalizations {
   String get consentCollectHeading => 'ምን እንሰበስባለን';
 
   @override
-  String get consentCollectBody => 'በጉዞ ወቅት የႷႵስ አቀማመጥ፣ የእንቅስቃሴ ዳሳሽ መረጃ። \'እንቅስቃሴ መለየትን አሻሽል\' ካብቀሉ በስተቀር ድምጽ በፍጹም አይሰበሰብም።';
+  String get consentCollectBody => 'በጉዞ ወቅት የႷႵስ አቀማመጥ፣ የእንቅስቃሴ ዳሳሽ መረጃ። ኧካምት በአግፓትም አይዅበቅም።';
 
   @override
   String get consentWhoHeading => 'ማን ይመለከታል';
@@ -32,9 +32,6 @@ class AppLocalizationsAm extends AppLocalizations {
 
   @override
   String get consentRetentionBody => 'ዝርዝር የአቀማመጥ ታሪክ ለ90 ቀናት፤ ከዚያ ወደ ጉዞ ማጠቃለያ ይቀንሳል። በማንኛውም ጊዜ ማጥፋት ሊጠይቁ ይችላሉ፤ በ30 ቀናት ውስጥ እናጠናቅቃለን።';
-
-  @override
-  String get consentImproveMotion => 'እንቅስቃሴ መለየትን አሻሽል (አማራጭ የማይክሮፎን ናሙና፣ 1–2 ሰከንድ)';
 
   @override
   String get consentAgree => 'እስማማለሁ — ዒትን ለመጠቀም ጀምር';
@@ -143,6 +140,12 @@ class AppLocalizationsAm extends AppLocalizations {
   }
 
   @override
+  String get offlineMapAttribution => 'ካርታዎች © YET የራስ-አስተዳደር ታይሎች፣ በOpenStreetMap መረጃ ላይ የተመሰረቱ © OpenStreetMap አበርካቾች';
+
+  @override
+  String get offlineMapNoTiles => 'እስካሁን የተቀመጡ ካርታ ታይሎች የሉም — ምልክት ከማጣትዎ በፊት ካርታዎችን ያውርዱ';
+
+  @override
   String get notifTripStartedTitle => 'ጉዞው ጀምሯል';
 
   @override
@@ -159,4 +162,7 @@ class AppLocalizationsAm extends AppLocalizations {
 
   @override
   String get notifBannerFallback => 'የአደሻ ማሳወቂያ';
+
+  @override
+  String get notifBannerDismiss => 'ዝጋ';
 }
