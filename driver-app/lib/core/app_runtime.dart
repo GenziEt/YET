@@ -29,6 +29,7 @@ class AppRuntime extends ChangeNotifier {
     required this.sensors,
     required this.classifier,
     required this.configSource,
+    required this.configCache,
     required this.pilot,
   }) {
     worker.pendingCount.addListener(notifyListeners);
@@ -48,6 +49,9 @@ class AppRuntime extends ChangeNotifier {
   final EventClassifier classifier;
   /// Config fetcher for trip-start threshold refresh (test-seamable).
   final ClassificationConfigSource configSource;
+  /// Last-fetched calibration persisted in the local SQLite cache so offline
+  /// trips reuse the most recent thresholds (§1.8 offline-first fallback).
+  final CachedConfigStore configCache;
   /// Phase 4 pilot telemetry: battery samples, one-tap assignment check,
   /// offline tile pre-download.
   final PilotService pilot;
@@ -65,11 +69,18 @@ class AppRuntime extends ChangeNotifier {
     final path = dbPathOverride ?? await defaultDbPath();
     final db = await openDatabase(
       path,
-      version: FixDao.dbVersion,
+      // v2: adds the Phase 2 classification_config_cache side table
+      // (CachedConfigStore.onCreate is idempotent — CREATE IF NOT EXISTS —
+      // so it also covers installs that created the file at v1).
+      version: 2,
       onCreate: (db, v) async {
         // One DB file holds BOTH caches (§1.8.5 "same SQLite cache").
         await FixDao.onCreate(db, v);
         await SensorDao.onCreate(db, v);
+        await CachedConfigStore.onCreate(db, v);
+      },
+      onUpgrade: (db, oldV, newV) async {
+        if (oldV < 2) await CachedConfigStore.onCreate(db, newV);
       },
     );
     final dao = FixDao(db);
@@ -107,6 +118,7 @@ class AppRuntime extends ChangeNotifier {
           client: httpClient,
           accessToken: () => tokenStore.accessToken,
         );
+    final configCache = CachedConfigStore(db);
     final pilot = PilotService(
       tokenStore: tokenStore,
       client: httpClient,
@@ -122,6 +134,7 @@ class AppRuntime extends ChangeNotifier {
       sensors: sensors,
       classifier: classifier,
       configSource: cfgSource,
+      configCache: configCache,
       pilot: pilot,
     );
     // Late-bind the source so the collector subscribes THROUGH the classifier
@@ -160,19 +173,39 @@ class AppRuntime extends ChangeNotifier {
   /// per §1.8). Then stamp the battery-sample trip anchor, fire-and-forget the
   /// trip-start battery sample, and begin GPS + motion-sensor collection
   /// together with the 60 s sync cadence (§1.8.1 trigger list).
-  /// END: stop sensing immediately (battery budget), post the trip-end battery
-  /// sample, flush the tail of the cache, then prune housekeeping.
+  /// Phase 2 fusion: before sensors start, refresh calibrated thresholds from
+  /// GET /trips/classification-config (offline → last-cached → defaults),
+  /// reset classifier run state, and bind the sensor stream THROUGH the
+  /// classifier so every raw sample feeds harsh/turn/vibration-gate detection
+  /// on its way to the throttled cache. END: flush any open classification run
+  /// BEFORE unsubscribing so the final event of the trip is not lost.
   Future<AssignmentCheck> onTripToggled({required bool active}) async {
     if (active) {
       final check = await pilot.confirmVehicleAssignment();
       pilot.markTripStartAnchor(DateTime.now().toUtc());
       unawaited(pilot.sampleTripStart());
       worker.startTripCadence();
+      // Threshold refresh must never delay or block tracking start; the
+      // resolve chain already swallows fetch failures (cache → defaults).
+      try {
+        classifier.th = await resolveThresholds(
+          source: configSource,
+          cache: configCache,
+        );
+      } catch (_) {
+        // Defensive: keep whatever calibration is currently loaded.
+      }
+      classifier.reset();
+      final raw = _sensorSource;
+      await sensors.setSource(raw == null
+          ? null
+          : () => raw().asyncMap(classifier.onSample));
       unawaited(gps.beginCollection());
       unawaited(sensors.beginCollection());
       return check;
     }
     await gps.endCollection();
+    await classifier.flush();
     await sensors.endCollection();
     unawaited(pilot.sampleTripEnd());
     await worker.stopTripCadence();
