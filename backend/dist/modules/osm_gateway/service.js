@@ -1,5 +1,5 @@
 import { env } from '../../config/env.js';
-import { cacheGetJson, cacheSetJson } from '../../lib/redis.js';
+import { cacheGetJson, cacheSetJson, cacheKeysByPrefix, cacheDelMany } from '../../lib/redis.js';
 import { pool } from '../../db/pool.js';
 import { haversineM } from '../trip_engine/state_machine.js';
 import { decodePolyline, routeCacheKey, geocodeCacheKey, roundCoord, } from './geo.js';
@@ -24,11 +24,15 @@ export const ROUTE_TTL_S = 300; // §Phase 3 deliverable: 5-minute TTL
 export const GEOCODE_TTL_S = 86_400; // 24 h
 const OSRM_TIMEOUT_MS = 1_500; // > p95 uncached budget 800 ms, < request stall
 const NOMINATIM_TIMEOUT_MS = 2_500;
+let fetchImpl = ((url, init) => fetch(url, init));
+export function setFetchForTesting(fn) {
+    fetchImpl = fn ?? ((url, init) => fetch(url, init));
+}
 async function fetchWithTimeout(url, timeoutMs) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-        return await fetch(url, {
+        return await fetchImpl(url, {
             signal: ctrl.signal,
             headers: { 'user-agent': env.OSM_USER_AGENT }, // §1.6 UA compliance (applies even self-hosted)
         });
@@ -36,6 +40,57 @@ async function fetchWithTimeout(url, timeoutMs) {
     finally {
         clearTimeout(t);
     }
+}
+/**
+ * Bounded-retry wrapper for the OSRM leg (Phase 3: "failures, timeouts, and
+ * retries are handled"). Policy:
+ *   - RETRY ONLY transient network failures: fetch rejects before any HTTP
+ *     response exists — AbortController timeouts (name 'AbortError'/
+ *     'TimeoutError') and connection-level errors (ECONNREFUSED, ECONNRESET,
+ *     EAI_AGAIN, ENOTFOUND — the OSRM container restarting mid-pilot is exactly
+ *     this). Deterministic parse/programming errors in the caller chain are NOT
+ *     retried.
+ *   - NEVER retry an HTTP response — even 4xx/5xx with a body. A routing-engine
+ *     error is deterministic per input; hammering it wastes the ≤800 ms budget.
+ *     Such responses throw RoutingHttpError, which skips the retry loop entirely.
+ *   - Backoff between attempts: OSRM_RETRY_BACKOFF_MS (default 120 ms), capped
+ *     total by OSRM_RETRY_ATTEMPTS (default 1 retry, max 3 via env validation).
+ */
+class RoutingHttpError extends Error {
+}
+/** Transient-network predicate for the retry loop (see policy comment above). */
+export function isTransientNetworkError(err) {
+    const e = err;
+    if (e?.name === 'AbortError' || e?.name === 'TimeoutError')
+        return true; // fetchWithTimeout fired
+    const code = e?.code ?? e?.cause?.code;
+    return code === 'ECONNREFUSED' || code === 'ECONNRESET'
+        || code === 'EAI_AGAIN' || code === 'ENOTFOUND';
+}
+async function fetchOsrmWithRetry(url) {
+    const maxRetries = env.OSRM_RETRY_ATTEMPTS;
+    let lastErr;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        if (attempt > 0 && env.OSRM_RETRY_BACKOFF_MS > 0) {
+            await new Promise((r) => setTimeout(r, env.OSRM_RETRY_BACKOFF_MS));
+        }
+        try {
+            const res = await fetchWithTimeout(url, OSRM_TIMEOUT_MS);
+            // An HTTP response exists ⇒ never retried (deterministic per input; a 5xx
+            // from the routing engine must descend the degradation ladder immediately).
+            if (!res.ok)
+                throw new RoutingHttpError(`OSRM ${res.status}`);
+            return res;
+        }
+        catch (err) {
+            if (err instanceof RoutingHttpError)
+                throw err; // deterministic: fail to ladder now
+            if (!isTransientNetworkError(err))
+                throw err; // programming error: don't mask it
+            lastErr = err; // transient network failure → bounded retry
+        }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 function straightLineFallback(from, to) {
     const distance = haversineM(from.lat, from.lng, to.lat, to.lng);
@@ -93,31 +148,48 @@ async function pgRouteUpsert(key, res) {
  * Route between two points via self-hosted OSRM with Redis-first caching.
  * `allowStale=true` (used by the ETA panel's poll loop) accepts an expired Redis
  * value when OSRM is down — a slightly old route beats no route during a pilot.
+ * `destinationGeofenceId` (set by GET /route?destination_geofence_id=…) records
+ * a write-through index key so a later geofence edit can invalidate exactly the
+ * route entries whose destination centroid came from that zone (§Phase 3
+ * invalidation rules — see invalidateRoutesForGeofence).
  */
 export async function getRoute(from, to, opts = {}) {
     const key = routeCacheKey(from, to);
+    // Cache-epoch gate: invalidateRoutesForGeofence bumps this below the route's
+    // own cached_at whenever a destination zone is edited. Any Redis/Postgres
+    // entry written before that bump is STALE for this read even if its TTL has
+    // not lapsed yet — serving it would hand back pre-edit geometry (the exact
+    // failure §Phase 3 invalidation rules exist to prevent). Missing epoch ⇒ no
+    // invalidation recorded ⇒ entries serve normally within their TTL.
+    const epoch = await cacheGetJson('yet:route:epoch').catch(() => null);
+    const staleByEpoch = (cachedAtIso) => epoch !== null && Date.parse(cachedAtIso) < epoch;
     // 1) Fresh Redis hit — target ≤ 50 ms (§1.9.4).
     const fresh = await cacheGetJson(key);
-    if (fresh)
+    if (fresh && !staleByEpoch(fresh.cached_at))
         return { ...fresh, source: 'redis' };
-    // 2) Unexpired Postgres row (warm start after Redis flush).
+    // 2) Unexpired Postgres row (warm start after Redis flush). The epoch gate
+    //    applies here too: a pre-edit companion-cache row must not resurrect
+    //    stale geometry after invalidateRoutesForGeofence dropped the Redis copy.
     const pg = await pgRouteLookup(key);
-    if (pg) {
+    if (pg && !staleByEpoch(pg.cached_at)) {
         void cacheSetJson(key, pg, ROUTE_TTL_S);
+        await indexDest(key, opts);
         return pg;
     }
-    // 3) Live OSRM call.
+    // 3) Live OSRM call (bounded retry on network aborts only — fetchOsrmWithRetry).
+    //    The try block wraps ONLY the transport leg: programming errors that leak
+    //    past fetchOsrmWithRetry's rethrow (non-network exceptions, malformed
+    //    responses) must NOT be masked by the degradation ladder.
+    let out;
     try {
         const url = `${env.OSRM_BASE_URL}/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}`
             + `?overview=full&geometries=polyline`;
-        const res = await fetchWithTimeout(url, OSRM_TIMEOUT_MS);
-        if (!res.ok)
-            throw new Error(`OSRM ${res.status}`);
+        const res = await fetchOsrmWithRetry(url);
         const body = await res.json();
         if (body.code !== 'Ok' || !body.routes?.length)
-            throw new Error(`OSRM ${body.code}`);
+            throw new RoutingHttpError(`OSRM ${body.code}`);
         const r = body.routes[0];
-        const out = {
+        out = {
             from, to,
             distance_m: Math.round(r.distance),
             duration_s: Math.round(r.duration),
@@ -125,11 +197,10 @@ export async function getRoute(from, to, opts = {}) {
             source: 'osrm',
             cached_at: new Date().toISOString(),
         };
-        await cacheSetJson(key, out, ROUTE_TTL_S);
-        void pgRouteUpsert(key, out);
-        return out;
     }
     catch (err) {
+        if (!(err instanceof RoutingHttpError) && !isTransientNetworkError(err))
+            throw err;
         // 4) Degradation ladder: expired-but-recent Postgres row, then honest
         //    straight-line fallback (labeled so the dashboard never claims routing).
         console.warn('[osm-gateway] OSRM unavailable:', String(err));
@@ -141,7 +212,79 @@ export async function getRoute(from, to, opts = {}) {
         const fb = straightLineFallback(from, to);
         // Cache the fallback briefly so a flapping OSRM doesn't multiply load.
         await cacheSetJson(key, fb, 30);
+        await indexDest(key, opts); // awaited — see write-through note below
         return fb;
+    }
+    await cacheSetJson(key, out, ROUTE_TTL_S);
+    await indexDest(key, opts); // AWAITED: the dest-index is part of the write —
+    await pgRouteUpsert(key, out); // awaited so invalidateRoutesForGeofence can never race a fire-and-forget write-through (pgRouteUpsert swallows its own errors).
+    return out;
+}
+/* --------------------- Geofence-keyed invalidation index --------------------- */
+/** Redis index key for "route keys computed against this destination geofence".
+ *  Written on every getRoute write-through when the caller supplied the zone id
+ *  (the dashboard's select-geofence-as-destination flow). */
+export function destIndexKey(geofenceId) {
+    return `yet:route:dest:${geofenceId}`;
+}
+async function indexDest(routeKey, opts) {
+    if (!opts.destinationGeofenceId)
+        return;
+    const idx = destIndexKey(opts.destinationGeofenceId);
+    try {
+        const members = await cacheGetJson(idx);
+        const set = new Set(members ?? []);
+        set.add(routeKey);
+        // Index TTL ≥ route TTL so it always outlives the entries it references.
+        await cacheSetJson(idx, [...set], ROUTE_TTL_S + 60);
+    }
+    catch { /* best-effort: worst case the entry expires by TTL */ }
+}
+/**
+ * Phase 3 cache-invalidation rule: when a geofence is edited (renamed, moved,
+ * resized) or deactivated, every route/ETA cached against its centroid must be
+ * dropped — a renamed/moved warehouse can never serve an ETA to stale geometry.
+ *   - deletes the Redis route entries listed in yet:route:dest:<id>,
+ *   - removes the dependent fleet-state snapshot so live-map badges rebuild,
+ *   - expires the matching Postgres route_cache rows (version bump = created_at
+ *     moves and expires_at collapses to now(); warm-start reads require
+ *     expires_at > now(), so the rows are superseded rather than deleted —
+ *     audit trail of routing calls preserved, §1.5).
+ * Called from updateGeofence/deleteGeofence AFTER the row change commits.
+ */
+export async function invalidateRoutesForGeofence(geofenceId) {
+    // Bump the global route-cache epoch FIRST: reads reject any entry whose
+    // cached_at predates this instant, so even a Postgres companion row that the
+    // coordinate-bump below misses (e.g. zone centroid rounded differently) can
+    // never serve pre-edit geometry within its remaining TTL.
+    await cacheSetJson('yet:route:epoch', Date.now(), ROUTE_TTL_S * 4).catch(() => undefined);
+    const idx = destIndexKey(geofenceId);
+    const members = await cacheGetJson(idx).catch(() => null);
+    if (members && members.length > 0)
+        await cacheDelMany(members);
+    await cacheDelMany([idx]);
+    // Fleet-state snapshots embed last-known route badges; force one-query refresh.
+    const fleetKeys = await cacheKeysByPrefix('fleet:state');
+    await cacheDelMany(fleetKeys);
+    try {
+        // Supersede, never delete: bump created_at (the audit timestamp of the
+        // invalidation) and collapse expires_at in a single statement. Two separate
+        // now() calls would make created_at > expires_at — this keeps the row's
+        // history honest for the routing audit trail.
+        await pool.query(`WITH bumped AS (
+         UPDATE route_cache SET expires_at = now()
+          WHERE expires_at > now()
+            AND round(to_lat::numeric, 6) = round((SELECT center_lat FROM geofences WHERE geofence_id=$1)::numeric, 6)
+            AND round(to_lng::numeric, 6) = round((SELECT center_lng FROM geofences WHERE geofence_id=$1)::numeric, 6)
+          RETURNING cache_key)
+       UPDATE route_cache rc SET created_at = b.created_at
+        FROM (SELECT now() AS created_at) b
+       WHERE rc.cache_key IN (SELECT cache_key FROM bumped)`, [geofenceId]);
+    }
+    catch (err) {
+        // DB hiccup on invalidation must not fail the geofence mutation — Redis
+        // entries are already gone and the rows expire within ROUTE_TTL_S anyway.
+        console.warn('[osm-gateway] route_cache expiry bump failed:', String(err));
     }
 }
 /**

@@ -6,6 +6,11 @@
 import { pool } from '../../db/pool.js';
 import { audit } from '../../lib/audit.js';
 import { forbiddenCrossFleet } from '../../lib/tenant.js';
+// Phase 3 cache invalidation: geofence mutations drop route/ETA entries keyed
+// to the zone's centroid. osm_gateway is a DIRECTED acyclic dependency here —
+// it imports nothing from modules/geofence (verified by grep; its tenancy checks
+// run inline in routes.ts), so this import cannot create an ESM cycle.
+import { invalidateRoutesForGeofence } from '../osm_gateway/service.js';
 import { validateCircle, validateRing, ringToMultipolygonJson, } from '../osm_gateway/geo.js';
 export class GeofenceValidationError extends Error {
     detail;
@@ -135,6 +140,9 @@ export async function updateGeofence(actorId, geofenceId, body, scope) {
         WHERE geofence_id=$1 RETURNING *`, [geofenceId, dto.name, dto.category, dto.radius_m, dto.center.lat, dto.center.lng,
             body?.active ?? null]);
         await audit({ actorId, action: 'geofence_update', detail: { geofence_id: geofenceId } });
+        // Phase 3 invalidation rule: any edit (rename/move/resize/deactivate toggle)
+        // drops route & ETA caches computed against this zone's centroid.
+        await invalidateRoutesForGeofence(geofenceId);
         return rowToDto(rows[0]);
     }
     const gj = ringToMultipolygonJson(dto.ring);
@@ -146,6 +154,7 @@ export async function updateGeofence(actorId, geofenceId, body, scope) {
       WHERE geofence_id=$1 RETURNING *`, [geofenceId, dto.name, dto.category, gj, Number(cen[0]?.lat ?? 0), Number(cen[0]?.lng ?? 0),
         body?.active ?? null]);
     await audit({ actorId, action: 'geofence_update', detail: { geofence_id: geofenceId } });
+    await invalidateRoutesForGeofence(geofenceId);
     return rowToDto(rows[0]);
 }
 function existingToBody(g) {
@@ -162,6 +171,9 @@ export async function deleteGeofence(actorId, geofenceId, scope) {
     if (rows.length === 0)
         return false;
     await audit({ actorId, action: 'geofence_deactivate', detail: { geofence_id: geofenceId } });
+    // Phase 3 invalidation rule: a deactivated zone must never keep serving cached
+    // ETAs/routes computed against its geometry.
+    await invalidateRoutesForGeofence(geofenceId);
     return true;
 }
 export async function getGeofence(geofenceId) {
