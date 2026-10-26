@@ -76,12 +76,13 @@
       }
     }
   },
-
-  
+  "offlineMapAttribution": "Map tiles © YET self-hosted tiles, based on OpenStreetMap data © OpenStreetMap contributors",
+  "offlineMapNoTiles": "No cached map tiles yet — download maps before dropping a pin",
   "notifTripStartedTitle": "Trip started",
   "notifTripEndedTitle": "Trip ended",
   "notifSeparationTitle": "Driver separation alert",
   "notifGeofenceEnterTitle": "Entered zone",
   "notifGeofenceExitTitle": "Left zone",
-  "notifBannerFallback": "Fleet notification"
+  "notifBannerFallback": "Fleet notification",
+  "notifBannerDismiss": "Dismiss"
 }

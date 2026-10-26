@@ -301,8 +301,12 @@ class PilotService {
 
   /// Confirm the driver has an assigned vehicle BEFORE tracking starts, so the
   /// first fix lands stamped with a vehicle the fleet manager actually handed
-  /// out. Offline tolerance is deliberate: a driver in a no-signal depot must
-  /// still be able to start (max-3-taps rule) — cached/unknown proceeds.
+  /// out (§Phase 4 hard gate — see [allowsTripStart]). Offline TOLERANCE is
+  /// deliberate but bounded: a driver in a no-signal depot may still start on a
+  /// fresh cached assignment ([AssignmentCheck.offlineCached]); when nothing
+  /// proves an assignment exists the check returns
+  /// [AssignmentCheck.offlineUnknown] and AppRuntime.onTripToggled BLOCKS the
+  /// start — collection never begins on an unverified vehicle.
   Future<AssignmentCheck> confirmVehicleAssignment() async {
     await loadPrefs();
     final token = _tokens.accessToken;
@@ -334,7 +338,10 @@ class PilotService {
         _assignmentCache = null;
         return AssignmentCheck.noVehicle;
       }
-      // Auth rejected etc.: fall back to cache — do not block the driver.
+      // Network failure / non-200 (auth rejected, server down): fall back to
+      // the cache. A FRESH cached assignment still proves one exists as of the
+      // last online check → offlineCached (allowed). Nothing cached →
+      // offlineUnknown → HARD BLOCK for a fresh start (§Phase 4 gate).
       return _assignmentCache != null
           ? AssignmentCheck.offlineCached
           : AssignmentCheck.offlineUnknown;
