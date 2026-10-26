@@ -56,9 +56,12 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
 /**
  * Bounded-retry wrapper for the OSRM leg (Phase 3: "failures, timeouts, and
  * retries are handled"). Policy:
- *   - RETRY ONLY network aborts: fetch rejects before any HTTP response exists
- *     (connection refused, DNS failure, AbortController timeout). These are
- *     transient container/network blips during a pilot.
+ *   - RETRY ONLY transient network failures: fetch rejects before any HTTP
+ *     response exists — AbortController timeouts (name 'AbortError'/
+ *     'TimeoutError') and connection-level errors (ECONNREFUSED, ECONNRESET,
+ *     EAI_AGAIN, ENOTFOUND — the OSRM container restarting mid-pilot is exactly
+ *     this). Deterministic parse/programming errors in the caller chain are NOT
+ *     retried.
  *   - NEVER retry an HTTP response — even 4xx/5xx with a body. A routing-engine
  *     error is deterministic per input; hammering it wastes the ≤800 ms budget.
  *     Such responses throw RoutingHttpError, which skips the retry loop entirely.
@@ -66,6 +69,15 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
  *     total by OSRM_RETRY_ATTEMPTS (default 1 retry, max 3 via env validation).
  */
 class RoutingHttpError extends Error {}
+
+/** Transient-network predicate for the retry loop (see policy comment above). */
+export function isTransientNetworkError(err: unknown): boolean {
+  const e = err as { name?: string; code?: string; cause?: { code?: string } };
+  if (e?.name === 'AbortError' || e?.name === 'TimeoutError') return true; // fetchWithTimeout fired
+  const code = e?.code ?? e?.cause?.code;
+  return code === 'ECONNREFUSED' || code === 'ECONNRESET'
+      || code === 'EAI_AGAIN' || code === 'ENOTFOUND';
+}
 
 async function fetchOsrmWithRetry(url: string): Promise<Response> {
   const maxRetries = env.OSRM_RETRY_ATTEMPTS;
@@ -82,7 +94,8 @@ async function fetchOsrmWithRetry(url: string): Promise<Response> {
       return res;
     } catch (err) {
       if (err instanceof RoutingHttpError) throw err; // deterministic: fail to ladder now
-      lastErr = err; // network abort (incl. timeout) → bounded retry
+      if (!isTransientNetworkError(err)) throw err;   // programming error: don't mask it
+      lastErr = err; // transient network failure → bounded retry
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
@@ -176,7 +189,7 @@ export async function getRoute(
 
   // 2) Unexpired Postgres row (warm start after Redis flush).
   const pg = await pgRouteLookup(key);
-  if (pg) { void cacheSetJson(key, pg, ROUTE_TTL_S); void indexDest(key, opts); return pg; }
+  if (pg) { void cacheSetJson(key, pg, ROUTE_TTL_S); await indexDest(key, opts); return pg; }
 
   // 3) Live OSRM call (bounded retry on network aborts only — fetchOsrmWithRetry).
   try {
@@ -198,8 +211,8 @@ export async function getRoute(
       cached_at: new Date().toISOString(),
     };
     await cacheSetJson(key, out, ROUTE_TTL_S);
-    void indexDest(key, opts);
-    void pgRouteUpsert(key, out);
+    await indexDest(key, opts); // AWAITED: the dest-index is part of the write —
+    void pgRouteUpsert(key, out); // invalidateRoutesForGeofence must never race a fire-and-forget index write.
     return out;
   } catch (err) {
     // 4) Degradation ladder: expired-but-recent Postgres row, then honest
@@ -212,7 +225,7 @@ export async function getRoute(
     const fb = straightLineFallback(from, to);
     // Cache the fallback briefly so a flapping OSRM doesn't multiply load.
     await cacheSetJson(key, fb, 30);
-    void indexDest(key, opts);
+    await indexDest(key, opts); // awaited — see write-through note above
     return fb;
   }
 }
