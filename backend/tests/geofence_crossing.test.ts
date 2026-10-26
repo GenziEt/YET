@@ -144,7 +144,7 @@ d('crossing evaluator (Postgres integration)', () => {
     await poolX.query(`DELETE FROM trips WHERE vehicle_id=$1`, [vehicleId]).catch(() => {});
     await poolX.query(`DELETE FROM geofences WHERE geofence_id IN ($1,$2)`, [fenceCircle, fencePolygon]).catch(() => {});
     await poolX.query(`DELETE FROM fleets WHERE id=$1`, [testFleetId]).catch(() => {});
-    await poolX.query(`DELETE FROM vehicles WHERE vehicle_id=$1`, [vehicleId]).catch(() => {});
+    await poolX.query(`DELETE FROM vehicles WHERE id=$1`, [vehicleId]).catch(() => {});
     await poolX.end();
   });
 
