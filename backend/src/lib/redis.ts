@@ -30,23 +30,6 @@ export function getRedis(): Redis {
   return client;
 }
 
-export async function cacheGetJson<T = unknown>(key: string): Promise<T | null> {
-  try {
-    const raw = await getRedis().get(key);
-    return raw ? (JSON.parse(raw) as T) : null;
-  } catch {
-    return null; // degraded: treat as miss
-  }
-}
-
-export async function cacheSetJson(key: string, value: unknown, ttlSeconds: number): Promise<void> {
-  try {
-    await getRedis().set(key, JSON.stringify(value), 'EX', Math.max(1, Math.round(ttlSeconds)));
-  } catch {
-    /* best-effort */
-  }
-}
-
 export async function cacheDel(key: string): Promise<void> {
   try { await getRedis().del(key); } catch { /* best-effort */ }
 }

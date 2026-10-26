@@ -4,6 +4,7 @@ import { verifyAccessToken, type TokenClaims } from '../../lib/jwt.js';
 import { getRoute, geocode } from './service.js';
 import { parseLatLng, computeEta, type EtaInput } from './geo.js';
 import { pool } from '../../db/pool.js';
+import { assertTargetInFleet } from '../../lib/tenant.js';
 
 /**
  * Module 7 — OSM Gateway HTTP surface (Phase 3).
@@ -71,21 +72,37 @@ export default async function osmRoutes(app: FastifyInstance) {
 
     // Destination may be given as a geofence id (dashboard "select geofence as
     // destination" flow) — resolve its center/centroid server-side.
+    // Phase 3 fleet-scoping rule ("Fleet scoping is enforced on every geofence,
+    // route, and ETA read and write"): the zone row's fleet_id must match the
+    // caller's tenant claim before its geometry is used for routing. ADMIN is
+    // exempt (platform operator); DRIVER/FLEET_MANAGER without a fleet claim
+    // fail closed. A cross-fleet zone returns the SAME 404 as a nonexistent id
+    // — no existence oracle (§1.7 minimization).
+    let destinationGeofenceId: string | undefined;
     if (parsed.data.destination_geofence_id) {
       const { rows: cen } = await pool.query(
-        `SELECT ST_Y(c) AS lat, ST_X(c) AS lng FROM (
-           SELECT CASE WHEN kind='CIRCLE' THEN geom::geometry
+        `SELECT fleet_id, ST_Y(c) AS lat, ST_X(c) AS lng FROM (
+           SELECT fleet_id,
+                  CASE WHEN kind='CIRCLE' THEN geom::geometry
                        ELSE ST_Centroid(geom)::geometry END AS c
              FROM geofences WHERE geofence_id=$1 AND active) s`, [parsed.data.destination_geofence_id]);
       if (!cen[0]) return reply.code(404).send({ error: 'geofence_not_found' });
+      if (claims.role !== 'ADMIN') {
+        if (!claims.fleetId || cen[0].fleet_id !== claims.fleetId) {
+          return reply.code(404).send({ error: 'geofence_not_found' });
+        }
+      }
       to = { lat: Math.round(Number(cen[0].lat) * 1e6) / 1e6, lng: Math.round(Number(cen[0].lng) * 1e6) / 1e6 };
+      // Feed the invalidation index: routes cached against THIS zone's centroid
+      // become invalidatable when the zone is later edited/deleted.
+      destinationGeofenceId = parsed.data.destination_geofence_id;
     }
 
-    const route = await getRoute(from, to, { allowStale: true });
+    const route = await getRoute(from, to, { allowStale: true, destinationGeofenceId });
 
     let eta = null as null | ReturnType<typeof computeEta> & { state: string | null };
     if (parsed.data.vehicle_id) {
-      if (claims.role === 'DRIVER' && parsed.data.vehicle_id) {
+      if (claims.role === 'DRIVER') {
         // Drivers may only route relative to their own assigned vehicle (§1.7 minimization).
         const { rows } = await pool.query(
           `SELECT vehicle_id FROM driver_vehicle_assignments
@@ -93,6 +110,10 @@ export default async function osmRoutes(app: FastifyInstance) {
         if (rows[0]?.vehicle_id !== parsed.data.vehicle_id)
           return reply.code(403).send({ error: 'forbidden_role' });
       }
+      // Tenant layer on top of the role rule: FLEET_MANAGER tokens (and legacy
+      // DRIVER tokens naming someone else's vehicle) are confined to their own
+      // fleet — the ETA embeds live speed/trip state, personal data under §1.7.
+      await assertTargetInFleet(claims, { vehicleId: parsed.data.vehicle_id });
       const snap = await vehicleLiveSnapshot(parsed.data.vehicle_id);
       const computed = computeEta(
         { ...snap, osrmDurationS: route.duration_s, distanceM: route.distance_m }, Date.now());
