@@ -47,9 +47,9 @@ class AppLocalizations {
   String get consentCollectBody {
     switch (localeName) {
       case 'am':
-        return 'በጉዞ ወቅት የႷႵስ አቀማመጥ፣ የእንቅስቃሴ ዳሳሽ መረጃ። \'እንቅስቃሴ መለየትን አሻሽል\' ካብቀሉ በስተቀር ድምጽ በፍጹም አይሰበሰብም።';
+        return 'በጉዞ ወቅት የႷႵስ አቀማመጥ፣ የእንቅስቃሴ ዳሳሽ መረጃ። ኧካምት በአግፓትም አይዅበቅም።';
       default:
-        return 'GPS location during trips, movement sensor data (accelerometer/gyroscope). Audio is NEVER collected unless you turn on \'Improve motion detection\' below.';
+        return 'GPS location during trips, movement sensor data (accelerometer/gyroscope). Audio is NEVER collected.';
     }
   }
   String get consentWhoHeading {
@@ -82,14 +82,6 @@ class AppLocalizations {
         return 'ዝርዝር የአቀማመጥ ታሪክ ለ90 ቀናት፤ ከዚያ ወደ ጉዞ ማጠቃለያ ይቀንሳል። በማንኛውም ጊዜ ማጥፋት ሊጠይቁ ይችላሉ፤ በ30 ቀናት ውስጥ እናጠናቅቃለን።';
       default:
         return 'Detailed location history for 90 days, then reduced to trip summaries. You can request deletion at any time; we complete it within 30 days.';
-    }
-  }
-  String get consentImproveMotion {
-    switch (localeName) {
-      case 'am':
-        return 'እንቅስቃሴ መለየትን አሻሽል (አማራጭ የማይክሮፎን ናሙና፣ 1–2 ሰከንድ)';
-      default:
-        return 'Improve motion detection (optional microphone sampling, 1–2 seconds)';
     }
   }
   String get consentAgree {
@@ -346,6 +338,54 @@ class AppLocalizations {
         return 'ያለ መስመር ካርታዎች ዝግጁ ($downloaded አዲስ፣ $failed ወድቀዋል)';
       default:
         return 'Offline maps ready ($downloaded new, $failed failed)';
+    }
+  }
+  String get notifTripStartedTitle {
+    switch (localeName) {
+      case 'am':
+        return 'ጉዞው ጀምሯል';
+      default:
+        return 'Trip started';
+    }
+  }
+  String get notifTripEndedTitle {
+    switch (localeName) {
+      case 'am':
+        return 'ጉዞው አልቋል';
+      default:
+        return 'Trip ended';
+    }
+  }
+  String get notifSeparationTitle {
+    switch (localeName) {
+      case 'am':
+        return 'የአሽከርካሪ መለያየት ማንቂያ';
+      default:
+        return 'Driver separation alert';
+    }
+  }
+  String get notifGeofenceEnterTitle {
+    switch (localeName) {
+      case 'am':
+        return 'ወደ ግቢ ገብቷል';
+      default:
+        return 'Entered zone';
+    }
+  }
+  String get notifGeofenceExitTitle {
+    switch (localeName) {
+      case 'am':
+        return 'ከግቢ ወጥቷል';
+      default:
+        return 'Left zone';
+    }
+  }
+  String get notifBannerFallback {
+    switch (localeName) {
+      case 'am':
+        return 'የአደሻ ማሳወቂያ';
+      default:
+        return 'Fleet notification';
     }
   }
 }

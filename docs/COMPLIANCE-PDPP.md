@@ -10,7 +10,8 @@ requirement, not a feature.**
 ## 1. Lawful basis & consent (§1.7, Phase 0 gate item)
 
 - **Consent screen at first launch**, plain Amharic and English: what is collected
-  (location, motion; audio only if driver opts in), why (shipment visibility), who sees
+  (location, motion only — engine-audio classification was removed from the product
+  surface), why (shipment visibility), who sees
   it (assigned fleet manager), how long it is kept.
 - Explicit opt-in **before any collection**. Decline = app does nothing but show the
   decline screen; no background service starts.

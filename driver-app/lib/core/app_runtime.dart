@@ -10,6 +10,7 @@ import 'cache/sensor_dao.dart';
 import 'sync/sync_worker.dart';
 import '../features/auth/token_store.dart';
 import '../features/pilot/pilot_service.dart';
+import '../features/trip/event_classifier.dart';
 import '../features/trip/gps_collector.dart';
 import '../features/trip/sensor_collector.dart';
 
@@ -26,6 +27,8 @@ class AppRuntime extends ChangeNotifier {
     required this.tokenStore,
     required this.gps,
     required this.sensors,
+    required this.classifier,
+    required this.configSource,
     required this.pilot,
   }) {
     worker.pendingCount.addListener(notifyListeners);
@@ -39,6 +42,12 @@ class AppRuntime extends ChangeNotifier {
   final GpsCollector gps;
   /// Phase 4 motion-sensor duty-cycling (§1.8.5): writes through [sensorDao].
   final SensorCollector sensors;
+  /// Phase 2 on-device sensor fusion (§1.3): harsh brake/accel, turn and
+  /// vibration-gate classification with server-calibrated thresholds. Lives
+  /// BETWEEN the raw sensor source and [sensors] (see [onTripToggled]).
+  final EventClassifier classifier;
+  /// Config fetcher for trip-start threshold refresh (test-seamable).
+  final ClassificationConfigSource configSource;
   /// Phase 4 pilot telemetry: battery samples, one-tap assignment check,
   /// offline tile pre-download.
   final PilotService pilot;
@@ -51,6 +60,7 @@ class AppRuntime extends ChangeNotifier {
     SensorStreamFactory? sensorSource,
     BatteryReader? batteryReader,
     String Function()? networkTypeProvider,
+    ClassificationConfigSource? configSource,
   }) async {
     final path = dbPathOverride ?? await defaultDbPath();
     final db = await openDatabase(
@@ -83,23 +93,45 @@ class AppRuntime extends ChangeNotifier {
     await worker.refreshPendingCount();
 
     final gps = GpsCollector(dao: dao, positionSource: positionSource);
-    final sensors = SensorCollector(dao: sensorDao, source: sensorSource);
+    final sensors = SensorCollector(dao: sensorDao, source: null);
+    // Phase 2 fusion: the classifier sits BETWEEN the raw sensor stream and
+    // the collector — it consumes every raw sample, emits discrete harsh/turn/
+    // gate events, and forwards everything (raw + discrete) to the throttled
+    // cache path. Thresholds refresh at trip start (see onTripToggled).
+    final classifier = EventClassifier(
+      thresholds: ClassificationThresholds.defaults,
+      sink: sensors.ingest,
+    );
+    final cfgSource = configSource ??
+        HttpClassificationConfigSource(
+          client: httpClient,
+          accessToken: () => tokenStore.accessToken,
+        );
     final pilot = PilotService(
       tokenStore: tokenStore,
       client: httpClient,
       batteryReader: batteryReader ?? UnavailableBatteryReader.read,
       networkTypeProvider: networkTypeProvider,
     );
-    return AppRuntime._(
+    final runtime = AppRuntime._(
       dao: dao,
       sensorDao: sensorDao,
       worker: worker,
       tokenStore: tokenStore,
       gps: gps,
       sensors: sensors,
+      classifier: classifier,
+      configSource: cfgSource,
       pilot: pilot,
     );
+    // Late-bind the source so the collector subscribes THROUGH the classifier
+    // (single fan-in point; keeps SensorCollector plugin-free).
+    runtime._sensorSource = sensorSource;
+    return runtime;
   }
+
+  /// Raw-sample producer, late-bound after construction (see bootstrap).
+  SensorStreamFactory? _sensorSource;
 
   /// SQLite file lives in app-support storage; PDPP §1.7 keeps it on-device
   /// until the driver's own upload sends it to the Ethiopian gateway.

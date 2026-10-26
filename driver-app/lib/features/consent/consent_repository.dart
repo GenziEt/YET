@@ -17,14 +17,12 @@ class ConsentRepository {
 
   bool accepted = false;
   bool permissionsAcknowledged = false;
-  bool improveMotionAudio = false; // optional scope, default OFF (§1.7 minimization)
 
   Future<void> loadLocal() async {
     final sp = await SharedPreferences.getInstance();
     accepted = sp.getBool(_kAccepted) ?? false;
     permissionsAcknowledged = sp.getBool(_kPermsAck) ?? false;
     final scopes = _decodeScopes(sp.getString(_kScopes));
-    improveMotionAudio = scopes.contains('audio');
     if (accepted && (sp.getBool(_kPendingSync) ?? false)) {
       // Fire-and-forget replay of a consent that was accepted while offline.
       _syncToServer(scopes).ignore();
@@ -38,7 +36,6 @@ class ConsentRepository {
     await sp.setBool(_kAccepted, true);
     await sp.setString(_kScopes, jsonEncode(scopes));
     accepted = true;
-    improveMotionAudio = scopes.contains('audio');
     final ok = await _syncToServer(scopes, token: token);
     await sp.setBool(_kPendingSync, !ok);
   }
