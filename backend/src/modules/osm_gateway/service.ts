@@ -276,11 +276,20 @@ export async function invalidateRoutesForGeofence(geofenceId: string): Promise<v
   const fleetKeys = await cacheKeysByPrefix('fleet:state');
   await cacheDelMany(fleetKeys);
   try {
+    // Supersede, never delete: bump created_at (the audit timestamp of the
+    // invalidation) and collapse expires_at in a single statement. Two separate
+    // now() calls would make created_at > expires_at — this keeps the row's
+    // history honest for the routing audit trail.
     await pool.query(
-      `UPDATE route_cache SET expires_at = now(), created_at = now()
-        WHERE expires_at > now()
-          AND round(to_lat::numeric, 6) = round((SELECT center_lat FROM geofences WHERE geofence_id=$1)::numeric, 6)
-          AND round(to_lng::numeric, 6) = round((SELECT center_lng FROM geofences WHERE geofence_id=$1)::numeric, 6)`,
+      `WITH bumped AS (
+         UPDATE route_cache SET expires_at = now()
+          WHERE expires_at > now()
+            AND round(to_lat::numeric, 6) = round((SELECT center_lat FROM geofences WHERE geofence_id=$1)::numeric, 6)
+            AND round(to_lng::numeric, 6) = round((SELECT center_lng FROM geofences WHERE geofence_id=$1)::numeric, 6)
+          RETURNING cache_key)
+       UPDATE route_cache rc SET created_at = b.created_at
+        FROM (SELECT now() AS created_at) b
+       WHERE rc.cache_key IN (SELECT cache_key FROM bumped)`,
       [geofenceId],
     );
   } catch (err) {

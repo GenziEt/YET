@@ -4,7 +4,7 @@ import { verifyAccessToken, type TokenClaims } from '../../lib/jwt.js';
 import { getRoute, geocode } from './service.js';
 import { parseLatLng, computeEta, type EtaInput } from './geo.js';
 import { pool } from '../../db/pool.js';
-import { assertTargetInFleet } from '../../lib/tenant.js';
+import { assertTargetInFleet, deny, isDenial } from '../../lib/tenant.js';
 
 /**
  * Module 7 — OSM Gateway HTTP surface (Phase 3).
@@ -113,7 +113,15 @@ export default async function osmRoutes(app: FastifyInstance) {
       // Tenant layer on top of the role rule: FLEET_MANAGER tokens (and legacy
       // DRIVER tokens naming someone else's vehicle) are confined to their own
       // fleet — the ETA embeds live speed/trip state, personal data under §1.7.
-      await assertTargetInFleet(claims, { vehicleId: parsed.data.vehicle_id });
+      // deny()/isDenial() convert the thrown denial into the machine-readable
+      // 403 {error:'cross_fleet_denied'} body at the route boundary (same
+      // pattern as reporting/trip_engine/ingest routes).
+      try {
+        await assertTargetInFleet(claims, { vehicleId: parsed.data.vehicle_id });
+      } catch (e) {
+        if (isDenial(e)) return deny(reply, e.message);
+        throw e;
+      }
       const snap = await vehicleLiveSnapshot(parsed.data.vehicle_id);
       const computed = computeEta(
         { ...snap, osrmDurationS: route.duration_s, distanceM: route.distance_m }, Date.now());
