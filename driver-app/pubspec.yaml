@@ -29,6 +29,10 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+  # Headless SQLite engine for the test harness (phase1_ingest_pipeline_test /
+  # event_classifier_test drive the REAL sqflite Database API through FFI —
+  # declared explicitly, not relied upon transitively).
+  sqflite_common_ffi: ^2.3.0
 
 flutter:
   uses-material-design: true
