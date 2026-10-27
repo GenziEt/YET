@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { pool } from '../../db/pool.js';
-import { verifyAccessToken } from '../../lib/jwt.js';
+import { verifyAccessToken, type TokenClaims } from '../../lib/jwt.js';
 import { audit } from '../../lib/audit.js';
 import { env, isProd } from '../../config/env.js';
+import { scopeFleetId } from '../../lib/tenant.js';
 import { dispatchQueuedOnce } from './dispatchers.js';
 import { runSeparationSweep, testForceSeparationOverdue, testSeparationDedupeKeys } from './triggers.js';
 
@@ -21,7 +22,7 @@ import { runSeparationSweep, testForceSeparationOverdue, testSeparationDedupeKey
  *    timer + dispatcher pass, so integration gates don't wait for the loops.
  */
 
-async function bearer(req: any): Promise<{ sub: string; role: string }> {
+async function bearer(req: any): Promise<TokenClaims> {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) throw Object.assign(new Error('unauthorized'), { statusCode: 401 });
   return verifyAccessToken(header.slice(7));
@@ -69,17 +70,26 @@ export default async function notificationRoutes(app: FastifyInstance) {
       limit: z.coerce.number().int().positive().max(500).default(100),
     }).safeParse(req.query);
     if (!q.success) return reply.code(400).send({ error: 'invalid_query', detail: q.error.flatten() });
+    // Tenant boundary (Phase 0 rule applied to a Phase 5 surface): the ledger is
+    // personal-data metadata, so a FLEET_MANAGER may only read rows whose TARGET
+    // driver belongs to their fleet. ADMIN sees the platform. scopeFleetId()
+    // fails closed (403 cross_fleet_denied) for tenant tokens lacking a fleet
+    // claim; covered by the negative test in tests/phase5_gates.test.ts.
+    const fleetScope = scopeFleetId(claims);
     const { rows } = await pool.query(
       `SELECT notification_id, event_type, dedupe_key, recipient_role::text AS recipient_role,
               recipient_id, target_user, channel::text AS channel, status::text AS status,
               provider_msg_id, error_code, created_at, sent_at
-         FROM notification_log
+         FROM notification_log nl
         WHERE ($1::uuid IS NULL OR target_user = $1)
           AND ($2::text IS NULL OR event_type = $2)
           AND ($3::text IS NULL OR status::text = $3)
+          AND ($5::uuid IS NULL OR EXISTS (
+                SELECT 1 FROM users tu WHERE tu.id = nl.target_user AND tu.fleet_id = $5))
         ORDER BY created_at DESC
         LIMIT $4`,
-      [q.data.target_user ?? null, q.data.event_type ?? null, q.data.status ?? null, q.data.limit],
+      [q.data.target_user ?? null, q.data.event_type ?? null, q.data.status ?? null, q.data.limit,
+       fleetScope ?? null],
     );
     await audit({ actorId: claims.sub, action: 'read_notification_log', targetUser: q.data.target_user ?? null,
                   ip: req.ip, detail: { count: rows.length, filter: q.data } });
