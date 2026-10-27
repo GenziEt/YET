@@ -24,7 +24,10 @@ const d = DB ? describe : describe.skip;
 
 // Reuse the app's pool by pointing DATABASE_URL at the same scratch DB BEFORE
 // importing the module under test (pool.js reads env at import time).
+// JWT_SECRET must also be set here: src/config/env.ts fail-fasts at import if
+// it is missing, and crossing.js transitively imports it via db/pool.js.
 if (DB) process.env.DATABASE_URL = DB;
+process.env.JWT_SECRET ??= 'geofence-crossing-test-secret-0123456789';
 
 let poolX: pg.Pool; // our own connection for fixtures/cleanup
 let evaluateCrossings: typeof import('../src/modules/geofence/crossing.js')['evaluateCrossings'];
