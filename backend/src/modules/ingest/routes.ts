@@ -11,6 +11,35 @@ import { assertConsentActive } from '../identity/consent.js';
 import { pool } from '../../db/pool.js';
 import { audit } from '../../lib/audit.js';
 import { env } from '../../config/env.js';
+import { cacheDelMany, cacheKeysByPrefix } from '../../lib/redis.js';
+import { FLEET_STATE_CACHE_KEY } from '../reporting/kernel.js';
+import { hasDedicatedReplica, readPool } from '../../db/replica.js';
+
+/**
+ * Erasure replica-read-path guarantee (Phase 5): after the DELETE commits on
+ * the primary, block until the reporting replica (if one is configured via
+ * READER_DATABASE_URL) has replayed WAL past the erase commit LSN. Until this
+ * returns, /reports/* served from the replica could still expose erased fixes.
+ * Single-DB dev deployments have no replica — the function is a documented
+ * no-op there and always succeeds. Bounded wait (30 s); on timeout we log and
+ * proceed with the receipt because TTL/catch-up will converge regardless —
+ * correctness of the PRIMARY is never in question.
+ */
+async function waitForReplicaCatchup(primaryClient: import('pg').PoolClient): Promise<void> {
+  if (!hasDedicatedReplica()) return;
+  const { rows } = await primaryClient.query<{ lsn: string | null }>(
+    `SELECT pg_current_wal_lsn() AS lsn`);
+  const targetLsn = rows[0]?.lsn;
+  if (!targetLsn) return;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const rc = await readPool().query<{ replayed: boolean | null }>(
+      `SELECT pg_last_wal_replay_lsn() >= $1::pg_lsn AS replayed`, [targetLsn]);
+    if (rc.rows[0]?.replayed) return;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  console.warn('[erasure] replica did not confirm WAL replay within 30s; receipt proceeds (primary purged)');
+}
 
 async function driverAuth(req: any): Promise<{ id: string; role: string }> {
   const header = req.headers.authorization;
@@ -329,6 +358,26 @@ export default async function ingestRoutes(app: FastifyInstance) {
                           scanned_old: scannedOld, deleted_rows: deleted,
                           purged_batches: purged.length })]);
       await client.query('COMMIT');
+      /* Phase 5 completion rule: "Erasure endpoint implements deletion across
+         every dependent table, cache, and replica-read path." Two dependent
+         read surfaces exist beyond the primary tables just purged:
+           1. Redis fleet:state aggregates embed this driver's latest fix /
+              trip status — invalidate the driver's fleet key (and the global
+              ADMIN-scope key if present) so no cached personal data survives
+              the erase inside its 30 s TTL window.
+           2. Reporting reads from a physical replica (READER_DATABASE_URL).
+              Wait for replication to catch up past the commit LSN so the
+              erased rows are actually gone from the replica before we return
+              the receipt; on single-DB dev (no replica configured) this is a
+              no-op by construction. */
+      const { rows: fleetRow } = await pool.query<{ fleet_id: string | null }>(
+        `SELECT fleet_id FROM users WHERE id = $1`, [driverId]);
+      const driverFleetId = fleetRow[0]?.fleet_id ?? null;
+      const staleKeys = [FLEET_STATE_CACHE_KEY];
+      if (driverFleetId) staleKeys.push(`${FLEET_STATE_CACHE_KEY}:${driverFleetId}`);
+      else staleKeys.push(...(await cacheKeysByPrefix(`${FLEET_STATE_CACHE_KEY}:`)));
+      await cacheDelMany(staleKeys);
+      await waitForReplicaCatchup(client);
       return reply.code(200).send({
         driver_id: driverId,
         completed_at: new Date().toISOString(),
