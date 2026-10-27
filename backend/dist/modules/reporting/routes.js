@@ -32,6 +32,38 @@ async function withDenials(reply, fn) {
         throw e;
     }
 }
+/* ------------------------- CSV export (§Master Phase 5: "Reporting endpoints …
+   complete with fleet scoping and CSV export") -------------------------
+   `?format=csv` on /reports/trips and /reports/separations serializes the SAME
+   fleet-scoped, audited result as an RFC-4180-flavored CSV (comma, CRLF, quotes
+   doubled). Authorization, tenant scoping, validation and audit are identical
+   to the JSON path — the format parameter never bypasses a guard. */
+const FormatSchema = z.object({ format: z.enum(['json', 'csv']).default('json') });
+export function toCsv(rows, columns) {
+    const esc = (v) => {
+        if (v === null || v === undefined)
+            return '';
+        let s;
+        if (typeof v === 'object')
+            s = JSON.stringify(v);
+        else
+            s = String(v);
+        if (/[",\r\n]/.test(s))
+            s = `"${s.replace(/"/g, '""')}"`;
+        return s;
+    };
+    const lines = [columns.join(',')];
+    for (const r of rows)
+        lines.push(columns.map((c) => esc(r[c])).join(','));
+    return lines.join('\r\n') + '\r\n';
+}
+function csvReply(req, reply, body, filename) {
+    req.log.info({ filename }, 'csv export');
+    return reply
+        .header('content-type', 'text/csv; charset=utf-8')
+        .header('content-disposition', `attachment; filename="${filename}"`)
+        .send(body);
+}
 export default async function reportingRoutes(app) {
     /** GET /reports/pilot?from=&to=&driver_id= — battery drain, upload latency,
      *  separation counts, sync backlog, offline-reconstruction audit, feedback queue. */
@@ -56,7 +88,17 @@ export default async function reportingRoutes(app) {
         from: z.string().datetime(),
         to: z.string().datetime(),
         driver_id: z.string().uuid().optional(),
+        format: z.enum(['json', 'csv']).default('json'),
     });
+    const TRIP_CSV_COLUMNS = [
+        'trip_id', 'driver_id', 'plate_number', 'started_at', 'ended_at', 'state',
+        'distance_m', 'moving_duration_s', 'stopped_duration_s', 'turn_count', 'harsh_event_count',
+    ];
+    const SEPARATION_CSV_COLUMNS = [
+        'separation_id', 'trip_id', 'vehicle_id', 'driver_id', 'driver_name', 'plate_number',
+        'status', 'separated_at', 'returned_at', 'duration_min', 'truck_stop_lat', 'truck_stop_lng',
+        'distance_m', 'notified_fleet_manager',
+    ];
     /** GET /reports/trips?from=&to=&driver_id= — weekly trip report (§1.9.4 p95
      *  ≤500 ms for one week/one driver). Replica-backed read, audited. */
     app.get('/reports/trips', async (req, reply) => {
@@ -69,7 +111,11 @@ export default async function reportingRoutes(app) {
                 await assertTargetInFleet(claims, { driverId: parsed.data.driver_id });
             const report = await getTripReport({ ...parsed.data, fleet_id: scopeFleetId(claims) });
             await audit({ actorId: claims.sub, action: 'read_trip_report', targetUser: parsed.data.driver_id ?? null,
-                ip: req.ip, detail: { from: parsed.data.from, to: parsed.data.to, trips: report.trips.length } });
+                ip: req.ip, detail: { from: parsed.data.from, to: parsed.data.to, trips: report.trips.length,
+                    format: parsed.data.format } });
+            if (parsed.data.format === 'csv') {
+                return csvReply(req, reply, toCsv(report.trips, [...TRIP_CSV_COLUMNS]), `trips_${parsed.data.from.slice(0, 10)}_to_${parsed.data.to.slice(0, 10)}.csv`);
+            }
             return report;
         });
     });
@@ -86,7 +132,11 @@ export default async function reportingRoutes(app) {
                 await assertTargetInFleet(claims, { driverId: parsed.data.driver_id });
             const result = await getSeparationIncidents({ ...parsed.data, fleet_id: scopeFleetId(claims) });
             await audit({ actorId: claims.sub, action: 'read_separation_report', targetUser: parsed.data.driver_id ?? null,
-                ip: req.ip, detail: { from: parsed.data.from, to: parsed.data.to, count: result.count } });
+                ip: req.ip, detail: { from: parsed.data.from, to: parsed.data.to, count: result.count,
+                    format: parsed.data.format } });
+            if (parsed.data.format === 'csv') {
+                return csvReply(req, reply, toCsv(result.incidents, [...SEPARATION_CSV_COLUMNS]), `separations_${parsed.data.from.slice(0, 10)}_to_${parsed.data.to.slice(0, 10)}.csv`);
+            }
             return result;
         });
     });
