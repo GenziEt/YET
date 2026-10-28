@@ -104,7 +104,7 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
               ($2,'FLEET_MANAGER','P5G Manager A',$7,$5,'en',true,$6),
               ($3,'FLEET_MANAGER','P5G Manager B',$8,$5,'en',true,$9)`,
       [driverA, mgrA, mgrB,
-       `p5g-a-${driverA.slice(0, 8)}@yet.local`, scrypt('p5g-pw'), fleetA,
+       `p5g-a-${driverA.slice(0, 8)}@yet.local`, scrypt('p5g-password-1'), fleetA,
        `p5g-ma-${mgrA.slice(0, 8)}@yet.local`, `p5g-mb-${mgrB.slice(0, 8)}@yet.local`, fleetB]);
     await poolX.query(`INSERT INTO vehicles (id, plate_number, fleet_id) VALUES ($1,'P5G-A-1',$2)`,
       [vehicleA, fleetA]);
@@ -295,9 +295,19 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
   });
 
   it('CSV read lands in audit_log with format recorded (systematic PDPP read audit)', async () => {
+    // Deterministic ordering: perform a fresh CSV read for the named target,
+    // then assert on rows at/after that instant (the suite shares one DB and
+    // vitest runs test files concurrently — never depend on other suites' rows).
+    const t0 = new Date();
+    const { signAccessToken } = await import('../src/lib/jwt.js');
+    const tokA = signAccessToken({ sub: mgrA, role: 'FLEET_MANAGER', locale: 'en', fleetId: fleetA });
+    const csv = await app.inject({ method: 'GET', url: `/reports/trips?${WIN}&driver_id=${driverA}&format=csv`,
+      headers: { authorization: `Bearer ${tokA}` } });
+    expect(csv.statusCode).toBe(200);
     const { rows } = await poolX.query(
       `SELECT detail->>'format' AS fmt FROM audit_log
-        WHERE action='read_trip_report' AND target_user=$1 ORDER BY occurred_at DESC LIMIT 1`, [driverA]);
+        WHERE action='read_trip_report' AND target_user=$1 AND occurred_at >= $2
+        ORDER BY occurred_at DESC LIMIT 1`, [driverA, t0.toISOString()]);
     expect(rows.length).toBeGreaterThan(0);
     expect(rows[0].fmt).toBe('csv');
   });
@@ -306,7 +316,7 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
 
   it('POST /ingest/locations succeeds once consent+assignment exist (seeded fixture path)', async () => {
     const login = await app.inject({ method: 'POST', url: '/auth/login',
-      payload: { identifier: `p5g-a-${driverA.slice(0, 8)}@yet.local`, password: 'p5g-pw' } });
+      payload: { identifier: `p5g-a-${driverA.slice(0, 8)}@yet.local`, password: 'p5g-password-1' } });
     expect(login.statusCode).toBe(200);
     const token = login.json().access_token;
     await grantConsent(token);
@@ -323,10 +333,10 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
     await poolX.query(
       `INSERT INTO users (id, role, full_name, email, password_hash, locale, is_active, fleet_id)
        VALUES ($1,'DRIVER','P5G Orphan',$2,$3,'en',true,$4)`,
-      [orphan, `p5g-orphan-${orphan.slice(0, 8)}@yet.local`, scrypt('p5g-pw'), fleetA]);
+      [orphan, `p5g-orphan-${orphan.slice(0, 8)}@yet.local`, scrypt('p5g-password-1'), fleetA]);
     // Consent via HTTP (policy registry is code, not fixture-dependent).
     const ologin = await app.inject({ method: 'POST', url: '/auth/login',
-      payload: { identifier: `p5g-orphan-${orphan.slice(0, 8)}@yet.local`, password: 'p5g-pw' } });
+      payload: { identifier: `p5g-orphan-${orphan.slice(0, 8)}@yet.local`, password: 'p5g-password-1' } });
     expect(ologin.statusCode).toBe(200);
     await grantConsent(ologin.json().access_token);
     const res = await app.inject({ method: 'POST', url: '/ingest/locations',

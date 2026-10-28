@@ -154,7 +154,11 @@ export default async function reportingRoutes(app: FastifyInstance) {
   app.get('/reports/fleet-state', async (req, reply) => {
     return withDenials(reply, async () => {
       const claims = await managerAuth(req);
-      const q = z.object({ refresh: z.coerce.boolean().default(false) }).parse(req.query);
+      // safeParse + inline 400: deterministic validation errors independent of
+      // plugin-level error-handler ordering (see identity/routes.ts rationale).
+      const parsedQ = z.object({ refresh: z.coerce.boolean().default(false) }).safeParse(req.query);
+      if (!parsedQ.success) return reply.code(400).send({ error: 'validation_failed', detail: parsedQ.error.flatten() });
+      const q = parsedQ.data;
       const fleetId = scopeFleetId(claims); // fail-closed for tenant tokens lacking a fleet claim
       const cacheKey = fleetId ? `${FLEET_STATE_CACHE_KEY}:${fleetId}` : FLEET_STATE_CACHE_KEY;
       if (q.refresh) await cacheDel(cacheKey);
