@@ -123,7 +123,11 @@ export default async function ingestRoutes(app) {
         // monolith; becomes an internal API call on extraction).
         const { rows: asg } = await pool.query(`SELECT vehicle_id FROM driver_vehicle_assignments
        WHERE driver_id=$1 AND unassigned_at IS NULL LIMIT 1`, [auth.id]);
-        const result = await ingestLocationBatch(auth.id, asg[0]?.vehicle_id ?? null, parsed.data, req.log);
+        // §1.4 Phase-4 assignment gating: collection without an active vehicle is a
+        // hard 409 (mirrors /ingest/sensors) — never silently write unassigned fixes.
+        if (!asg[0]?.vehicle_id)
+            return reply.code(409).send({ error: 'no_vehicle_assignment' });
+        const result = await ingestLocationBatch(auth.id, asg[0].vehicle_id, parsed.data, req.log);
         // p95 budget: <=300ms for 100 fixes (§1.9.4). ACK lets client mark records ACKED (§1.8.1).
         return reply.code(200).send({
             batch_id: parsed.data.batch_id,

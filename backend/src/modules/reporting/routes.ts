@@ -2,10 +2,12 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { verifyAccessToken, type TokenClaims } from '../../lib/jwt.js';
 import { audit } from '../../lib/audit.js';
+import { pool } from '../../db/pool.js';
 import { PilotQuerySchema, getPilotSummary } from './pilot_service.js';
 import { getTripReport, getSeparationIncidents, getFleetOverview } from './service.js';
 import { FLEET_STATE_CACHE_KEY } from './kernel.js';
-import { cacheDel } from '../../lib/redis.js';
+import { cacheDel, cacheDelMany, cacheKeysByPrefix } from '../../lib/redis.js';
+import { env, isProd } from '../../config/env.js';
 import { assertTargetInFleet, deny, isDenial, scopeFleetId } from '../../lib/tenant.js';
 
 /**
@@ -143,6 +145,99 @@ export default async function reportingRoutes(app: FastifyInstance) {
       return result;
     });
   });
+
+  /** POST /reports/retention/run — §1.10.6 90-day downsampling pass, in-process.
+   *
+   *  The deployment schedule (infra/cron/yet-retention → docker-compose
+   *  `retention` service) runs scripts/retention.mjs nightly; this endpoint is
+   *  the OPERATOR-triggerable equivalent of that same job so retention can be
+   *  exercised and TESTED against a running backend ("Data retention job
+   *  (90-day downsampling) scheduled and tested", §Master Phase 5 scalability
+   *  gate). It executes the identical set-based SQL as scripts/retention.mjs
+   *  (same ordering + phase contract as retention_kernel.selectDownsample),
+   *  writes its audit row inside the SAME transaction as the deletes, and is
+   *  ADMIN-only. Mounted only when NODE_ENV !== 'production' — the same
+   *  discipline as /notifications/sweep/run: an operator-triggerable bulk
+   *  DELETE over personal-data tables must never face the open internet;
+   *  production cadence belongs to the scheduled container. */
+  if (!isProd) {
+    app.post('/reports/retention/run', async (req, reply) => {
+      const header = req.headers.authorization;
+      if (!header?.startsWith('Bearer ')) return reply.code(401).send({ error: 'unauthorized' });
+      let claims: TokenClaims;
+      try {
+        claims = verifyAccessToken(header.slice(7));
+      } catch {
+        return reply.code(401).send({ error: 'unauthorized' });
+      }
+      if (claims.role !== 'ADMIN') return reply.code(403).send({ error: 'forbidden_role' });
+      const parsedB = z.object({
+        age_days: z.coerce.number().int().positive().default(env.RETENTION_AGE_DAYS),
+        keep_every_n: z.coerce.number().int().min(2).default(env.RETENTION_KEEP_EVERY_N),
+      }).safeParse(req.body ?? {});
+      if (!parsedB.success) return reply.code(400).send({ error: 'invalid_body', detail: parsedB.error.flatten() });
+      const { age_days: ageDays, keep_every_n: keepEveryN } = parsedB.data;
+
+      // Same partition as scripts/retention.mjs and retention_kernel: per driver,
+      // row_number over (fix_timestamp, fix_id), KEEP phase (rn-1)%N==0, DELETE
+      // the rest, strictly older than the cutoff. Idempotent: re-running
+      // immediately deletes nothing new (survivors renumber onto kept phases).
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const { rows: counts } = await client.query(
+          `WITH old AS (
+             SELECT lf.driver_id, lf.fix_id, lf.fix_timestamp,
+                    row_number() OVER (PARTITION BY lf.driver_id
+                                       ORDER BY lf.fix_timestamp ASC, lf.fix_id ASC) AS rn
+               FROM location_fixes lf
+              WHERE lf.fix_timestamp < now() - make_interval(days => $1)
+           ), doomed AS (
+             DELETE FROM location_fixes lf
+              USING old o
+             WHERE lf.driver_id = o.driver_id
+               AND lf.fix_id = o.fix_id
+               AND lf.fix_timestamp = o.fix_timestamp
+               AND (o.rn - 1) % $2 <> 0
+           )
+           SELECT (SELECT count(*) FROM old) AS scanned_old,
+                  (SELECT count(*) FROM doomed) AS deleted`,
+          [ageDays, keepEveryN]);
+        const scannedOld = Number(counts[0]?.scanned_old ?? 0);
+        const deleted = Number(counts[0]?.deleted ?? 0);
+        // Batch provenance with zero surviving fixes is residue — purge it too
+        // (mirrors the erasure path; recent-window batches stay referenced).
+        const { rows: purged } = await client.query(
+          `DELETE FROM ingest_batches ib
+            WHERE NOT EXISTS (SELECT 1 FROM location_fixes lf WHERE lf.batch_id = ib.batch_id)
+            RETURNING ib.batch_id`);
+        await client.query(
+          `INSERT INTO audit_log (actor_id, action, target_user, ip, detail)
+           VALUES ($1, 'retention_downsample', NULL, $2, $3)`,
+          [claims.sub, req.ip, JSON.stringify({
+            age_days: ageDays, keep_every_n: keepEveryN,
+            scanned_old: scannedOld, deleted_rows: deleted, purged_batches: purged.length,
+            trigger: 'api',
+          })]);
+        await client.query('COMMIT');
+        // Cached fleet-state embeds latest-fix ages; after bulk pruning, bust it
+        // so no aggregate references pruned rows inside its TTL window.
+        await cacheDelMany(await cacheKeysByPrefix(FLEET_STATE_CACHE_KEY));
+        return reply.code(200).send({
+          completed_at: new Date().toISOString(),
+          age_days: ageDays, keep_every_n: keepEveryN,
+          scanned_old_fixes: scannedOld, deleted_rows: deleted, purged_batches: purged.length,
+          retained: ['trip_aggregates', 'trip_events', 'geofence_crossings', 'separation_incidents', 'notification_log'],
+          audit_action: 'retention_downsample',
+        });
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    });
+  }
 
   /** GET /reports/fleet-state?refresh=1 — live-map feed for the dashboard.
    *  Redis fleet:state TTL 30s absorbs poll storms (§1.10.2); `refresh=1` lets a
