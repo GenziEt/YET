@@ -297,7 +297,7 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
   it('CSV read lands in audit_log with format recorded (systematic PDPP read audit)', async () => {
     const { rows } = await poolX.query(
       `SELECT detail->>'format' AS fmt FROM audit_log
-        WHERE action='read_trip_report' AND target_user=$1 ORDER BY created_at DESC LIMIT 1`, [driverA]);
+        WHERE action='read_trip_report' AND target_user=$1 ORDER BY occurred_at DESC LIMIT 1`, [driverA]);
     expect(rows.length).toBeGreaterThan(0);
     expect(rows[0].fmt).toBe('csv');
   });
