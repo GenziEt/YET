@@ -328,6 +328,110 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
     expect(res.json().accepted).toBe(1);
   });
 
+  /* ---------------- 3b. Retention job — scheduled + TESTED (§Master P5) ----- */
+
+  it('POST /reports/retention/run: DRIVER rejected 403 forbidden_role (ADMIN-only boundary)', async () => {
+    const { signAccessToken } = await import('../src/lib/jwt.js');
+    const tokD = signAccessToken({ sub: driverA, role: 'DRIVER', locale: 'en', fleetId: fleetA });
+    const res = await app.inject({ method: 'POST', url: '/reports/retention/run',
+      headers: { authorization: `Bearer ${tokD}` }, payload: {} });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body).error).toBe('forbidden_role');
+  });
+
+  it('POST /reports/retention/run: FLEET_MANAGER rejected too (bulk-delete surface is ADMIN-only)', async () => {
+    const { signAccessToken } = await import('../src/lib/jwt.js');
+    const tokM = signAccessToken({ sub: mgrA, role: 'FLEET_MANAGER', locale: 'en', fleetId: fleetA });
+    const res = await app.inject({ method: 'POST', url: '/reports/retention/run',
+      headers: { authorization: `Bearer ${tokM}` }, payload: {} });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body).error).toBe('forbidden_role');
+  });
+
+  it('POST /reports/retention/run anonymous → 401 unauthorized', async () => {
+    const res = await app.inject({ method: 'POST', url: '/reports/retention/run', payload: {} });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('POST /reports/retention/run as ADMIN downsamples old fixes every Nth, keeps recent + audit row', async () => {
+    // Throwaway driver so the pass can't disturb other suites' rows (vitest
+    // runs files concurrently; we scope by driver and clean up after).
+    const retDriver = randomUUID();
+    const retVehicle = randomUUID();
+    const retBatch = randomUUID();
+    await poolX.query(
+      `INSERT INTO users (id, role, full_name, email, password_hash, locale, is_active, fleet_id)
+       VALUES ($1,'DRIVER','P5G Retention',$2,$3,'en',true,$4)`,
+      [retDriver, `p5g-ret-${retDriver.slice(0, 8)}@yet.local`, scrypt('p5g-password-1'), fleetA]);
+    await poolX.query(`INSERT INTO vehicles (id, plate_number, fleet_id) VALUES ($1,'P5G-RET-1',$2)`,
+      [retVehicle, fleetA]);
+    await poolX.query(`INSERT INTO ingest_batches (batch_id, driver_id, vehicle_id, fix_count)
+                       VALUES ($1,$2,$3,15)`, [retBatch, retDriver, retVehicle]);
+    // 15 OLD fixes (400 days ago ⇒ past the age_days=90 cutoff passed below)
+    // + 3 RECENT fixes (must survive regardless of phase). fix_id is IDENTITY —
+    // never supplied; ordering contract is (fix_timestamp, fix_id).
+    for (let i = 0; i < 15; i++) {
+      await poolX.query(
+        `INSERT INTO location_fixes (batch_id, driver_id, vehicle_id, fix_timestamp, lat, lng, accuracy_m)
+         VALUES ($1,$2,$3, now() - make_interval(days => 400) - ($4 || ' seconds')::interval, 9.0, 38.7, 5)`,
+        [retBatch, retDriver, retVehicle, String(i * 30)]);
+    }
+    for (let i = 0; i < 3; i++) {
+      await poolX.query(
+        `INSERT INTO location_fixes (batch_id, driver_id, vehicle_id, fix_timestamp, lat, lng, accuracy_m)
+         VALUES ($1,$2,$3, now() - ($4 || ' minutes')::interval, 9.05, 38.75, 5)`,
+        [retBatch, retDriver, retVehicle, String(i + 1)]);
+    }
+
+    const { signAccessToken } = await import('../src/lib/jwt.js');
+    const tokAdmin = signAccessToken({ sub: mgrA, role: 'ADMIN', locale: 'en' });
+    const t0 = new Date();
+    const res = await app.inject({ method: 'POST', url: '/reports/retention/run',
+      headers: { authorization: `Bearer ${tokAdmin}` },
+      payload: { age_days: 90, keep_every_n: 10 } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // This driver's old window ranks rn 1..15 ⇒ kept (rn-1)%10==0 are rn 1 & 11
+    // ⇒ exactly 13 deletions attributable to us; global counts include other
+    // suites' old rows, so assert OUR DB state directly, not just the envelope.
+    expect(body.deleted_rows).toBeGreaterThanOrEqual(13);
+    expect(body.audit_action).toBe('retention_downsample');
+
+    const { rows: left } = await poolX.query(
+      `SELECT count(*)::int AS n FROM location_fixes WHERE driver_id = $1`, [retDriver]);
+    // 3 recent survive + exactly 2 old anchors (rn 1 & 11 of the 15 seeded).
+    expect(left[0].n).toBe(5);
+    const { rows: oldLeft } = await poolX.query(
+      `SELECT count(*)::int AS n FROM location_fixes
+        WHERE driver_id=$1 AND fix_timestamp < now() - interval '100 days'`, [retDriver]);
+    expect(oldLeft[0].n).toBe(2);
+
+    // Idempotence: an immediate re-run deletes nothing further for this driver.
+    const res2 = await app.inject({ method: 'POST', url: '/reports/retention/run',
+      headers: { authorization: `Bearer ${tokAdmin}` },
+      payload: { age_days: 90, keep_every_n: 10 } });
+    expect(res2.statusCode).toBe(200);
+    const { rows: left2 } = await poolX.query(
+      `SELECT count(*)::int AS n FROM location_fixes WHERE driver_id=$1`, [retDriver]);
+    expect(left2[0].n).toBe(5);
+
+    // Audit receipt lands in the same ledger the API uses (§Gate traceability).
+    const { rows: aud } = await poolX.query(
+      `SELECT detail->>'keep_every_n' AS n, detail->>'trigger' AS trig
+         FROM audit_log WHERE action='retention_downsample' AND occurred_at >= $1
+         ORDER BY occurred_at DESC LIMIT 1`, [t0.toISOString()]);
+    expect(aud.length).toBeGreaterThan(0);
+    expect(aud[0].n).toBe('10');
+    expect(aud[0].trig).toBe('api');
+
+    // Cleanup (children first).
+    await poolX.query(`DELETE FROM location_fixes WHERE driver_id=$1`, [retDriver]);
+    await poolX.query(`DELETE FROM ingest_batches WHERE driver_id=$1`, [retDriver]);
+    await poolX.query(`DELETE FROM audit_log WHERE actor_id=$1 OR target_user=$1`, [retDriver]);
+    await poolX.query(`DELETE FROM users WHERE id=$1`, [retDriver]);
+    await poolX.query(`DELETE FROM vehicles WHERE id=$1`, [retVehicle]);
+  });
+
   it('POST /ingest/locations with NO active assignment → 409 no_vehicle_assignment (collection gating)', async () => {
     const orphan = randomUUID();
     await poolX.query(
