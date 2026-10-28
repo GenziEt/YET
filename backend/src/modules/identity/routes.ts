@@ -55,9 +55,17 @@ async function authGuard(req: FastifyRequest): Promise<{ id: string; role: strin
 }
 
 export default async function identityRoutes(app: FastifyInstance) {
-  /** POST /auth/login — JWT access token. Rate-limited at nginx + in-app. */
+  /** POST /auth/login — JWT access token. Rate-limited at nginx + in-app.
+   *  Validation errors are answered inline with a structured 400 rather than
+   *  bubbling a ZodError to the global error handler: plugin-level handlers
+   *  (@fastify/sensible) can shadow setErrorOrder('shallowest') overrides, so
+   *  route-local handling keeps the offline contract deterministic. */
   app.post('/auth/login', async (req, reply) => {
-    const body = LoginSchema.parse(req.body);
+    const parsed = LoginSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'validation_failed', detail: parsed.error.flatten() });
+    }
+    const body = parsed.data;
     const { rows } = await pool.query(
       `SELECT id, role, password_hash, locale, is_active, fleet_id FROM users
        WHERE phone_e164 = $1 OR email = $2 LIMIT 1`,
@@ -90,7 +98,11 @@ export default async function identityRoutes(app: FastifyInstance) {
    */
   app.post('/consent', async (req, reply) => {
     const auth = await authGuard(req);
-    const body = ConsentSchema.parse(req.body);
+    const parsedConsent = ConsentSchema.safeParse(req.body);
+    if (!parsedConsent.success) {
+      return reply.code(400).send({ error: 'validation_failed', detail: parsedConsent.error.flatten() });
+    }
+    const body = parsedConsent.data;
     if (!isValidPolicyVersion(body.policy_version)) {
       return reply.code(400).send({ error: 'unknown_policy_version', current: CURRENT_CONSENT_POLICY.id });
     }
@@ -164,7 +176,11 @@ export default async function identityRoutes(app: FastifyInstance) {
    *  returns a JWT and stamps the device_id onto the user record so later logins can
    *  be recognized. The app stores ONLY the token — never the password. */
   app.post('/me/bootstrap', async (req, reply) => {
-    const body = BootstrapSchema.parse(req.body);
+    const parsedBoot = BootstrapSchema.safeParse(req.body);
+    if (!parsedBoot.success) {
+      return reply.code(400).send({ error: 'validation_failed', detail: parsedBoot.error.flatten() });
+    }
+    const body = parsedBoot.data;
     const { rows } = await pool.query(
       `SELECT id, role, password_hash, locale, is_active, fleet_id FROM users
        WHERE phone_e164 = $1 OR email = $2 LIMIT 1`,

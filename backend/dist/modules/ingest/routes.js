@@ -250,7 +250,12 @@ export default async function ingestRoutes(app) {
                 return deny(reply, e.message);
             throw e;
         }
-        const q = z.object({ since: z.string().datetime().optional() }).parse(req.query);
+        // safeParse + inline 400 keeps validation errors deterministic regardless of
+        // plugin-level error-handler ordering (see identity/routes.ts rationale).
+        const parsedQ = z.object({ since: z.string().datetime().optional() }).safeParse(req.query);
+        if (!parsedQ.success)
+            return reply.code(400).send({ error: 'validation_failed', detail: parsedQ.error.flatten() });
+        const q = parsedQ.data;
         const since = q.since ?? new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
         // Tenant scoping (Phase 0): FLEET_MANAGER sees only their fleet's roster;
         // ADMIN sees all. The roster names real people, so it is a personal-data
