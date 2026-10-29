@@ -126,7 +126,7 @@ export default function ReportsPage() {
                 disabled={(tab === 'trips' ? !trips : !seps)}>Export CSV</button>
         <button onClick={() => { logout(); setSignedIn(false); }}>Sign out</button>
       </div>
-      {err && <p style={{ color: '#b00' }}>{err}</p>}
+      {err && <p style={{ color: '#FF6D7D' }}>{err}</p>}
 
       {tab === 'trips' && trips && (
         <>

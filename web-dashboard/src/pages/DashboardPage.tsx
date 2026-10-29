@@ -21,6 +21,7 @@ export default function DashboardPage() {
   return (
     <div className="page">
       <header>
+        <img className="brand-logo" src="/met-logo.svg" alt="MET" />
         <h1>YET · Fleet Dashboard</h1>
         <span className={`pill ${health?.db === 'ok' ? 'ok' : 'bad'}`}>
           backend {health ? `${health.version} · db:${health.db}` : 'offline'}
