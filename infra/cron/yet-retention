@@ -1,0 +1,43 @@
+# YET — 90-day raw-fix retention downsampling schedule (§1.10.6, Phase 5).
+#
+# WHAT: runs backend/scripts/retention.mjs inside the `retention` compose
+# service (see infra/docker-compose.yml, profile "maintenance"). The job
+# downsamples location_fixes older than RETENTION_AGE_DAYS (default 90):
+# keeps every RETENTION_KEEP_EVERY_N-th fix per driver stream (default 10,
+# phase-stable — same partition as retention_kernel.selectDownsample),
+# purges orphaned ingest_batches provenance rows, and writes a
+# `retention_downsample` audit row INSIDE the same transaction as the deletes.
+# Trip aggregates, trip_events, geofence_crossings, separation_incidents and
+# notification_log are NEVER touched (contract in scripts/retention.mjs).
+#
+# CADENCE: nightly 02:30 Africa/Addis_Ababa. Off-peak; idempotent, so a missed
+# night costs nothing and a double run deletes nothing new.
+#
+# INSTALL (Ethiopian-host deployment host — PDPP §1.7: this job reads personal
+# data, so it must run where the data lives):
+#   sudo cp infra/cron/yet-retention /etc/cron.d/yet-retention
+#   sudo chmod 0644 /etc/cron.d/yet-retention
+# Verify installation:
+#   grep CRON /var/log/syslog            # executions
+#   docker compose -f infra/docker-compose.yml --profile maintenance logs retention
+# Manual one-off (same command cron runs; add DRY_RUN=1 to preview only):
+#   cd infra && docker compose --profile maintenance run --rm retention
+#
+# NOTE: the compose `retention` service is created with `--no-start` at deploy
+# time (docker compose up -d --profile maintenance --no-start retention … or
+# once via `up`); cron then STARTS the existing container each night because
+# `restart: "no"` one-shot containers do not auto-run on `up` re-creates.
+# Field 6 note: cron.d jobs carry a user field; `root` executes the docker CLI.
+SHELL=/bin/sh
+PATH=/usr/local/bin:/usr/bin:/bin
+# Cron's default TZ is the HOST's; explicitly pin to Addis Ababa so the pass
+# lands at 02:30 local regardless of server UTC settings. If your cron daemon
+# ignores per-line TZ, set the host timezone instead (`timedatectl set-timezone
+# Africa/Addis_Ababa`) — the cadence is non-critical either way (idempotent job).
+TZ=Africa/Addis_Ababa
+# Compose project name ("yet-infra") matches the top-level `name:` key of
+# docker-compose.yml; override here if you deploy under a different project.
+COMPOSE_PROJECT=yet-infra
+
+# min hour dom mon dow user command
+30 2 * * * root cd /opt/yet/infra && docker compose -p "$COMPOSE_PROJECT" --profile maintenance start retention >> /var/log/yet-retention.log 2>&1

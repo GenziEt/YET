@@ -11,6 +11,7 @@ import 'core/config/app_config.dart';
 import 'features/auth/token_store.dart';
 import 'features/consent/consent_repository.dart';
 import 'features/consent/consent_screen.dart';
+import 'features/notifications/firebase_push_source.dart';
 import 'features/notifications/push_banner.dart';
 import 'features/notifications/push_service.dart';
 import 'features/permissions/permissions_screen.dart';
@@ -76,12 +77,14 @@ class _YetAppState extends State<YetApp> {
   GeolocatorPositionSource? _positionSource;
   SensorsPlusSource? _sensorSource;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
-  /// §Phase 4 (G5): foreground push-banner bus. Constructed with the DEFAULT
-  /// plugin-free [IdlePushTokenSource] — FCM token registration itself is a
-  /// Phase 5 deliverable (firebase_messaging dependency decision lives there);
-  /// until then this keeps the banner surface + HTTP registrar real code paths
-  /// without pulling a plugin into the default bootstrap (§1.2 rule).
+  /// §Phase 5 (E): foreground push-banner bus with the REAL FCM token source.
+  /// firebase_messaging is now a declared dependency and FirebasePushTokenSource
+  /// replaces the Phase-4 IdlePushTokenSource default — getToken()/onTokenRefresh/
+  /// onForegroundMessage all hit the live plugin. The idle source remains for
+  /// headless tests and plugin-less builds only. Registration itself stays
+  /// post-consent + post-login (see _registerPushToken).
   PushService? _push;
+  FirebasePushTokenSource? _pushSource;
 
   @override
   void initState() {
@@ -99,11 +102,17 @@ class _YetAppState extends State<YetApp> {
   }
 
   /// Build the foreground-banner bus once: real HTTP registrar against
-  /// POST /notifications/token, idle token source until Phase 5 wires FCM.
+  /// POST /notifications/token, and — §Phase 5 (E) — the REAL FCM token source.
+  /// FirebasePushTokenSource degrades honestly to `null` tokens when the plugin
+  /// cannot initialize (no google-services.json, no Play Services, iOS
+  /// permission denied), in which case PushService records a failed
+  /// registration and retries via retryIfPending() — never a fake success.
   PushService _makePushService() {
     final client = http.Client();
+    final source = FirebasePushTokenSource();
+    _pushSource = source;
     return PushService(
-      source: const IdlePushTokenSource(),
+      source: source,
       registrar: httpTokenRegistrar(client, () async {
         final t = widget.tokenStore.accessToken;
         return (t == null || t.isEmpty) ? null : 'Bearer $t';
@@ -133,6 +142,13 @@ class _YetAppState extends State<YetApp> {
         return;
       }
       setState(() => _runtime = rt);
+
+      // §Phase 5 (E): after consent + login (AppRuntime.bootstrap only
+      // succeeds with a live session), attempt the real FCM token
+      // registration off the UI thread. Honest failure is fine: PushService
+      // records it and retryIfPending() re-attempts on the next connectivity
+      // drain / app resume.
+      unawaited(_push?.registerFromDevice());
 
       // §1.8.1 sync trigger: any connectivity change that yields a usable
       // network schedules an immediate drain (SyncWorker filters internally).
@@ -190,6 +206,7 @@ class _YetAppState extends State<YetApp> {
     unawaited(_sensorSource?.dispose());
     _runtime?.dispose();
     unawaited(_push?.dispose());
+    unawaited(_pushSource?.dispose());
     super.dispose();
   }
 
