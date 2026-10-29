@@ -24,6 +24,13 @@ dependencies:
   sensors_plus: ^4.0.2
   battery_plus: ^6.0.0
   connectivity_plus: ^6.0.0
+  # Phase 5 push notifications (FCM HTTP v1 backend dispatcher pairs with this):
+  # real token acquisition/rotation + foreground banner stream, wired into the
+  # DEFAULT bootstrap via FirebasePushTokenSource (features/notifications/).
+  # Requires android/app/google-services.json at build time (see PILOT-RUNBOOK);
+  # without it getToken() honestly returns null and registration retries later.
+  firebase_core: ^3.3.0
+  firebase_messaging: ^15.0.2
 
 dev_dependencies:
   flutter_test:
