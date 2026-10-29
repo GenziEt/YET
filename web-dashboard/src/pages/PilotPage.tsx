@@ -61,6 +61,7 @@ export default function PilotPage() {
   return (
     <div className="page">
       <header>
+        <img className="brand-logo" src="/met-logo.svg" alt="MET" />
         <h1>Pilot telemetry</h1>
         <span className="pill">{todayStr()}</span>
         {staleMin > 2 && !loading && <span className="pill warn">last updated {staleMin} min ago</span>}

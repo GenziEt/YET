@@ -56,8 +56,8 @@ export default function FleetMap() {
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ padding: '6px 10px', background: '#fffbe6', borderBottom: '1px solid #ddd', fontSize: 13 }}>
-        {error && <span style={{ color: '#b00' }}>{error}</span>}
+      <div style={{ padding: '6px 10px', background: 'rgba(243, 189, 82, 0.12)', borderBottom: '1px solid #2B4057', fontSize: 13, color: '#EAF1F8' }}>
+        {error && <span style={{ color: '#FF6D7D' }}>{error}</span>}
         {state && (
           <span>
             {state.counts.total} vehicles · {state.counts.on_trip} on trip ·{' '}

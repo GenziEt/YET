@@ -127,6 +127,7 @@ export default function ZonesPage() {
   return (
     <div className="page">
       <header>
+        <img className="brand-logo" src="/met-logo.svg" alt="MET" />
         <h1>YET · Zones &amp; ETA</h1>
         {!tokened ? (
           <form className="login-bar" onSubmit={doLogin}>
