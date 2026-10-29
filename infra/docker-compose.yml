@@ -121,6 +121,33 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
 
+  retention:
+    # §1.10.6 (Phase 5, C): nightly raw-fix downsampling one-shot. Built from
+    # the `maintenance` target of backend/Dockerfile (scripts/retention.mjs +
+    # dist/). NOT driven by `restart`: a cron host triggers it via
+    #   docker compose --profile maintenance start retention
+    # (see infra/cron/yet-retention). Idempotent — a missed night costs nothing
+    # and a double run deletes nothing extra. Aggregates & notification_log are
+    # never touched; each pass writes an atomic audit receipt.
+    build:
+      context: ../backend
+      target: maintenance
+    restart: "no"
+    profiles: ["maintenance"]               # opt-in: docker compose --profile maintenance ...
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-yet}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-yet}
+      REDIS_URL: redis://redis:6379
+      # Retention knobs (defaults mirror backend/src/config/env.ts):
+      RETENTION_AGE_DAYS: ${RETENTION_AGE_DAYS:-90}
+      RETENTION_KEEP_EVERY_N: ${RETENTION_KEEP_EVERY_N:-10}
+      # DRY_RUN=1 previews counts without deleting (first-week shakedown).
+      DRY_RUN: ${DRY_RUN:-0}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
   web:
     build: ../web-dashboard
     restart: unless-stopped

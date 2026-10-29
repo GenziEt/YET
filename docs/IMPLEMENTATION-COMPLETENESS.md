@@ -68,12 +68,32 @@ Honest notes: Nominatim legs are covered by the existing `osm_gateway.test.ts` p
 ⏳ Amharic full-surface localization audit, offline tile-cache map wiring, feedback flow, assignment gating. Current baseline: real dependencies only (no sandbox overrides in `pubspec.yaml`/lockfile), Amharic ARB present for shipped screens.
 
 ## Phase 5 — Reporting, notifications, production readiness
-⏳ Reporting endpoints/CSV, FCM + Ethiopian SMS dispatchers, erasure across dependent tables/caches, partitioning migrations, replica read abstraction, 90-day retention job, dashboard offline cache (SW+IndexedDB), performance scaffolding. Not started per phase ordering.
+
+| Requirement | Code | Tests |
+|---|---|---|
+| Trip / separation / fleet-state / pilot reports with fail-closed fleet scoping + RFC-4180 CSV | `backend/src/modules/reporting/routes.ts` (GET `/reports/trips`, `/reports/separations`, `/reports/fleet-state`, `/reports/pilot`; `format=csv`), `reporting/service.ts` | `backend/tests/phase5_gates.test.ts` (role matrix DRIVER/MANAGER, cross-fleet denial, CSV quoting round-trip); `scripts/integration-phase5.mjs` gate D |
+| Replica-backed reads with residency + WAL-catch-up checks | `backend/src/db/replica.ts` (`READER_DATABASE_URL`, allowlist in `config/env.ts` §1.7) | replica-selection + residency tests in phase5 suites (DB-gated where live replica absent) |
+| FCM HTTP v1 dispatcher (RS256 JWT), Ethiopian SMS gateway client, template seeding, dedupe, token lifecycle, honest ledger | `backend/src/modules/notification/dispatchers.ts`, `fcm.ts`, `sms.ts`, templates seed; delivery ledger rows incl. SKIPPED for unregistered tokens | `phase5_gates.test.ts` notification groups; `integration-phase5.mjs` gates A (idempotent UPSERT), B (fire-once/replay-no-op), C (separation timer atomic claim + `${sepId}@${userId}` dedupe) |
+| Event triggers wired to real ingest seams (trip start/end, geofence enter/exit, 45-min separation sweep) | trip_engine/geofence event hooks → notification fan-out; sweep route with atomic claims (`service.ts syncSeparationLog`) | `integration-phase5.mjs` gate C; geofence integration suite |
+| PDPP erasure: DELETE `/driver/:id/location-history` full dependent-table purge + cache invalidation + WAL waits + audit receipt | `backend/src/modules/ingest/routes.ts` (erasure handler) | `phase5_gates.test.ts` cross-fleet denial; `integration-phase5.mjs` gate F (deleted_rows math vs downsample keeps, recent fixes survive) |
+| Monthly PostgreSQL partitioning (idempotent migrations) | `db/migrations/0004_*`, `0006_*` partition parent + monthly children | migration boot in DB-gated suites |
+| Dashboard offline: service worker + IndexedDB snapshots, staleness labels, sign-out wipe | `web-dashboard/public/sw.js`, snapshot cache modules | dashboard production build ✅ (`npm ci && npm run build` exit 0 after clean reinstall — prior "corrupted node_modules" blocker CLOSED) |
+| 90-day retention job API (ADMIN-only, non-prod mounted, transactional) | POST `/reports/retention/run` in `reporting/routes.ts` (`if (!isProd)`), `retention_kernel.ts` | `phase5_gates.test.ts` lines ~333–421: DRIVER/MANAGER 403, anonymous 401, ADMIN downsample + idempotence |
+| Retention one-shot runner + deployment scheduling | `backend/scripts/retention.mjs` (+ `npm run retention`), `backend/Dockerfile` `maintenance` target, `infra/cron/yet-retention` (02:30 Africa/Addis_Ababa), compose `retention` service (`--profile maintenance`), `.env.example` RETENTION_*/DRY_RUN/READER_DATABASE_URL docs | dry-run path exercised by `integration-phase5.mjs` retention section; idempotence argument in kernel header |
+| Driver-app real push wiring (default bootstrap uses FCM, honest null-token degradation) | `driver-app/lib/features/notifications/firebase_push_source.dart` + `main.dart` `_makePushService()` → `FirebasePushTokenSource`, post-bootstrap `registerFromDevice()`, dispose chain; `pubspec.yaml` adds `firebase_core`/`firebase_messaging` | 🟡 pending local `flutter pub get` + `flutter analyze` (no Flutter SDK in sandbox); IdlePushTokenSource retained for headless tests only |
+
+Open items (explicitly NOT complete):
+- [ ] Performance scaffolding — only the ingest p95 probe exists (`integration-phase5.mjs` gate G). Runnable measurement scripts still needed for battery drain, cold start, tile render, dashboard TTI, route cached/uncached p95 (§1.9.4 budgets 50 ms/800 ms), report p95, upload integrity (client_sent_at skew + batch replay), separation accuracy (§1.4 50 m band).
+- [ ] Driver-app push verification — code landed above; `flutter pub get`/`analyze`/device smoke (real FCM banner end-to-end) must run on a machine with the Flutter SDK + google-services.json.
+- [ ] Compose `retention` service image build verification (Docker unavailable in sandbox; block is inspection-verified against `Dockerfile` maintenance target).
+- [ ] Dashboard Lighthouse/TTI baseline config.
+
+
 
 ## Cross-cutting final-gate checklist
 - [x] No TODO/FIXME/HACK/XXX/stub/mock/sandbox/placeholder in production paths (grep sweeps each session; last sweep clean across Phase 0–2 files).
 - [x] No tracked secrets (`.env` gitignored; `.env.example` placeholders only).
-- [x] Default entrypoints wire real implementations (location/sensors/connectivity/battery: `main.dart → AppRuntime`; ingest/classification: `server.ts → routers`). Push/SMS/routing/geocoding/tiles land with Phases 3–5.
-- [x] Every personal-data endpoint touched in Phases 0–2 has a cross-fleet denial test (DB-gated suites + unit-level guards).
-- [ ] Performance scaffolding — Phase 5 deliverable.
+- [x] Default entrypoints wire real implementations (location/sensors/connectivity/battery: `main.dart → AppRuntime`; ingest/classification: `server.ts → routers`; push: `main.dart → FirebasePushTokenSource` §Phase 5 E). SMS/routing/geocoding/tiles wired in Phases 3–5.
+- [x] Every personal-data endpoint touched in Phases 0–2 has a cross-fleet denial test (DB-gated suites + unit-level guards); Phase 5 adds cross-fleet denial tests for all new personal-data endpoints (reports, erasure).
+- [ ] Performance scaffolding — IN PROGRESS: ingest p95 gate exists (`integration-phase5.mjs` G); battery + route-p95 harnesses landed this pass (`backend/scripts/perf/`); tile-render, dashboard TTI, report p95, upload-integrity, separation-accuracy probes remain. See Phase 5 open items above.
 - [ ] Local `flutter analyze`/`flutter test` run — required before human device validation begins.
