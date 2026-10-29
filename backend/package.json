@@ -17,7 +17,17 @@
     "test:integration": "node scripts/integration-ingest.mjs",
     "test:trips": "node scripts/integration-trips.mjs",
     "test:geofence": "node scripts/integration-geofence.mjs",
-    "test:pilot": "node scripts/integration-pilot.mjs"
+    "test:pilot": "node scripts/integration-pilot.mjs",
+    "perf:battery": "node --import tsx scripts/perf/battery_pilot.mjs",
+    "perf:battery:live": "node --import tsx scripts/perf/battery_pilot.mjs --db",
+    "perf:separation": "node --import tsx scripts/perf/separation_accuracy.mjs",
+    "perf:separation:live": "node --import tsx scripts/perf/separation_accuracy.mjs --live",
+    "perf:route": "node scripts/perf/route_p95.mjs",
+    "perf:report": "node scripts/perf/report_p95.mjs",
+    "perf:upload": "node scripts/perf/upload_integrity.mjs",
+    "perf:cold-start": "node scripts/perf/cold_start.mjs",
+    "perf:tiles": "node scripts/perf/tile_render.mjs",
+    "perf:all-offline": "npm run perf:battery && npm run perf:separation"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
