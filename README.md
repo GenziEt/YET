@@ -156,7 +156,9 @@ in this sandbox).
 
 1. **Offline-first** — formal Offline Contract, `docs/OFFLINE-CONTRACT.md`. No data loss.
 2. **Battery budget** — ≤ ~20%/8h shift via sensor-gated GPS duty cycling.
-3. **Low-end Android** — Android 10+, 2GB RAM; no heavy native modules.
+3. **Low-end Android** — Android 10+, 2GB RAM; no heavy native modules. Startup is a
+   gated feature: cold start ≤ 3 s enforced by `driver-app/tool/cold_start_device.sh`
+   + the boot-path tests; plan in `docs/STARTUP-OPTIMIZATION.md`.
 4. **Driver UX** — max 3 taps to start a trip; Amharic at launch; no text input while driving.
 5. **PDPP No. 1321/2024** — location is personal data; **data sovereignty: all personal
    data stored on servers located in Ethiopia**; ECA breach notification within 72h.

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Vector splash icon for the Android 12+ SplashScreen API
+  (windowSplashScreenAnimatedIcon, values-v31/styles.xml). Pure XML vector:
+  no PNG decode cost at launch. Simple wordmark-ish mark (white rounded
+  "Y"-chevron on transparent field) sized to the 160dp icon canvas with the
+  platform-recommended 2/3 safe zone respected. Replace with the final brand
+  asset when design signs off — geometry only, never raster.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="160dp"
+    android:height="160dp"
+    android:viewportWidth="160"
+    android:viewportHeight="160">
+    <!-- Left arm of the Y -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="14"
+        android:strokeLineCap="round"
+        android:pathData="M56,56 L80,80" />
+    <!-- Right arm of the Y -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="14"
+        android:strokeLineCap="round"
+        android:pathData="M104,56 L80,80" />
+    <!-- Stem of the Y -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="14"
+        android:strokeLineCap="round"
+        android:pathData="M80,80 L80,108" />
+</vector>

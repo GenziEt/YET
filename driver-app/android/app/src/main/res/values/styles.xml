@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Native-driven splash (§STARTUP-OPTIMIZATION.md §5.1, mirrors the ride-hailing
+  "OS-layer splash" pattern): AndroidManifest launches MainActivity with
+  @style/LaunchTheme, so the SYSTEM window background paints the instant the
+  touch event is dispatched — before the Dart isolate exists. No Flutter widget
+  is ever used as a splash screen; the swap to NormalTheme happens via the
+  io.flutter.embedding.android.NormalTheme meta-data once the engine's first
+  frame is ready.
+
+  Solid brand color + no layout inflation = zero I/O on the launch path.
+  Pre-Android-12 devices see exactly this; Android 12+ devices get the
+  SplashScreen-API treatment from values-v31/styles.xml instead.
+-->
+<resources>
+    <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+    </style>
+
+    <!-- Applied after the first Flutter frame. Keeps the same background so
+         the theme swap is visually seamless even if the engine surface has
+         not painted its first pixel yet. -->
+    <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+    </style>
+</resources>
