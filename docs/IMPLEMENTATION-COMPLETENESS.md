@@ -90,6 +90,17 @@ Open items (explicitly NOT complete):
 
 
 
+## Startup optimization program (super-app playbook → YET execution)
+
+Full plan with per-strategy SHIPPED/PLANNED status: [`docs/STARTUP-OPTIMIZATION.md`](./STARTUP-OPTIMIZATION.md).
+Landed this pass:
+
+| Requirement | Code | Tests / verification |
+|---|---|---|
+| Native OS-layer splash incl. Android 12 SplashScreen API (zero-plugin XML) | `driver-app/android/app/src/main/res/values/{styles,colors}.xml`, `values-v31/styles.xml`, `drawable/{splash_background,splash_icon}.xml` | 🟡 XML-parse verified in sandbox; resource merge confirmed on first `flutter build apk` |
+| Device-side cold-start gate (§1.9.1 TTW/TAT/Displayed p95 ≤ 3000 ms) | `driver-app/tool/cold_start_device.sh` | 🟡 requires adb + pilot device (pilot bench / device-farm CI) |
+| Layout-flattening regression guard + local-first-hydration boot contract | — | 🟡 `driver-app/test/startup_flattening_test.dart` (pending `flutter test`; no SDK in sandbox) |
+
 ## Cross-cutting final-gate checklist
 - [x] No TODO/FIXME/HACK/XXX/stub/mock/sandbox/placeholder in production paths (grep sweeps each session; last sweep clean across Phase 0–2 files).
 - [x] No tracked secrets (`.env` gitignored; `.env.example` placeholders only).

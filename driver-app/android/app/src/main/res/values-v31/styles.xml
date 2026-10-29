@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ (API 31) startup path — §STARTUP-OPTIMIZATION.md §5.1.
+  Uses the platform SplashScreen API attributes directly in the theme:
+  ZERO plugins, ZERO runtime code. The OS composites the icon over the brand
+  background during process fork, which is strictly faster than any
+  activity-inflated splash layout (the anti-pattern the strategy doc warns
+  about). values-v31 only resolves on API 31+, so pre-12 devices keep
+  values/styles.xml untouched.
+-->
+<resources>
+    <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowSplashScreenBackground">@color/splash_brand</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
+    </style>
+</resources>
