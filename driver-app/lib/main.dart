@@ -62,10 +62,13 @@ Future<void> main() async {
   // Compile-time env overrides (dart-defines) — const reads + two field
   // writes, zero I/O (§STARTUP-OPTIMIZATION.md §5.3).
   StartupConfig.apply();
+  // P4 (§STARTUP-OPTIMIZATION.md): the two boot KV reads are independent
+  // SharedPreferences lookups on separate instances — run them concurrently so
+  // main() blocks for max(t1, t2) instead of t1 + t2. Still zero network I/O;
+  // startup_flattening_test's "no request before first frame" invariant holds.
   final consent = ConsentRepository();
-  await consent.loadLocal(); // tiny KV read, cached thereafter
   final tokenStore = TokenStore();
-  await tokenStore.load(); // tiny KV read
+  await Future.wait<void>([consent.loadLocal(), tokenStore.load()]);
   runApp(YetApp(consent: consent, tokenStore: tokenStore));
 }
 
