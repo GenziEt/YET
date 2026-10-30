@@ -48,4 +48,19 @@ class StartupConfig {
     if (apiBaseUrlOverride.isNotEmpty) AppConfig.apiBaseUrl = apiBaseUrlOverride;
     if (tileUrlOverride.isNotEmpty) AppConfig.tileUrlTemplate = tileUrlOverride;
   }
+
+  /// Origin (scheme://host[:port]) extracted from the pinned tile URL template
+  /// (`https://tiles.yet.et/{z}/{x}/{y}.png` → `https://tiles.yet.et`). Used by
+  /// the post-first-frame preconnect (§5.4) to warm the tile host's sockets in
+  /// parallel with the API host. Tolerates templates without a scheme; returns
+  /// null when nothing usable is configured (preconnect then skips tiles).
+  static String? get tileOrigin {
+    final t = AppConfig.tileUrlTemplate;
+    final i = t.indexOf('{');
+    var origin = (i >= 0 ? t.substring(0, i) : t).trimRight();
+    while (origin.endsWith('/')) {
+      origin = origin.substring(0, origin.length - 1);
+    }
+    return origin.contains('://') && origin.length > '://'.length ? origin : null;
+  }
 }
