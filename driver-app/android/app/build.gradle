@@ -1,0 +1,158 @@
+// ============================================================================
+// YET Driver — Android Gradle configuration (§STARTUP-OPTIMIZATION.md §5.3)
+// ----------------------------------------------------------------------------
+// This file was MISSING from the repository checkout, which silently disabled
+// every binary-size / startup lever the audit flagged as "paper plans": R8,
+// resource shrinking, ABI splits and deferred component install were never
+// actually applied to any build. Restoring it is the top remediation item.
+//
+// It mirrors the canonical Flutter template (flutter create --platforms=android
+// output) PLUS the size/startup hardening below. Keep in sync with
+// settings.gradle / gradle.properties when bumping the Flutter or AGP version.
+// ============================================================================
+
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    // The Flutter Gradle Plugin must be applied after the Android and Kotlin plugins.
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withReader("UTF-8") { reader -> localProperties.load(reader) }
+}
+
+def flutterVersionCode = localProperties.getProperty("flutter.versionCode") ?: "1"
+def flutterVersionName = localProperties.getProperty("flutter.versionName") ?: "0.1.0"
+
+// Keystore for release signing lives OUTSIDE the repo (CI injects these via
+// environment variables; see tool/cold_start_device.sh + docs/PILOT-RUNBOOK.md).
+def keystorePropertiesFile = rootProject.file("key.properties")
+
+android {
+    namespace = "com.yet.driver"
+    compileSdk = 34
+    ndkVersion = flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
+        // Core library desugaring keeps java.time working on API 21–23 devices
+        // still common in the pilot fleet (2 GB RAM, Android 10 and below).
+        coreLibraryDesugaringEnabled = true
+    }
+
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_1_8
+    }
+
+    defaultConfig {
+        applicationId = "com.yet.driver"
+        // Min API 21: covers effectively the entire Ethiopian pilot fleet.
+        minSdk = 21
+        targetSdk = 34
+        versionCode = flutterVersionCode.toInteger()
+        versionName = flutterVersionName
+    }
+
+    signingConfigs {
+        if (keystorePropertiesFile.exists()) {
+            release {
+                keyAlias = keystoreProperties["keyAlias"]
+                keyPassword = keystoreProperties["keyPassword"]
+                storeFile = file(keystoreProperties["storeFile"])
+                storePassword = keystoreProperties["storePassword"]
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // ── §5.3 BINARY SIZE / STARTUP HARDENING ─────────────────────────
+            // R8 in full-mode: code shrinking + obfuscation + resource
+            // shortening. Tree-shakes unused Dart-imported plugin glue AND
+            // Java/Kotlin classes out of the APK.
+            minifyEnabled = true
+            // Removes resources that survive the manifest/refs scan (largest
+            // single win once transitive plugin resources pile up).
+            shrinkResources = true
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+            // AOT is Flutter's DEFAULT for release (`flutter build appbundle`
+            // compiles Dart to arm64 machine code ahead-of-time); no extra
+            // flag here — do NOT add `debuggable true` shortcuts for pilots.
+            if (keystorePropertiesFile.exists()) {
+                signingConfig = signingConfigs.release
+            } else {
+                signingConfig = signingConfigs.getByName("debug")
+            }
+        }
+        debug {
+            // Startup measurement runs against profile/release builds only
+            // (tool/cold_start_device.sh); debug stays unshrunk for fast
+            // incremental iteration.
+            minifyEnabled = false
+            shrinkResources = false
+        }
+        profile {
+            initWith debug
+            // Profile builds exercise the SAME R8 pipeline as release so size
+            // regressions are caught before shipping.
+            minifyEnabled = true
+            shrinkResources = true
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+    }
+
+    // Per-ABI artifacts: Play delivers ONLY the arm64 split to modern devices
+    // (and armeabi-v7a to the older pilot handsets) instead of a fat APK with
+    // all four ABIs. ~50%+ APK size cut vs universal.
+    splits {
+        abi {
+            enable true
+            reset()
+            include "armeabi-v7a", "arm64-v8a"
+            universalApk = false        // CI also builds an .aab; keep APKs slim
+        }
+    }
+
+    // Android App Bundle → device-specific splits generated by Play.
+    bundle {
+        language {
+            // am + en ARBs are tiny; keep them all so locale switching never
+            // triggers a Play re-download mid-trip.
+            enableSplit = false
+        }
+        abi {
+            enableSplit = true
+        }
+    }
+
+    // Play Asynchronous Layout / deferred components: precompiled layout
+    // inflation path (§5.1 "pre-compiled UI"). Safe defaults; no heavy
+    // dynamic-feature modules yet.
+    androidResources {
+        generateLocaleConfig = true
+    }
+
+    packagingOptions {
+        // Never package debug-only assets into release payloads.
+        exclude "META-INF/*.kotlin_module"
+        jniLibs.useLegacyPackaging = false   // uncompressed .so → faster dlopen at launch
+    }
+
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
+    }
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+}
+
+flutter {
+    // Points at the Flutter SDK copy step; standard template line, do not remove.
+    source = "../.."
+}

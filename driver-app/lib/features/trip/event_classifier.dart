@@ -8,6 +8,7 @@ import 'package:sqflite/sqflite.dart';
 import '../../core/cache/sensor_dao.dart';
 import '../../core/config/app_config.dart';
 import '../../core/sync/sync_state.dart';
+import '../../core/net/http_clients.dart';
 import 'sensor_collector.dart';
 
 /// Phase 2 on-device sensor fusion (§1.3): harsh braking / harsh acceleration /
@@ -114,7 +115,7 @@ class HttpClassificationConfigSource implements ClassificationConfigSource {
   Future<Map<String, Object?>?> fetch() async {
     try {
       final token = _accessToken?.call();
-      final res = await (_client ?? http.Client())
+      final res = await (_client ?? AppHttp.shared)
           .get(Uri.parse('${AppConfig.apiBaseUrl}/trips/classification-config'),
               headers: {
                 if (token != null && token.isNotEmpty)
