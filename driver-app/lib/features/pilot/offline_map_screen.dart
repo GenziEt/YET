@@ -195,7 +195,8 @@ class TileAttribution extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       child: Text(
         l.offlineMapAttribution,
-        style: const TextStyle(fontSize: 11, color: Colors.black87),
+        style: const TextStyle(
+          fontSize: 11, fontWeight: FontWeight.w500, color: Color(0xDE000000)),
       ),
     );
   }
@@ -328,7 +329,7 @@ class _OfflineMapScreenState extends State<OfflineMapScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(Icons.map_outlined,
-                            size: 32, color: YetTheme.inkSoft.withOpacity(0.7)),
+                            size: 32, color: YetTheme.inkSoft.withAlpha(0xB2)),
                         const SizedBox(height: 8),
                         Text(l.offlineMapNoTiles,
                             textAlign: TextAlign.center,

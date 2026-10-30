@@ -190,7 +190,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
         color: selected ? StatusTokens.okBg : Colors.white,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: selected ? fg.withOpacity(0.45) : const Color(0x1A000000),
+          color: selected ? fg.withAlpha(0x73) : const Color(0x1A000000),
           width: selected ? 1.6 : 1,
         ),
       ),
@@ -205,7 +205,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
                 width: 42,
                 height: 42,
                 decoration: BoxDecoration(
-                  color: selected ? fg.withOpacity(0.12) : YetTheme.canvas,
+                  color: selected ? fg.withAlpha(0x1F) : YetTheme.canvas,
                   shape: BoxShape.circle,
                 ),
                 child: Icon(icon, size: 22, color: selected ? fg : YetTheme.inkSoft),
@@ -282,7 +282,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
                             style: TextStyle(
                               fontSize: 14,
                               fontWeight: FontWeight.w600,
-                              color: YetTheme.inkSoft.withOpacity(0.9),
+                              color: YetTheme.inkSoft.withAlpha(0xE6),
                               letterSpacing: 0.2,
                             ),
                           ),
