@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/config/app_config.dart';
 import '../../core/sync/sync_worker.dart';
+import '../../core/net/http_clients.dart';
 import '../auth/token_store.dart';
 
 /// Reading of the device battery — injected seam so tests fabricate levels and
@@ -194,7 +195,7 @@ class PilotService {
     BatteryReader? batteryReader,
     String Function()? networkTypeProvider,
   })  : _tokens = tokenStore,
-        _client = client ?? http.Client(),
+        _client = client ?? AppHttp.shared,
         _batteryReader = batteryReader ?? UnavailableBatteryReader.read,
         _networkTypeProvider = networkTypeProvider;
 

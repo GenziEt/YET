@@ -4,10 +4,12 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_localizations/flutter_localizations.dart';
-import 'package:http/http.dart' as http;
 
 import 'core/app_runtime.dart';
 import 'core/config/app_config.dart';
+import 'core/config/startup_config.dart';
+import 'core/net/http_clients.dart';
+import 'core/net/preconnect.dart';
 import 'features/auth/token_store.dart';
 import 'features/consent/consent_repository.dart';
 import 'features/consent/consent_screen.dart';
@@ -23,8 +25,10 @@ import 'platform/sensor_source.dart';
 
 /// Phase 1 kill-switch: if the SQLite/composition-root bootstrap throws on a
 /// low-end device, the app degrades to the proven Phase 0 flow (consent ->
-/// permissions -> trip home) instead of crash-looping.
-bool _pipelineEnabled = true;
+/// permissions -> trip home) instead of crash-looping. Seeded from the
+/// compile-time `PIPELINE_ENABLED` dart-define (§STARTUP-OPTIMIZATION.md §5.3):
+/// in AOT builds an unset flag constant-folds to `true`, so this read is free.
+bool _pipelineEnabled = StartupConfig.pipelineEnabled;
 
 /// §Phase 4 (G4): platform bridge for battery-optimization exemption and
 /// "Allow all the time" location settings. Kotlin side:
@@ -55,6 +59,9 @@ Future<void> _openPhoneSettings() async {
 /// ListenableBuilder).
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Compile-time env overrides (dart-defines) — const reads + two field
+  // writes, zero I/O (§STARTUP-OPTIMIZATION.md §5.3).
+  StartupConfig.apply();
   final consent = ConsentRepository();
   await consent.loadLocal(); // tiny KV read, cached thereafter
   final tokenStore = TokenStore();
@@ -108,12 +115,13 @@ class _YetAppState extends State<YetApp> {
   /// permission denied), in which case PushService records a failed
   /// registration and retries via retryIfPending() — never a fake success.
   PushService _makePushService() {
-    final client = http.Client();
+    // §5.4: shared keep-alive pool — push registration rides the SAME warm
+    // sockets as uploads instead of paying its own DNS+TCP+TLS cycle.
     final source = FirebasePushTokenSource();
     _pushSource = source;
     return PushService(
       source: source,
-      registrar: httpTokenRegistrar(client, () async {
+      registrar: httpTokenRegistrar(AppHttp.shared, () async {
         final t = widget.tokenStore.accessToken;
         return (t == null || t.isEmpty) ? null : 'Bearer $t';
       }),
@@ -121,6 +129,13 @@ class _YetAppState extends State<YetApp> {
   }
 
   Future<void> _bootstrapPipeline() async {
+    // §5.4 handshake pre-pay: fire-and-forget the DNS+TCP+TLS warm-up against
+    // the API gateway BEFORE the (heavier) SQLite bootstrap is awaited, so the
+    // socket pool is ready while the cache opens. Never blocks the UI isolate;
+    // const-guarded so release builds can compile it out via PRECONNECT=false.
+    if (StartupConfig.preconnectEnabled) {
+      unawaited(preconnectAfterFirstFrame());
+    }
     try {
       // ── Default production bootstrap: REAL device sources, no seams left
       // dangling (§Phase 1: "a real position source is constructed and
@@ -136,6 +151,9 @@ class _YetAppState extends State<YetApp> {
         sensorSource: sensorSource.asFactory(),
         batteryReader: BatteryPlusReader().asReader(),
         networkTypeProvider: _currentNetworkType,
+        // §5.4: one keep-alive pool for uploads, /me checks, config fetches —
+        // every post-boot request reuses the sockets preconnect warmed.
+        httpClient: AppHttp.shared,
       );
       if (!mounted) {
         rt.dispose();

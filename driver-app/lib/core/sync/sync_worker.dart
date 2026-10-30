@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import '../cache/fix_dao.dart';
 import '../cache/sensor_dao.dart';
 import '../config/app_config.dart';
+import '../net/http_clients.dart';
 
 /// Result of one upload attempt — mirrors POST /ingest/locations response
 /// (`backend/src/modules/ingest/routes.ts`).
@@ -302,7 +303,7 @@ class SyncWorker {
     String? baseUrlOverride,
     Duration timeout = const Duration(seconds: 15),
   }) {
-    final c = client ?? http.Client();
+    final c = client ?? AppHttp.shared;
     return (batchId, fixes) async {
       final base = baseUrlOverride ?? AppConfig.apiBaseUrl;
       final body = encodeBatchBody(batchId, fixes);
@@ -360,7 +361,7 @@ class SyncWorker {
     String? baseUrlOverride,
     Duration timeout = const Duration(seconds: 20), // sensor batches are larger
   }) {
-    final c = client ?? http.Client();
+    final c = client ?? AppHttp.shared;
     return (batchId, events) async {
       final base = baseUrlOverride ?? AppConfig.apiBaseUrl;
       final body = jsonEncode({
@@ -391,7 +392,7 @@ class SyncWorker {
     String? baseUrlOverride,
     String? batchIdOverride, // tests + deterministic retries
   }) async {
-    final c = client ?? http.Client();
+    final c = client ?? AppHttp.shared;
     final body = jsonEncode({
       'batch_id': batchIdOverride ?? newUuidV4(),
       'client_sent_at': DateTime.now().toUtc().toIso8601String(),
@@ -455,7 +456,7 @@ class SyncWorker {
     http.Client? client,
     String? baseUrlOverride,
   }) async {
-    final c = client ?? http.Client();
+    final c = client ?? AppHttp.shared;
     final base = baseUrlOverride ?? AppConfig.apiBaseUrl;
     try {
       final res = await _post(c, '$base/ingest/diagnostics',
