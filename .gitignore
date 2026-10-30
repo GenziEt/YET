@@ -1,2 +1,10 @@
-dist/
-node_modules/
+.gradle/
+build/
+*.class
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

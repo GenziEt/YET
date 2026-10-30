@@ -13,7 +13,10 @@
 
 plugins {
     id "com.android.application"
-    id "kotlin-android"
+    // Canonical plugin id (matches the version pinned in settings.gradle's
+    // pluginManagement block). The legacy alias "kotlin-android" is NOT
+    // resolvable from there and would fail settings evaluation.
+    id "org.jetbrains.kotlin.android"
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin plugins.
     id "dev.flutter.flutter-gradle-plugin"
 }
@@ -110,10 +113,15 @@ android {
     // all four ABIs. ~50%+ APK size cut vs universal.
     splits {
         abi {
+            // NOTE: `splits.abi.enable` is only honored by `flutter build apk`;
+            // `flutter build appbundle` overrides it to false (AABs carry all
+            // ABIs and Play generates the per-device splits — see the
+            // bundle.abi block below). Kept enabled so CI's APK size-budget
+            // job measures a REAL per-ABI payload instead of a fat universal.
             enable true
             reset()
             include "armeabi-v7a", "arm64-v8a"
-            universalApk = false        // CI also builds an .aab; keep APKs slim
+            universalApk = false        // no 4-ABI fat APK ever ships
         }
     }
 

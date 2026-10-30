@@ -138,6 +138,14 @@ class _YetAppState extends State<YetApp> {
     // const-guarded so release builds can compile it out via PRECONNECT=false.
     if (StartupConfig.preconnectEnabled) {
       unawaited(preconnectAfterFirstFrame());
+      // Tile host warmed in PARALLEL with the API host (separate origin ⇒
+      // separate sockets). Pays DNS+TCP+TLS for tiles.yet.et off the critical
+      // path so opening the offline-map screen or a live tile fetch never
+      // stalls on a cold handshake mid-trip. Best-effort: offline is silent.
+      final tileOrigin = StartupConfig.tileOrigin;
+      if (tileOrigin != null) {
+        unawaited(preconnectAfterFirstFrame(baseUrl: tileOrigin));
+      }
     }
     try {
       // ── Default production bootstrap: REAL device sources, no seams left

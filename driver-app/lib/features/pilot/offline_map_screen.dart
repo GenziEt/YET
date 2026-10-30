@@ -1,8 +1,10 @@
 import 'dart:io' show Directory, File;
+import 'dart:typed_data' show Uint8List;
 
 import 'package:flutter/material.dart';
 
 import '../../core/app_runtime.dart';
+import '../../core/cache/tile_snapshot_cache.dart';
 import '../../l10n/app_localizations.dart';
 import 'pilot_service.dart';
 
@@ -21,6 +23,8 @@ class OfflineTileImage extends StatefulWidget {
     required this.x,
     required this.y,
     this.errorBuilder,
+    this.cache,
+    this.fadeDuration = const Duration(milliseconds: 180),
   });
 
   final String directory;
@@ -28,6 +32,16 @@ class OfflineTileImage extends StatefulWidget {
   final int x;
   final int y;
   final Widget Function(BuildContext)? errorBuilder;
+
+  /// §5.1/P5 seam: bounded LRU in front of the disk read path. Defaults to
+  /// the process-wide [TileSnapshotCache.shared]; tests inject a private
+  /// instance so shared counters/entries never leak between cases.
+  final TileSnapshotCache? cache;
+
+  /// AnimatedCrossFade duration for the snapshot → live-tile transition
+  /// (§5.1 "cross-fade from last-known snapshot"). Zero/negative disables
+  /// the animation (widget degrades to an instant swap).
+  final Duration fadeDuration;
 
   /// Canonical on-disk location of one tile inside a prefetch cache root.
   static String filePathFor(String root, int z, int x, int y) =>
@@ -37,14 +51,41 @@ class OfflineTileImage extends StatefulWidget {
   State<OfflineTileImage> createState() => _OfflineTileImageState();
 }
 
-class _OfflineTileImageState extends State<OfflineTileImage> {
+class _OfflineTileImageState extends State<OfflineTileImage>
+    with WidgetsBindingObserver {
   ImageProvider? _provider;
   bool _resolved = false;
+  // Cross-fade pair (§5.1): the previous provider stays painted underneath
+  // while the new one fades in — panning/zooming never flashes grey boxes.
+  ImageProvider? _previous;
+  int _fadeGeneration = 0;
+  bool _paused = false;
+
+  TileSnapshotCache get _cache => widget.cache ?? TileSnapshotCache.shared;
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _resolve();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Backgrounded mid-map-view: drop pending work; re-resolve on resume so
+    // tiles written by a prefetch that finished while backgrounded appear.
+    _paused = state != AppLifecycleState.resumed;
+    if (!_paused && _resolved) {
+      _resolved = false;
+      setState(() {});
+      _resolve();
+    }
   }
 
   @override
@@ -57,39 +98,85 @@ class _OfflineTileImageState extends State<OfflineTileImage> {
       _provider = null;
       _resolved = false;
       _resolve();
+    } else if (old.cache != widget.cache) {
+      // Cache swapped (e.g. test hot-reload seam): force a fresh probe.
+      _resolved = false;
+      _resolve();
     }
   }
 
   Future<void> _resolve() async {
-    final path = OfflineTileImage.filePathFor(
-        widget.directory, widget.z, widget.x, widget.y);
+    final key =
+        TileSnapshotCache.keyFor(widget.directory, widget.z, widget.x, widget.y);
     ImageProvider? p;
-    try {
-      final f = File(path);
-      if (await f.exists()) {
-        p = MemoryImage(await f.readAsBytes());
+    final cached = _cache.lookup(key);
+    if (cached != null) {
+      // Hit OR cached miss — zero filesystem syscalls on this rebuild.
+      final bytes = cached.bytes;
+      p = bytes == null ? null : MemoryImage(bytes);
+    } else {
+      Uint8List? bytes;
+      try {
+        final f = File(OfflineTileImage.filePathFor(
+            widget.directory, widget.z, widget.x, widget.y));
+        if (await f.exists()) {
+          bytes = await f.readAsBytes();
+        }
+      } catch (_) {
+        // Unreadable storage → treated exactly like a missing tile (and the
+        // miss is cached so we do not re-probe every frame).
+        bytes = null;
       }
-    } catch (_) {
-      // Unreadable storage → treated exactly like a missing tile.
-      p = null;
+      _cache.put(key, bytes);
+      p = bytes == null ? null : MemoryImage(bytes);
     }
-    if (!mounted) return;
+    if (!mounted || _paused) return;
     setState(() {
+      // Snapshot → live / live → new-live transitions animate via
+      // AnimatedCrossFade below; remember what was on screen.
+      if (_provider != null && !identical(_provider, p)) {
+        _previous = _provider;
+      }
       _provider = p;
       _resolved = true;
+      _fadeGeneration++;
     });
+  }
+
+  Widget _tile(ImageProvider p) => Image(image: p, gaplessPlayback: true);
+
+  Widget _placeholder(BuildContext context) {
+    final eb = widget.errorBuilder;
+    if (eb != null) return eb(context);
+    return const ColoredBox(color: Color(0xFFE5E7EB));
   }
 
   @override
   Widget build(BuildContext context) {
     if (!_resolved) return const SizedBox.shrink();
     final p = _provider;
-    if (p == null) {
-      final eb = widget.errorBuilder;
-      if (eb != null) return eb(context);
-      return const ColoredBox(color: Color(0xFFE5E7EB));
+    final prev = _previous;
+    final dur = widget.fadeDuration;
+    // Cross-fade (§5.1): outgoing snapshot fades out over the incoming tile.
+    // The generation key restarts the animation whenever content changes.
+    if (prev != null && p != null && dur > Duration.zero) {
+      return AnimatedCrossFade(
+        key: ValueKey<int>(_fadeGeneration),
+        firstChild: _tile(prev),
+        secondChild: _tile(p),
+        firstCurve: Curves.easeOut,
+        secondCurve: Curves.easeIn,
+        sizeCurve: Curves.easeOut,
+        crossFadeState: CrossFadeState.showSecond,
+        duration: dur,
+      );
     }
-    return Image(image: p, gaplessPlayback: true);
+    if (p == null) {
+      // Missing tile: if a snapshot was previously visible (e.g. file pruned
+      // mid-session), keep painting it instead of flashing the placeholder.
+      return prev != null ? _tile(prev) : _placeholder(context);
+    }
+    return _tile(p);
   }
 }
 

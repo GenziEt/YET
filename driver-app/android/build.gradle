@@ -1,0 +1,14 @@
+// ============================================================================
+// YET Driver — Android root build file (§STARTUP-OPTIMIZATION.md §5.3 / P1)
+// ----------------------------------------------------------------------------
+// With the modern declarative-plugins layout (see settings.gradle's
+// pluginManagement block + app/build.gradle's `plugins {}`), the root project
+// applies NOTHING. This file exists only so Gradle recognizes the directory
+// as a project root with sane, repo-wide conventions. All real configuration
+// lives in android/app/build.gradle.
+// ============================================================================
+
+// No root-level plugins: versions are pinned once in settings.gradle
+// (pluginManagement.plugins) and applied per-module. Adding a `buildscript`
+// or `allprojects` block here would conflict with Flutter's generated plugin
+// scripts — do not re-introduce the legacy template pattern.

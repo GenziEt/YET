@@ -1,0 +1,54 @@
+// ============================================================================
+// YET Driver — Android root settings (§STARTUP-OPTIMIZATION.md §5.3 / P1)
+// ----------------------------------------------------------------------------
+// Standard Flutter template (flutter create --platforms=android, modern
+// declarative-plugins layout) pinned to AGP 8.x + Kotlin 1.9 so that
+// `flutter build appbundle` can configure the project and android/app/
+// build.gradle actually parses (it applies com.android.application,
+// kotlin-android and dev.flutter.flutter-gradle-plugin from here).
+//
+// Plugin versions are declared ONCE in the pluginManagement block below;
+// flutter's own gradle scripts (tracked by the local Flutter SDK) supply the
+// `dev.flutter.flutter-gradle-plugin` entry via its included build.
+// Do not add `allprojects`/`buildscript` blocks here — with the declarative
+// plugins applied in app/build.gradle, version conflicts between this file
+// and Flutter's generated plugin scripts are the #1 cause of broken builds.
+// ============================================================================
+
+pluginManagement {
+    def flutterSdkPath = {
+        // local.properties is machine-generated (`flutter build` rewrites it);
+        // never hard-code an SDK path here.
+        def properties = new Properties()
+        file("local.properties").withInputStream { properties.load(it) }
+        def sdkPath = properties.getProperty("flutter.sdk")
+        assert sdkPath != null, "flutter.sdk not set in local.properties"
+        return sdkPath
+    }()
+
+    includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
+
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+
+    // Single source of truth for the toolchain versions used by every module
+    // (app + transitive Flutter plugins resolved through :flutter_plugin_loader).
+    plugins {
+        id "com.android.application" version "8.1.4" apply false
+        id "org.jetbrains.kotlin.android" version "1.9.22" apply false
+        // com.android.library is requested transitively by Flutter plugins
+        // (sqflite, geolocator, firebase_* …); pin it to the SAME AGP line so
+        // Gradle never pulls two incompatible Android Gradle plugin jars.
+        id "com.android.library" version "8.1.4" apply false
+    }
+}
+
+plugins {
+    id "dev.flutter.flutter-plugin-loader" version "1.0.0"
+}
+
+rootProject.name = "yet_driver"
+include ":app"
