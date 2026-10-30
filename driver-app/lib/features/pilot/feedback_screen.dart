@@ -141,8 +141,17 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
     );
     if (!mounted) return;
     final l = AppLocalizations.of(context);
+    // Success gets the confident green confirmation treatment (floating dark
+    // pill from YetTheme + check icon); failure stays honest in plain ink.
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(ok ? l.feedbackSent : l.feedbackFailed),
+      content: Row(
+        children: [
+          Icon(ok ? Icons.check_circle_rounded : Icons.error_outline_rounded,
+              color: ok ? const Color(0xFF8BE39A) : Colors.white, size: 22),
+          const SizedBox(width: 10),
+          Expanded(child: Text(ok ? l.feedbackSent : l.feedbackFailed)),
+        ],
+      ),
     ));
     setState(() {
       _sending = false;
