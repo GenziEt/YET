@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_runtime.dart';
 import '../../core/sync/sync_worker.dart';
+import '../../core/theme/yet_theme.dart';
+import '../../core/widgets/status_chip.dart';
 import '../../l10n/app_localizations.dart';
 import '../consent/consent_repository.dart';
 import '../pilot/feedback_screen.dart';
@@ -44,22 +46,22 @@ class _TripHomeScreenState extends State<TripHomeScreen>
   /// assignment confirm, §Phase 4 hard gate).
   AssignmentCheck _assignment = AssignmentCheck.offlineUnknown;
 
-  /// Banner text for the last toggle outcome; null = show nothing.
-  ///
-  /// The §Phase 4 hard gate means a BLOCKED start never flips [the trip] to
-  /// active — so blocked banners ([AssignmentCheck.noVehicle],
-  /// [AssignmentCheck.offlineUnknown]) show regardless of `_tripActive`, and
-  /// success banners only make sense while actually tracking.
-  String? _assignmentBanner(AppLocalizations l) {
+  /// Banner copy for the last toggle outcome; null = show nothing. The string
+  /// itself is localized via ARB keys ([AppLocalizations.tripStartConfirm] /
+  /// [AppLocalizations.tripVehicleNone]); the tone + icon pair below keeps the
+  /// §Phase 4 hard-gate states visually honest (green confirm vs red block).
+  (String, StatusTone, IconData)? _assignmentBanner(AppLocalizations l) {
     switch (_assignment) {
       case AssignmentCheck.confirmed:
         if (!_tripActive) return null; // stale confirm after an end tap
         final v = widget.runtime?.pilot.cachedAssignment;
-        return v == null ? null : l.tripStartConfirm(v.label);
+        return v == null
+            ? null
+            : (l.tripStartConfirm(v.label), StatusTone.ok, Icons.check_circle_outline);
       case AssignmentCheck.noVehicle:
         // Hard-gated start: server says no assignment — tell the driver to
         // call the fleet manager instead of collecting doomed fixes.
-        return l.tripVehicleNone;
+        return (l.tripVehicleNone, StatusTone.error, Icons.error_outline);
       case AssignmentCheck.offlineCached:
         // Allowed via cache; no banner — never nag an offline driver (§1.8).
         return null;
@@ -68,7 +70,7 @@ class _TripHomeScreenState extends State<TripHomeScreen>
         // Blocked fresh start with zero connectivity: nothing proves an
         // assignment exists. Same actionable copy as noVehicle — the driver
         // must reach their fleet manager either way.
-        return l.tripVehicleNone;
+        return (l.tripVehicleNone, StatusTone.error, Icons.wifi_off_rounded);
     }
   }
 
@@ -168,6 +170,11 @@ class _TripHomeScreenState extends State<TripHomeScreen>
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     final banner = _assignmentBanner(l);
+    // Sync pill: live backlog count from the local cache; zero → calm green.
+    final syncTone = _pendingSyncCount > 0 ? StatusTone.warn : StatusTone.ok;
+    final syncLabel = _pendingSyncCount > 0
+        ? l.syncRecordsPending(_pendingSyncCount)
+        : l.syncAllSynced;
     return Scaffold(
       appBar: AppBar(
         title: Text(l.appTitle),
@@ -189,55 +196,124 @@ class _TripHomeScreenState extends State<TripHomeScreen>
               builder: (_) => OfflineMapScreen(runtime: widget.runtime),
             )),
           ),
-          TextButton(onPressed: widget.onToggleLocale, child: Text(l.languageToggle)),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: TextButton(
+              style: TextButton.styleFrom(foregroundColor: YetTheme.onPrimary),
+              onPressed: widget.onToggleLocale,
+              child: Text(l.languageToggle),
+            ),
+          ),
         ],
       ),
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(l.tripReadyTitle, style: Theme.of(context).textTheme.headlineSmall),
-              const SizedBox(height: 8),
-              // Offline/pending-sync banner: count comes from the real local
-              // cache via AppRuntime.pendingFixes (SyncWorker.pendingCount).
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(color: Colors.amber.shade100, borderRadius: BorderRadius.circular(8)),
-                child: Text(l.pendingSync(_pendingSyncCount), style: const TextStyle(fontSize: 16)),
-              ),
-              // One-tap Start Trip vehicle-assignment confirmation banner.
-              if (banner != null) ...[
-                const SizedBox(height: 8),
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: _assignment == AssignmentCheck.noVehicle
-                        ? Colors.red.shade100
-                        : Colors.green.shade100,
-                    borderRadius: BorderRadius.circular(8),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // Responsive: generous centered column on tablets/wide screens,
+            // edge-to-edge on phones — no stretched buttons on a 7" tablet.
+            final wide = constraints.maxWidth > 720;
+            return Align(
+              alignment: Alignment.topCenter,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: wide ? 640 : double.infinity),
+                child: Padding(
+                  padding: EdgeInsets.symmetric(
+                      horizontal: wide ? 32 : 20, vertical: 20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // ── Hero status card: greeting + live state + sync pill.
+                      SoftCard(
+                        padding: const EdgeInsets.all(18),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              l.tripGreeting,
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                                color: YetTheme.inkSoft,
+                                letterSpacing: 0.2,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              l.tripReadyTitle,
+                              style: const TextStyle(
+                                fontSize: 26,
+                                fontWeight: FontWeight.w800,
+                                color: YetTheme.ink,
+                                height: 1.15,
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                StatusChip(
+                                  icon: _tripActive
+                                      ? Icons.navigation_rounded
+                                      : Icons.circle_outlined,
+                                  label: _tripActive
+                                      ? l.tripStatusTracking
+                                      : l.tripStatusReady,
+                                  tone: _tripActive
+                                      ? StatusTone.error
+                                      : StatusTone.ok,
+                                  dense: true,
+                                ),
+                                StatusChip(
+                                  icon: _pendingSyncCount > 0
+                                      ? Icons.sync_rounded
+                                      : Icons.cloud_done_rounded,
+                                  label: syncLabel,
+                                  tone: syncTone,
+                                  dense: true,
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      // One-tap Start Trip vehicle-assignment confirmation alert.
+                      if (banner != null) ...[
+                        const SizedBox(height: 12),
+                        InlineAlert(
+                          icon: banner.$3,
+                          message: banner.$1,
+                          tone: banner.$2,
+                        ),
+                      ],
+                      const Spacer(),
+                      FilledButton(
+                        onPressed: _toggling ? null : _toggleTrip,
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size.fromHeight(92),
+                          backgroundColor: _tripActive
+                              ? YetTheme.tracking
+                              : YetTheme.idle,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(24)),
+                          textStyle: const TextStyle(
+                              fontSize: 26,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 1.2),
+                        ),
+                        child: _toggling
+                            ? const SizedBox(
+                                width: 28, height: 28,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 3, color: Colors.white))
+                            : Text(_tripActive ? l.endTrip : l.startTrip),
+                      ),
+                    ],
                   ),
-                  child: Text(banner, style: const TextStyle(fontSize: 16)),
                 ),
-              ],
-              const Spacer(),
-              FilledButton(
-                onPressed: _toggling ? null : _toggleTrip,
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(88),
-                  backgroundColor: _tripActive ? Colors.red.shade700 : Colors.green.shade700,
-                  textStyle: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
-                ),
-                child: _toggling
-                    ? const SizedBox(
-                        width: 28, height: 28,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 3, color: Colors.white))
-                    : Text(_tripActive ? l.endTrip : l.startTrip),
               ),
-            ],
-          ),
+            );
+          },
         ),
       ),
     );

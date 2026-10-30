@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../core/theme/yet_theme.dart';
+import '../../core/widgets/status_chip.dart';
 import '../../l10n/app_localizations.dart';
 import '../consent/consent_repository.dart';
 
@@ -45,39 +47,137 @@ class PermissionsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     return Scaffold(
-      appBar: AppBar(title: Text(l.permTitle)),
+      // Same branded onboarding composition as the consent screen — the two
+      // gate screens now read as one flow instead of two disconnected forms.
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Icon(Icons.share_location, size: 64, color: Colors.green),
-              const SizedBox(height: 12),
-              Text(l.permLocationBody, style: const TextStyle(fontSize: 18, height: 1.4)),
-              const SizedBox(height: 20),
-              const Icon(Icons.battery_charging_full, size: 64, color: Colors.orange),
-              const SizedBox(height: 12),
-              Text(l.permBatteryBody, style: const TextStyle(fontSize: 18, height: 1.4)),
-              const Spacer(),
-              FilledButton.tonal(
-                onPressed: () => _onContinueTap(context),
-                style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(56)),
-                child: Text(l.permContinue),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final wide = constraints.maxWidth > 720;
+            return Align(
+              alignment: Alignment.topCenter,
+              child: ConstrainedBox(
+                constraints:
+                    BoxConstraints(maxWidth: wide ? 640 : double.infinity),
+                child: ListView(
+                  padding: EdgeInsets.zero,
+                  children: [
+                    GradientHeader(title: l.permTitle, subtitle: l.permIntro),
+                    Padding(
+                      padding: EdgeInsets.symmetric(
+                          horizontal: wide ? 32 : 20, vertical: 20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _step(
+                            index: '1',
+                            icon: Icons.share_location_rounded,
+                            heading: l.permLocationHeading,
+                            body: l.permLocationBody,
+                          ),
+                          _step(
+                            index: '2',
+                            icon: Icons.battery_charging_full_rounded,
+                            heading: l.permBatteryHeading,
+                            body: l.permBatteryBody,
+                          ),
+                          const SizedBox(height: 8),
+                          FilledButton.tonalIcon(
+                            onPressed: () => _onContinueTap(context),
+                            icon: const Icon(Icons.settings_rounded),
+                            label: Text(l.permContinue),
+                            style: FilledButton.styleFrom(
+                                minimumSize: const Size.fromHeight(56)),
+                          ),
+                          const SizedBox(height: 12),
+                          FilledButton.icon(
+                            onPressed: () async {
+                              await repo.acknowledgePermissions();
+                              onDone();
+                            },
+                            icon: const Icon(Icons.check_rounded),
+                            label: Text(l.permDone),
+                            style: FilledButton.styleFrom(
+                                minimumSize: const Size.fromHeight(56)),
+                          ),
+                          const SizedBox(height: 10),
+                          Center(
+                            child: Text(
+                              l.permSkipHint,
+                              style: const TextStyle(
+                                  fontSize: 14, color: YetTheme.inkSoft),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 10),
-              FilledButton(
-                onPressed: () async {
-                  await repo.acknowledgePermissions();
-                  onDone();
-                },
-                style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(56)),
-                child: Text(l.permDone),
-              ),
-            ],
-          ),
+            );
+          },
         ),
       ),
     );
   }
+
+  /// Numbered step card — turns a wall of permission copy into a 1-2 checklist
+  /// drivers can skim in under ten seconds (Mobbin onboarding best practice).
+  Widget _step({
+    required String index,
+    required IconData icon,
+    required String heading,
+    required String body,
+  }) =>
+      Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: SoftCard(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: YetTheme.primary.withOpacity(0.10),
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: Icon(icon, color: YetTheme.primary, size: 22),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          '$index',
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w800,
+                              color: YetTheme.primary),
+                        ),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(heading,
+                              style: const TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w700,
+                                  color: YetTheme.ink)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(body,
+                        style: const TextStyle(
+                            fontSize: 15.5,
+                            height: 1.45,
+                            color: YetTheme.inkSoft)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
 }
