@@ -6,6 +6,7 @@ import sensible from '@fastify/sensible';
 import { env, isProd, validateComplianceBoot } from './config/env.js';
 import { checkDb, pool } from './db/pool.js';
 import identityRoutes, { ensureBootstrapAdmin, ensureSeedDevDriver } from './modules/identity/routes.js';
+import onboardingRoutes from './modules/identity/onboarding.js';
 import ingestRoutes from './modules/ingest/routes.js';
 import tripRoutes from './modules/trip_engine/routes.js';
 import osmRoutes from './modules/osm_gateway/routes.js';
@@ -84,6 +85,7 @@ export async function buildApp() {
   // because routes declare their own semantic paths; encapsulation keeps it one plugin.
   await app.register(async (scope) => {
     await scope.register(identityRoutes);          // /auth/login, /consent, /me
+    await scope.register(onboardingRoutes);        // /auth/register*, /auth/pair-device, /me/profile, /admin/*
   });
   await app.register(ingestRoutes);                // Module 2: Ingest — /ingest/locations, /ingest/sensors
   await app.register(tripRoutes);                  // Module 3: Trip Engine — /trips, /trips/status, /trips/:id
@@ -135,7 +137,9 @@ export async function buildApp() {
     // the driver app branches on `consent_required` (re-show consent screen) and
     // `fleet_suspended`; the dashboard branches on `cross_fleet_denied`.
     const KNOWN_DENIALS = ['consent_required', 'fleet_suspended', 'cross_fleet_denied',
-                           'forbidden_role', 'target_not_found'];
+                           'forbidden_role', 'target_not_found',
+                           // Driver onboarding (no-login model): fail-closed states.
+                           'account_inactive', 'unauthorized'];
     if (typeof e?.message === 'string' && KNOWN_DENIALS.includes(e.message)) {
       return reply.code(e.statusCode ?? 403).send({ error: e.message });
     }
