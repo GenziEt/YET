@@ -6,6 +6,7 @@ import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/app_runtime.dart';
+import 'core/theme/yet_theme.dart';
 import 'core/config/app_config.dart';
 import 'core/config/startup_config.dart';
 import 'core/net/http_clients.dart';
@@ -252,12 +253,8 @@ class _YetAppState extends State<YetApp> {
         GlobalWidgetsLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,
       ],
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF14532D)),
-        useMaterial3: true,
-        // Large touch targets & text for drivers on low-end phones while moving.
-        snackBarTheme: const SnackBarThemeData(contentTextStyle: TextStyle(fontSize: 18)),
-      ),
+      // Phase 4 UI polish: dedicated brand theme (lib/core/theme/yet_theme.dart)
+      theme: YetTheme.light(),
       // §Phase 4 (G5): PushBannerHost wraps the flow root so a fleet alert is
       // visible on ANY screen (consent, permissions, trip home, pushed routes).
       home: PushBannerHost(push: _push!, child: _rootForLocale()),

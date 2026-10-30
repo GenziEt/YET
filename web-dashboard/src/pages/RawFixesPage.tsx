@@ -78,16 +78,16 @@ export default function RawFixesPage() {
   return (
     <div className="page">
       <header>
-        <h1>YET · Raw Location History</h1>
+        <h1>Raw Location History</h1>
         <span className="pill">{fixes.length} fixes</span>
         {staleMin > 2 && !loading && <span className="pill warn">last updated {staleMin} min ago</span>}
-        {loading && <span className="pill warn">loading…</span>}
+        {loading && <span className="pill warn" role="status">loading…</span>}
       </header>
 
-      <div className="picker-bar">
+      <div className="toolbar">
         <label>
           Driver
-          <select value={driverId} onChange={(e) => setDriverId(e.target.value)}>
+          <select value={driverId} onChange={(e) => setDriverId(e.target.value)} aria-label="Driver">
             {drivers.length === 0 && <option value="">— no active drivers —</option>}
             {drivers.map((d) => (
               <option key={d.driver_id} value={d.driver_id}>
@@ -98,13 +98,13 @@ export default function RawFixesPage() {
         </label>
         <label>
           Date
-          <input type="date" value={date} max={todayStr()} onChange={(e) => setDate(e.target.value)} />
+          <input type="date" value={date} max={todayStr()} onChange={(e) => setDate(e.target.value)} aria-label="Date" />
         </label>
         <button onClick={() => void loadFixes()} disabled={loading || !driverId}>Refresh</button>
-        {driversError && <span className="error">roster: {driversError}</span>}
+        {driversError && <span className="error" role="alert">roster: {driversError}</span>}
       </div>
 
-      {error && <div className="error banner">GET /ingest/fixes failed: {error}</div>}
+      {error && <div className="error banner" role="alert">GET /ingest/fixes failed: {error}</div>}
       {!error && !loading && fixes.length === 0 && driverId && (
         <div className="empty-note">
           No fixes for {selectedDriver?.full_name ?? 'this driver'} on {date}.
@@ -113,13 +113,14 @@ export default function RawFixesPage() {
       )}
 
       <main className="split">
-        <section className="map-wrap">
+        <section className="map-wrap" aria-label="Trail map">
           <Suspense fallback={<div className="map-loading">Loading map…</div>}>
             <FixTrailMap fixes={fixes} />
           </Suspense>
         </section>
-        <section className="table-wrap">
+        <section className="table-wrap" aria-label="Fix rows">
           <table className="fixes-table">
+            <caption className="visually-hidden">GPS fixes for the selected driver and date, 50 per page</caption>
             <thead>
               <tr>
                 <th>#</th><th>Event time</th><th>Lat</th><th>Lng</th>
@@ -144,11 +145,11 @@ export default function RawFixesPage() {
               )}
             </tbody>
           </table>
-          <div className="pager">
-            <button onClick={() => setTablePage((p) => Math.max(0, p - 1))} disabled={tablePage === 0}>←</button>
-            <span>page {tablePage + 1} / {pageCount}</span>
-            <button onClick={() => setTablePage((p) => Math.min(pageCount - 1, p + 1))} disabled={tablePage >= pageCount - 1}>→</button>
-          </div>
+          <nav className="pager" aria-label="Table pagination">
+            <button onClick={() => setTablePage((p) => Math.max(0, p - 1))} disabled={tablePage === 0} aria-label="Previous page">←</button>
+            <span aria-live="polite">page {tablePage + 1} / {pageCount}</span>
+            <button onClick={() => setTablePage((p) => Math.min(pageCount - 1, p + 1))} disabled={tablePage >= pageCount - 1} aria-label="Next page">→</button>
+          </nav>
         </section>
       </main>
 

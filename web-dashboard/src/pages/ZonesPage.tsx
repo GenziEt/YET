@@ -127,14 +127,13 @@ export default function ZonesPage() {
   return (
     <div className="page">
       <header>
-        <img className="brand-logo" src="/met-logo.svg" alt="MET" />
-        <h1>YET · Zones &amp; ETA</h1>
+        <h1>Zones &amp; ETA</h1>
         {!tokened ? (
           <form className="login-bar" onSubmit={doLogin}>
-            <input placeholder="email / +251…" value={ident} onChange={(e) => setIdent(e.target.value)} />
-            <input placeholder="password" type="password" value={pw} onChange={(e) => setPw(e.target.value)} />
+            <input aria-label="Email or phone" placeholder="email / +251…" value={ident} onChange={(e) => setIdent(e.target.value)} />
+            <input aria-label="Password" placeholder="password" type="password" value={pw} onChange={(e) => setPw(e.target.value)} />
             <button type="submit">Sign in</button>
-            {authError && <span className="error">{authError}</span>}
+            {authError && <span className="error" role="alert">{authError}</span>}
           </form>
         ) : (
           <>
@@ -146,10 +145,10 @@ export default function ZonesPage() {
         {staleMin > 2 && <span className="pill warn">zones last updated {staleMin} min ago</span>}
       </header>
 
-      <div className="picker-bar">
+      <div className="toolbar">
         <label>
           Vehicle context
-          <select value={vehicleId} onChange={(e) => setVehicleId(e.target.value)}>
+          <select aria-label="Vehicle context" value={vehicleId} onChange={(e) => setVehicleId(e.target.value)}>
             <option value="">— none (no inside/outside coloring) —</option>
             {drivers.filter((d) => d.vehicle_id).map((d) => (
               <option key={d.vehicle_id} value={d.vehicle_id!}>{d.full_name} · {d.plate_number}</option>
@@ -167,7 +166,7 @@ export default function ZonesPage() {
           </span>
         )}
       </div>
-      {error && <div className="error banner">GET /geofences failed: {error}</div>}
+      {error && <div className="error banner" role="alert">GET /geofences failed: {error}</div>}
 
       <main className="split">
         <section className="map-wrap">
