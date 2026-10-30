@@ -279,6 +279,11 @@ class _OfflineMapScreenState extends State<OfflineMapScreen> {
     // if it had not resolved before the download started. The existence
     // check must complete before setState (setState callbacks are sync).
     final rootExists = await Directory(result.cacheRoot).exists();
+    // P5 snapshot-LRU coherence: tiles written by this prefetch replace
+    // entries that were cached as MISSes while the download was in flight.
+    // Dropping the whole root is O(cache size) and cheaper than tracking
+    // per-tile generation numbers; the LRU refills lazily on next paint.
+    TileSnapshotCache.shared.invalidateRoot(result.cacheRoot);
     setState(() {
       _running = false;
       _progress = result;

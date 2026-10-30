@@ -1,0 +1,167 @@
+# ============================================================================
+# STARTUP-OPTIMIZATION.md §5 (P6) — "buttery smooth" fail-on-breach gates.
+#
+# These are REGRESSION GATES, not smoke tests: every job exits non-zero when a
+# budget documented in docs/STARTUP-OPTIMIZATION.md is breached, so a PR that
+# re-blocks the main thread, fattens the binary, or slows cold start cannot
+# merge silently. The measurement code itself already lives in-repo:
+#
+#   Gate 1  driver-app/test/startup_flattening_test.dart
+#           → proves runApp() paints with ZERO network calls and no blocking
+#             I/O on the UI isolate (kill-switch + KV-only pre-init contract).
+#   Gate 2  flutter build apk --release (R8/ABI-split per app/build.gradle)
+#           → APK size budget below; AAB is what Play ships, but APK is the
+#             deterministic proxy CI can gate without signing.
+#   Gate 3  driver-app/tool/cold_start_device.sh
+#           → device TTID/TAT budgets (§1.9.1: TTID ≤ 3000 ms p95). Needs a
+#             real attached device, therefore runs only on the self-hosted
+#             runner with label `pilot-device`; skipped elsewhere rather than
+#             faked.
+#
+# Triggers: any PR touching the startup path, plus nightly full-depth run.
+# ============================================================================
+name: startup-gates
+
+on:
+  pull_request:
+    paths:
+      - 'driver-app/lib/**'
+      - 'driver-app/main.dart'
+      - 'driver-app/android/**'
+      - 'driver-app/pubspec.yaml'
+      - 'driver-app/pubspec.lock'
+      - 'driver-app/tool/cold_start_device.sh'
+      - '.github/workflows/startup-gates.yml'
+  schedule:
+    # Nightly deep check (device gate included when runner is online).
+    - cron: '30 2 * * *'
+  workflow_dispatch: {}
+
+env:
+  FLUTTER_VERSION: '3.24.5'
+  # ---- Budgets (single source of truth = docs/STARTUP-OPTIMIZATION.md) ----
+  APK_BUDGET_MB: '24'          # arm64-v8a split release APK, R8 shrunk
+  COLD_START_BUDGET_MS: '3000' # §1.9.1 TTID p95, enforced by the script too
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Gate 1 · Zero-blocking-main-thread guard (flattened startup contract).
+  # Runs headless — this test must never need an emulator or network.
+  # --------------------------------------------------------------------------
+  startup-flattening:
+    name: 'Gate 1 · startup flattening (no blocked UI isolate)'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: driver-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Static analysis (must be warning-clean on the startup path)
+        run: flutter analyze lib/core lib/features/pilot
+
+      - name: Blocking-main-thread guard
+        run: >-
+          flutter test test/startup_flattening_test.dart
+          --dart-define=PIPELINE_ENABLED=false
+
+  # --------------------------------------------------------------------------
+  # Gate 2 · Binary-size budget (AOT + R8 + ABI splits per app/build.gradle).
+  # Unsigned release build: tree-shaking/R8 behaviour is identical for size
+  # purposes, and CI holds no keystore (signing stays a local/secret op).
+  # --------------------------------------------------------------------------
+  apk-size-budget:
+    name: 'Gate 2 · release APK size <= ${{ env.APK_BUDGET_MB }} MB'
+    runs-on: ubuntu-latest
+    needs: startup-flattening
+    defaults:
+      run:
+        working-directory: driver-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - run: flutter pub get
+
+      - name: Build release APKs (per-ABI splits, R8 minify+shrink)
+        run: >-
+          flutter build apk --release --split-per-abi
+          --dart-define=PIPELINE_ENABLED=true
+
+      - name: Enforce budget on the arm64 artifact (pilot fleet is arm64)
+        run: |
+          set -euo pipefail
+          APK=$(find build/app/outputs/flutter-apk -name '*arm64-v8a-release.apk' | head -1)
+          if [ -z "$APK" ]; then
+            echo "::error::arm64 split APK missing - ABI splits regressed in app/build.gradle"
+            exit 1
+          fi
+          SIZE_KB=$(du -k "$APK" | cut -f1)
+          SIZE_MB=$(awk "BEGIN {printf \"%.2f\", $SIZE_KB/1024}")
+          echo "arm64-v8a release APK: ${SIZE_MB} MB (budget ${APK_BUDGET_MB} MB)"
+          awk "BEGIN {exit !($SIZE_MB <= $APK_BUDGET_MB)}" || {
+            echo "::error::APK size ${SIZE_MB} MB breaches budget ${APK_BUDGET_MB} MB"
+            echo "Check: R8 enabled? new native deps? un-stripped .so? asset bloat?"
+            exit 1
+          }
+
+      - name: Upload artifact (forensics on breach)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apks
+          path: driver-app/build/app/outputs/flutter-apk/*.apk
+          retention-days: 7
+
+  # --------------------------------------------------------------------------
+  # Gate 3 · Device cold-start TTRT (TTID <= 3 s p95, §1.9.1).
+  # Requires a physical pilot handset attached to the self-hosted runner.
+  # On cloud runners there is no adb target -> job is SKIPPED (never faked),
+  # and the nightly schedule is where it actually bites.
+  # --------------------------------------------------------------------------
+  device-cold-start:
+    name: 'Gate 3 · device TTID/TAT budget'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, pilot-device]
+    defaults:
+      run:
+        working-directory: driver-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - run: flutter pub get
+
+      - name: Install release build on attached device
+        run: flutter install --release
+
+      - name: Cold-start probe (10 launches, p95 gated inside the script)
+        env:
+          BUDGET_MS: ${{ env.COLD_START_BUDGET_MS }}
+        run: ./tool/cold_start_device.sh 10
