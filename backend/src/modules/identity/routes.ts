@@ -5,6 +5,7 @@ import { pool } from '../../db/pool.js';
 import { signAccessToken, verifyAccessToken } from '../../lib/jwt.js';
 import { audit } from '../../lib/audit.js';
 import { env, isProd } from '../../config/env.js';
+import { cacheGetJson, cacheSetJson, cacheDel } from '../../lib/redis.js';
 import {
   CURRENT_CONSENT_POLICY, CONSENT_POLICY_VERSIONS, GRANTABLE_CONSENT_SCOPES,
   isValidPolicyVersion, revokeSupersededConsents,
