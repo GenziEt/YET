@@ -2,12 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Directory, File, Platform;
 import 'dart:math' as math;
+import 'dart:typed_data' show Uint8List;
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../core/cache/tile_snapshot_cache.dart';
 import '../../core/config/app_config.dart';
 import '../../core/sync/sync_worker.dart';
 import '../../core/net/http_clients.dart';
@@ -481,6 +483,14 @@ class PilotService {
             await f.parent.create(recursive: true);
             await f.writeAsBytes(res.bodyBytes, flush: false);
             done++;
+            // P5 snapshot-LRU coherence (write-through): the tile file now
+            // exists, so any earlier cached MISS for this exact coordinate
+            // must be replaced immediately — the map preview can already be
+            // on screen while this loop runs, and waiting for the end-of-run
+            // invalidateRoot() would keep painting grey holes unnecessarily.
+            TileSnapshotCache.shared
+                .put(TileSnapshotCache.keyFor(root.path, job.z, job.x, job.y),
+                    Uint8List.fromList(res.bodyBytes));
           } else {
             failed++;
           }
