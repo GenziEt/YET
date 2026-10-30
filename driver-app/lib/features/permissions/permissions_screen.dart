@@ -138,7 +138,7 @@ class PermissionsScreen extends StatelessWidget {
                 width: 42,
                 height: 42,
                 decoration: BoxDecoration(
-                  color: YetTheme.primary.withOpacity(0.10),
+                  color: YetTheme.primary.withAlpha(0x1A),
                   borderRadius: BorderRadius.circular(13),
                 ),
                 child: Icon(icon, color: YetTheme.primary, size: 22),

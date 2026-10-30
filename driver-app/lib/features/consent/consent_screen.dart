@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../core/theme/yet_theme.dart';
+import '../../core/widgets/status_chip.dart';
 import '../../l10n/app_localizations.dart';
 import 'consent_repository.dart';
 
@@ -46,7 +48,7 @@ class _ConsentScreenState extends State<ConsentScreen> {
                       trailing: TextButton(
                         style: TextButton.styleFrom(
                             foregroundColor: Colors.white,
-                            backgroundColor: Colors.white.withOpacity(0.14)),
+                            backgroundColor: const Color(0x24FFFFFF)),
                         onPressed: widget.onToggleLocale,
                         child: Text(l.languageToggle),
                       ),

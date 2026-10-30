@@ -169,12 +169,6 @@ class _TripHomeScreenState extends State<TripHomeScreen>
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
-    final banner = _assignmentBanner(l);
-    // Sync pill: live backlog count from the local cache; zero → calm green.
-    final syncTone = _pendingSyncCount > 0 ? StatusTone.warn : StatusTone.ok;
-    final syncLabel = _pendingSyncCount > 0
-        ? l.syncRecordsPending(_pendingSyncCount)
-        : l.syncAllSynced;
     return Scaffold(
       appBar: AppBar(
         title: Text(l.appTitle),
@@ -206,8 +200,21 @@ class _TripHomeScreenState extends State<TripHomeScreen>
           ),
         ],
       ),
-      body: SafeArea(
-        child: LayoutBuilder(
+      // §5.2 flattening contract: the boot-critical body lives in _body() and
+      // is measured by test/startup_flattening_test.dart against a hard depth
+      // budget — keep new nesting out of that tree.
+      body: SafeArea(child: Builder(builder: (context) => _body(context, AppLocalizations.of(context)))),
+    );
+  }
+
+  Widget _body(BuildContext context, AppLocalizations l) {
+    final banner = _assignmentBanner(l);
+    // Sync pill: live backlog count from the local cache; zero → calm green.
+    final syncTone = _pendingSyncCount > 0 ? StatusTone.warn : StatusTone.ok;
+    final syncLabel = _pendingSyncCount > 0
+        ? l.syncRecordsPending(_pendingSyncCount)
+        : l.syncAllSynced;
+    return LayoutBuilder(
           builder: (context, constraints) {
             // Responsive: generous centered column on tablets/wide screens,
             // edge-to-edge on phones — no stretched buttons on a 7" tablet.
@@ -223,59 +230,81 @@ class _TripHomeScreenState extends State<TripHomeScreen>
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       // ── Hero status card: greeting + live state + sync pill.
+                      // Row layout (not nested Columns) keeps this boot-critical
+                      // frame inside the §5.2 flattening budget.
                       SoftCard(
                         padding: const EdgeInsets.all(18),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
-                            Text(
-                              l.tripGreeting,
-                              style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600,
-                                color: YetTheme.inkSoft,
-                                letterSpacing: 0.2,
+                            // Accent rail — quiet brand moment on the idle frame;
+                            // turns tracking-red while a trip is live.
+                            Container(
+                              width: 4,
+                              height: 56,
+                              margin: const EdgeInsets.only(right: 14),
+                              decoration: BoxDecoration(
+                                color: _tripActive
+                                    ? YetTheme.tracking
+                                    : YetTheme.primary,
+                                borderRadius: BorderRadius.circular(999),
                               ),
                             ),
-                            const SizedBox(height: 6),
-                            Text(
-                              l.tripReadyTitle,
-                              style: const TextStyle(
-                                fontSize: 26,
-                                fontWeight: FontWeight.w800,
-                                color: YetTheme.ink,
-                                height: 1.15,
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    l.tripGreeting,
+                                    style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w600,
+                                      color: YetTheme.inkSoft,
+                                      letterSpacing: 0.2,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    l.tripReadyTitle,
+                                    style: const TextStyle(
+                                      fontSize: 26,
+                                      fontWeight: FontWeight.w800,
+                                      color: YetTheme.ink,
+                                      height: 1.15,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                            const SizedBox(height: 14),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                StatusChip(
-                                  icon: _tripActive
-                                      ? Icons.navigation_rounded
-                                      : Icons.circle_outlined,
-                                  label: _tripActive
-                                      ? l.tripStatusTracking
-                                      : l.tripStatusReady,
-                                  tone: _tripActive
-                                      ? StatusTone.error
-                                      : StatusTone.ok,
-                                  dense: true,
-                                ),
-                                StatusChip(
-                                  icon: _pendingSyncCount > 0
-                                      ? Icons.sync_rounded
-                                      : Icons.cloud_done_rounded,
-                                  label: syncLabel,
-                                  tone: syncTone,
-                                  dense: true,
-                                ),
-                              ],
-                            ),
+                            const SizedBox(width: 10),
+                            // Live-state pill rides beside the headline so the
+                            // driver reads state at a glance, not below it.
+                            StatusChip(
+                                icon: _tripActive
+                                    ? Icons.navigation_rounded
+                                    : Icons.circle_outlined,
+                                label: _tripActive
+                                    ? l.tripStatusTracking
+                                    : l.tripStatusReady,
+                                tone: _tripActive
+                                    ? StatusTone.error
+                                    : StatusTone.ok,
+                                dense: true,
+                              ),
                           ],
                         ),
+                      ),
+                      const SizedBox(height: 10),
+                      // Sync pill on its own quiet row: backlog count is the
+                      // one number ops watches, so it never wraps mid-count.
+                      // (Stretch column → left-aligned; no extra layout pass.)
+                      StatusChip(
+                        icon: _pendingSyncCount > 0
+                            ? Icons.sync_rounded
+                            : Icons.cloud_done_rounded,
+                        label: syncLabel,
+                        tone: syncTone,
+                        dense: true,
                       ),
                       // One-tap Start Trip vehicle-assignment confirmation alert.
                       if (banner != null) ...[
@@ -314,8 +343,6 @@ class _TripHomeScreenState extends State<TripHomeScreen>
               ),
             );
           },
-        ),
-      ),
     );
   }
 }

@@ -99,7 +99,7 @@ class InlineAlert extends StatelessWidget {
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: fg.withOpacity(0.12)),
+        border: Border.all(color: fg.withAlpha(0x1F)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -193,9 +193,9 @@ class GradientHeader extends StatelessWidget {
                     width: 44,
                     height: 44,
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.16),
+                      color: const Color(0x29FFFFFF),
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: Colors.white.withOpacity(0.28)),
+                      border: Border.all(color: const Color(0x47FFFFFF)),
                     ),
                     child: const Center(
                       child: Icon(Icons.local_shipping_rounded,
@@ -223,7 +223,7 @@ class GradientHeader extends StatelessWidget {
                 Text(
                   subtitle!,
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.92),
+                    color: const Color(0xEBFFFFFF),
                     fontSize: 16,
                     height: 1.45,
                   ),
