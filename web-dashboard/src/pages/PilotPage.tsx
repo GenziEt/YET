@@ -61,17 +61,16 @@ export default function PilotPage() {
   return (
     <div className="page">
       <header>
-        <img className="brand-logo" src="/met-logo.svg" alt="MET" />
         <h1>Pilot telemetry</h1>
         <span className="pill">{todayStr()}</span>
         {staleMin > 2 && !loading && <span className="pill warn">last updated {staleMin} min ago</span>}
         {loading && <span className="pill warn">loading…</span>}
       </header>
 
-      <div className="picker-bar">
+      <div className="toolbar">
         <label>
           Window
-          <select value={fromDays} onChange={(e) => setFromDays(Number(e.target.value))}>
+          <select aria-label="Time window" value={fromDays} onChange={(e) => setFromDays(Number(e.target.value))}>
             <option value={3}>last 3 days</option>
             <option value={7}>last 7 days</option>
             <option value={14}>last 14 days</option>
@@ -79,7 +78,7 @@ export default function PilotPage() {
         </label>
         <label>
           Driver
-          <select value={driverId} onChange={(e) => setDriverId(e.target.value)}>
+          <select aria-label="Driver filter" value={driverId} onChange={(e) => setDriverId(e.target.value)}>
             <option value="">all (fleet)</option>
             {drivers.map((d) => (
               <option key={d.driver_id} value={d.driver_id}>
@@ -91,7 +90,7 @@ export default function PilotPage() {
         <button onClick={() => void load()} disabled={loading}>Refresh</button>
       </div>
 
-      {error && <div className="error banner">GET /reports/pilot failed: {error}</div>}
+      {error && <div className="error banner" role="alert">GET /reports/pilot failed: {error}</div>}
       {!error && !report && !loading && <div className="empty-note">No pilot data yet.</div>}
 
       {report && (
