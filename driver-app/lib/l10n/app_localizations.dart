@@ -356,6 +356,118 @@ class AppLocalizations {
         return 'No cached map tiles yet — download maps before dropping a pin';
     }
   }
+  String get tripGreeting {
+    switch (localeName) {
+      case 'am':
+        return 'ሰላም አሽከርካሪ';
+      default:
+        return 'Hello, driver';
+    }
+  }
+  String get tripStatusReady {
+    switch (localeName) {
+      case 'am':
+        return 'ዝግጁ — መከታተል ለመጀመር ይንኩ';
+      default:
+        return 'Ready — tap to start tracking';
+    }
+  }
+  String get tripStatusTracking {
+    switch (localeName) {
+      case 'am':
+        return 'ጉዞ በሂደት ላይ — መንደው ቀጥሉ';
+      default:
+        return 'Trip in progress — keep driving';
+    }
+  }
+  String syncRecordsPending(Object count) {
+    switch (localeName) {
+      case 'am':
+        return '$count መረጃ ለመላኽ ይጠብቃል';
+      default:
+        return '$count records pending sync';
+    }
+  }
+  String get syncAllSynced {
+    switch (localeName) {
+      case 'am':
+        return 'ሁሉም መረጃ ተልኳል';
+      default:
+        return 'All records synced';
+    }
+  }
+  String get consentIntro {
+    switch (localeName) {
+      case 'am':
+        return 'ከመንዳትዎ በፊት ዒት ፈቃድዎ ያስፈልገዋል። ከታች ያለው ሁሉ በቅልጥፍና ቋንቋ ተጽፏል — ጥቃቅን ጽሑፍ የለም።';
+      default:
+        return 'Before you drive, YET needs your permission. Everything below is written in plain language — no fine print.';
+    }
+  }
+  String get consentCardAudio {
+    switch (localeName) {
+      case 'am':
+        return 'ድምፅ ለዓለም አይሰበሰብም';
+      default:
+        return 'Audio is never collected';
+    }
+  }
+  String get permIntro {
+    switch (localeName) {
+      case 'am':
+        return 'ሁለት የስልክ ቅንብሮች የጉዞ መረጃዎን ሙሉ ለማድረግ ያስፈልጋሉ። አንዴ ያስተካክሉ — ከዚያ በኋላ መተግበሪያው በራሱ ይሰራል።';
+      default:
+        return 'Two phone settings keep your trip data complete. Set them once — the app works automatically after that.';
+    }
+  }
+  String get permLocationHeading {
+    switch (localeName) {
+      case 'am':
+        return 'አቀማመጥ፦ "ሁልጊዜ"';
+      default:
+        return 'Location: "All the time"';
+    }
+  }
+  String get permBatteryHeading {
+    switch (localeName) {
+      case 'am':
+        return 'የባትሪ ኦፕቲማይዜሽን ይተፉ';
+      default:
+        return 'Ignore battery optimization';
+    }
+  }
+  String get permSkipHint {
+    switch (localeName) {
+      case 'am':
+        return 'አስተካክለዋል? ከታች ያለውን አረንጓዴ ቁልፍ ይንኩ።';
+      default:
+        return 'Already set? Tap the green button below.';
+    }
+  }
+  String get feedbackChoose {
+    switch (localeName) {
+      case 'am':
+        return 'ምን ችግር እያለ ነው?';
+      default:
+        return 'What is going wrong?';
+    }
+  }
+  String get offlineMapHeading {
+    switch (localeName) {
+      case 'am':
+        return 'የሙከራ አካባቢ ካርታዎች';
+      default:
+        return 'Pilot region maps';
+    }
+  }
+  String get offlineMapProgressHeading {
+    switch (localeName) {
+      case 'am':
+        return 'የማውረድ እድገት';
+      default:
+        return 'Download progress';
+    }
+  }
   String get notifTripStartedTitle {
     switch (localeName) {
       case 'am':

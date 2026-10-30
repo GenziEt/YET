@@ -21,20 +21,28 @@ abstract final class YetTheme {
   static const Color okBg = Color(0xFFE7F6EA);
   static const Color okFg = Color(0xFF1B5E20);
 
+  /// App canvas — warm off-white; cards float on pure white (the layered
+  /// "cards on canvas" composition used by modern logistics/fintech apps).
+  static const Color canvas = Color(0xFFF5F7F4);
+  static const Color ink = Color(0xFF16241A); // high-contrast headline text
+  static const Color inkSoft = Color(0xFF4A5B4E); // secondary text
+
   static ThemeData light() {
     final scheme = ColorScheme.fromSeed(
       seedColor: primary,
       brightness: Brightness.light,
       primary: primary,
       onPrimary: onPrimary,
+      surface: Colors.white,
     );
     final base = ThemeData(useMaterial3: true, colorScheme: scheme);
     return base.copyWith(
-      scaffoldBackgroundColor: const Color(0xFFFAFBFA),
+      scaffoldBackgroundColor: canvas,
       appBarTheme: AppBarTheme(
         backgroundColor: primary,
         foregroundColor: onPrimary,
         elevation: 0,
+        scrolledUnderElevation: 0,
         centerTitle: false,
         titleTextStyle: const TextStyle(
           color: onPrimary, fontSize: 20, fontWeight: FontWeight.w700, letterSpacing: 0.2,
@@ -46,9 +54,9 @@ abstract final class YetTheme {
         style: FilledButton.styleFrom(
           backgroundColor: primary,
           foregroundColor: onPrimary,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
           padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 20),
-          textStyle: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+          textStyle: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, letterSpacing: 0.4),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
@@ -58,15 +66,18 @@ abstract final class YetTheme {
         ),
       ),
       cardTheme: CardTheme(
-        color: surfaceTint,
+        color: Colors.white,
         elevation: 0,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: BorderSide(color: const Color(0x0F000000)),
+          borderRadius: BorderRadius.circular(20),
+          side: BorderSide(color: const Color(0x14000000)),
         ),
       ),
       snackBarTheme: base.snackBarTheme.copyWith(
-        contentTextStyle: const TextStyle(fontSize: 18),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: ink,
+        contentTextStyle: const TextStyle(fontSize: 17, color: Colors.white),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       ),
       dividerTheme: const DividerThemeData(space: 1),
     );
