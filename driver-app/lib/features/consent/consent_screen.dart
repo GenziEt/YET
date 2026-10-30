@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../core/theme/yet_theme.dart';
+import '../../core/widgets/status_chip.dart';
 import '../../l10n/app_localizations.dart';
 import 'consent_repository.dart';
 

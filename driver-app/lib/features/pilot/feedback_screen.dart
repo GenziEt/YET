@@ -156,14 +156,75 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
   }
 
   /// Issue codes accepted by the backend DiagnosticsSchema triage queue,
-  /// mapped to driver-language labels. Plain getter (not a const map of
-  /// lambdas) so the l10n lookup happens at build time like every other key.
-  Map<String, String> _issueLabels(AppLocalizations l) => {
-        'gps_not_working': l.feedbackGps,
-        'battery_drain': l.feedbackBattery,
-        'sync_stuck': l.feedbackSync,
-        'other': l.feedbackOther,
+  /// mapped to (driver-language label, icon) pairs. Plain getter (not a const
+  /// map of lambdas) so the l10n lookup happens at build time like every
+  /// other key. Icons give each one-tap card instant recognition — the driver
+  /// never has to read two Amharic sentences to find "GPS".
+  Map<String, (String, IconData)> _issueChoices(AppLocalizations l) => {
+        'gps_not_working': (l.feedbackGps, Icons.satellite_alt_rounded),
+        'battery_drain': (l.feedbackBattery, Icons.battery_alert_rounded),
+        'sync_stuck': (l.feedbackSync, Icons.sync_problem_rounded),
+        'other': (l.feedbackOther, Icons.more_horiz_rounded),
       };
+
+  /// One-tap selectable issue card: tinted icon chip + bold label + trailing
+  /// check indicator. Selected state uses the brand green tone pair from
+  /// [StatusTokens] so this screen speaks the same visual language as the
+  /// home-screen status pills.
+  Widget _issueCard(String code, String label, IconData icon) {
+    final selected = _selected == code;
+    final fg = selected ? StatusTokens.okFg : YetTheme.ink;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      curve: Curves.easeOut,
+      decoration: BoxDecoration(
+        color: selected ? StatusTokens.okBg : Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: selected ? fg.withOpacity(0.45) : const Color(0x1A000000),
+          width: selected ? 1.6 : 1,
+        ),
+      ),
+      child: InkWell(
+        onTap: () => setState(() => _selected = code),
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          child: Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: selected ? fg.withOpacity(0.12) : YetTheme.canvas,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, size: 22, color: selected ? fg : YetTheme.inkSoft),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                    color: fg,
+                    height: 1.25,
+                  ),
+                ),
+              ),
+              AnimatedScale(
+                scale: selected ? 1 : 0,
+                duration: const Duration(milliseconds: 160),
+                curve: Curves.easeOutBack,
+                child: Icon(Icons.check_circle_rounded, size: 24, color: fg),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   void dispose() {
@@ -174,48 +235,88 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
-    final labels = _issueLabels(l);
+    final choices = _issueChoices(l);
     final queued = _queuedReports == null ? null : _queuedBanner(l, _queuedReports!);
     return Scaffold(
       appBar: AppBar(title: Text(l.feedbackTitle)),
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(l.feedbackIntro, style: const TextStyle(fontSize: 18)),
-              if (queued != null) ...[
-                const SizedBox(height: 12),
-                // Honest retry-queue state (§Phase 4 "success/failure states"
-                // includes the parked-for-retry state).
-                Banner(
-                  message: queued,
-                  location: BannerLocation.topStart,
-                  color: const Color(0xFFB45309),
-                  textStyle: const TextStyle(fontSize: 16, color: Colors.white),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // Same responsive contract as the home screen: centered column
+            // capped at 640 px on tablets instead of edge-to-edge rows.
+            final wide = constraints.maxWidth > 720;
+            return Align(
+              alignment: Alignment.topCenter,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: wide ? 640 : double.infinity),
+                child: ListView(
+                  padding: EdgeInsets.symmetric(
+                      horizontal: wide ? 32 : 20, vertical: 20),
+                  children: [
+                    SoftCard(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            l.feedbackIntro,
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                              color: YetTheme.ink,
+                              height: 1.3,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            l.feedbackChoose,
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: YetTheme.inkSoft.withOpacity(0.9),
+                              letterSpacing: 0.2,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    // Honest retry-queue state (§Phase 4 "success/failure
+                    // states" includes the parked-for-retry state) — an amber
+                    // inline alert, not the old diagonal corner Banner.
+                    if (queued != null) ...[
+                      const SizedBox(height: 12),
+                      InlineAlert(
+                        icon: Icons.cloud_upload_rounded,
+                        message: queued,
+                        tone: StatusTone.warn,
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    for (final e in choices.entries) ...[
+                      _issueCard(e.key, e.value.$1, e.value.$2),
+                      const SizedBox(height: 10),
+                    ],
+                    const SizedBox(height: 6),
+                    FilledButton.icon(
+                      onPressed: _sending ? null : _send,
+                      icon: _sending
+                          ? const SizedBox(
+                              width: 22, height: 22,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2.6, color: Colors.white))
+                          : const Icon(Icons.send_rounded, size: 22),
+                      label: Text(l.feedbackSend),
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(64),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(20)),
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-              const SizedBox(height: 16),
-              for (final entry in labels.entries)
-                RadioListTile<String>(
-                  value: entry.key,
-                  groupValue: _selected,
-                  onChanged: (v) => setState(() => _selected = v ?? _selected),
-                  title: Text(entry.value, style: const TextStyle(fontSize: 18)),
-                ),
-              const Spacer(),
-              FilledButton(
-                onPressed: _sending ? null : _send,
-                style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(64)),
-                child: _sending
-                    ? const SizedBox(
-                        width: 24, height: 24,
-                        child: CircularProgressIndicator(strokeWidth: 3))
-                    : Text(l.feedbackSend),
               ),
-            ],
-          ),
+            );
+          },
         ),
       ),
     );

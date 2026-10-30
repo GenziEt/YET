@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_runtime.dart';
 import '../../core/cache/tile_snapshot_cache.dart';
+import '../../core/theme/yet_theme.dart';
+import '../../core/widgets/status_chip.dart';
 import '../../l10n/app_localizations.dart';
 import 'pilot_service.dart';
 
@@ -294,36 +296,62 @@ class _OfflineMapScreenState extends State<OfflineMapScreen> {
   /// Offline map preview (§Phase 4 completion item "the map widget reads from
   /// the downloaded cache directory when offline"): renders the corridor
   /// centre tile at max zoom straight from the prefetch cache — no network —
-  /// with the required attribution strip underneath.
+  /// with the required attribution strip underneath. Framed like a real map
+  /// card: rounded clip, hairline border, credit line on a tinted footer.
   Widget _mapPreview(AppLocalizations l, String root) {
     final z = _bounds.maxZoom;
     final cx = ((_bounds.xRange(z)[0] + _bounds.xRange(z)[1]) / 2).floor();
     final cy = ((_bounds.yRange(z)[0] + _bounds.yRange(z)[1]) / 2).floor();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        SizedBox(
-          height: 180,
-          child: OfflineTileImage(
-            directory: root,
-            z: z,
-            x: cx,
-            y: cy,
-            errorBuilder: (_) => ColoredBox(
-              color: const Color(0xFFE5E7EB),
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(l.offlineMapNoTiles,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 14)),
+    return Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0x1A000000)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            height: 180,
+            child: OfflineTileImage(
+              directory: root,
+              z: z,
+              x: cx,
+              y: cy,
+              errorBuilder: (_) => Container(
+                color: YetTheme.canvas,
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.map_outlined,
+                            size: 32, color: YetTheme.inkSoft.withOpacity(0.7)),
+                        const SizedBox(height: 8),
+                        Text(l.offlineMapNoTiles,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: YetTheme.inkSoft)),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
           ),
-        ),
-        const TileAttribution(),
-      ],
+          // Attribution stays visible online AND offline (§1.9.3) — now on a
+          // quiet tinted footer strip instead of floating text.
+          Container(
+            color: YetTheme.canvas,
+            padding: const EdgeInsets.only(top: 2),
+            child: const TileAttribution(),
+          ),
+        ],
+      ),
     );
   }
 
@@ -336,43 +364,136 @@ class _OfflineMapScreenState extends State<OfflineMapScreen> {
     return Scaffold(
       appBar: AppBar(title: Text(l.offlineMapTitle)),
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Icon(Icons.download_for_offline_outlined,
-                  size: 64, color: Colors.green),
-              const SizedBox(height: 12),
-              Text(l.offlineMapBody,
-                  style: const TextStyle(fontSize: 18, height: 1.4)),
-              const SizedBox(height: 24),
-              if (root != null) ...[
-                _mapPreview(l, root),
-                const SizedBox(height: 16),
-              ],
-              if (p != null) ...[
-                LinearProgressIndicator(value: p.fraction),
-                const SizedBox(height: 8),
-                Text(finished
-                    ? l.offlineMapDone(p.done - p.failed, p.failed)
-                    : l.offlineMapProgress(p.done, p.total),
-                    style: const TextStyle(fontSize: 16)),
-              ],
-              const Spacer(),
-              FilledButton(
-                onPressed: (_running || widget.runtime == null) ? null : _start,
-                style: FilledButton.styleFrom(
-                    minimumSize: const Size.fromHeight(64)),
-                child: _running
-                    ? const SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: CircularProgressIndicator(strokeWidth: 3))
-                    : Text(l.offlineMapStart),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // Responsive contract shared with home/feedback screens: content
+            // centers at 640 px on tablets rather than stretching.
+            final wide = constraints.maxWidth > 720;
+            return Align(
+              alignment: Alignment.topCenter,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: wide ? 640 : double.infinity),
+                child: ListView(
+                  padding: EdgeInsets.symmetric(
+                      horizontal: wide ? 32 : 20, vertical: 20),
+                  children: [
+                    // ── Intro card: icon badge + heading + explainer copy.
+                    SoftCard(
+                      padding: const EdgeInsets.all(18),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 48,
+                            height: 48,
+                            decoration: BoxDecoration(
+                              color: StatusTokens.okBg,
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            child: const Icon(Icons.download_for_offline_rounded,
+                                color: StatusTokens.okFg, size: 26),
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  l.offlineMapHeading,
+                                  style: const TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w800,
+                                    color: YetTheme.ink,
+                                    height: 1.2,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  l.offlineMapBody,
+                                  style: const TextStyle(
+                                      fontSize: 15,
+                                      height: 1.4,
+                                      color: YetTheme.inkSoft),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (root != null) ...[
+                      const SizedBox(height: 16),
+                      _mapPreview(l, root),
+                    ],
+                    if (p != null) ...[
+                      const SizedBox(height: 16),
+                      SoftCard(
+                        padding: const EdgeInsets.all(18),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Text(
+                                  l.offlineMapProgressHeading,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w700,
+                                    color: YetTheme.ink,
+                                  ),
+                                ),
+                                const Spacer(),
+                                StatusChip(
+                                  icon: finished
+                                      ? (p.failed > 0
+                                          ? Icons.warning_amber_rounded
+                                          : Icons.done_all_rounded)
+                                      : Icons.downloading_rounded,
+                                  label: finished
+                                      ? l.offlineMapDone(p.done - p.failed, p.failed)
+                                      : l.offlineMapProgress(p.done, p.total),
+                                  tone: finished
+                                      ? (p.failed > 0
+                                          ? StatusTone.warn
+                                          : StatusTone.ok)
+                                      : StatusTone.neutral,
+                                  dense: true,
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(999),
+                              child: LinearProgressIndicator(
+                                value: p.fraction,
+                                minHeight: 10,
+                                backgroundColor: YetTheme.canvas,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 20),
+                    FilledButton.icon(
+                      onPressed: (_running || widget.runtime == null) ? null : _start,
+                      icon: _running
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2.6, color: Colors.white))
+                          : const Icon(Icons.map_rounded, size: 22),
+                      label: Text(l.offlineMapStart),
+                      style: FilledButton.styleFrom(
+                          minimumSize: const Size.fromHeight(64),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(20))),
+                    ),
+                  ],
+                ),
               ),
-            ],
-          ),
+            );
+          },
         ),
       ),
     );
