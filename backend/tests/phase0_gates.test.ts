@@ -65,6 +65,14 @@ async function login(identifier: string, password: string): Promise<string> {
   return res.json().access_token;
 }
 
+/** Driver tokens are minted directly since Module 1: drivers have NO password
+ *  (DB trigger enforces password_hash IS NULL for role DRIVER), so the legacy
+ *  /auth/login path is admin/staff-only. Same JWT shape login() would return. */
+async function driverToken(sub: string, fleetId: string): Promise<string> {
+  const { signAccessToken } = await import('../src/lib/jwt.js');
+  return signAccessToken({ sub, role: 'DRIVER', locale: 'en', fleetId });
+}
+
 /** Reseedable consent fixture — tests that need "no consent" delete rows first. */
 async function seedConsent(driver: string) {
   await poolX.query(
@@ -208,7 +216,7 @@ d('Phase 0 gates (Postgres integration)', () => {
   const ingestUrls = ['/ingest/locations', '/ingest/sensors', '/ingest/battery', '/ingest/diagnostics'];
 
   it.each(ingestUrls)('%s: denied 403 consent_required before any consent exists', async (url) => {
-    const token = await login(`p0g-a-${driverA.slice(0,8)}@yet.local`, 'phase0-driver-pw');
+    const token = await driverToken(driverA, fleetA);
     // Ensure a clean pre-consent state for this run.
     await poolX.query(`DELETE FROM consent_records WHERE driver_id = $1`, [driverA]);
     const res = await app.inject({ method: 'POST', url,
@@ -218,7 +226,7 @@ d('Phase 0 gates (Postgres integration)', () => {
   });
 
   it('accepted once consent granted; denied again after POST /consent/revoke', async () => {
-    const token = await login(`p0g-a-${driverA.slice(0,8)}@yet.local`, 'phase0-driver-pw');
+    const token = await driverToken(driverA, fleetA);
     await grantConsent(token);
     const ok = await app.inject({ method: 'POST', url: '/ingest/locations',
       headers: { authorization: `Bearer ${token}` }, payload: ingestPayload('/ingest/locations') });
@@ -237,7 +245,7 @@ d('Phase 0 gates (Postgres integration)', () => {
   it('policy bump invalidates prior consent and forces re-consent (registry contract)', async () => {
     // Uses the pure functions from consent.ts against an existing v1 grant —
     // simulating what appending "consent-v2" to CONSENT_POLICY_VERSIONS does.
-    const token = await login(`p0g-a-${driverA.slice(0,8)}@yet.local`, 'phase0-driver-pw');
+    const token = await driverToken(driverA, fleetA);
     await grantConsent(token); // ensure a live v1 grant
     const { rows } = await poolX.query(
       `SELECT policy_version, revoked_at, granted_scopes FROM consent_records
