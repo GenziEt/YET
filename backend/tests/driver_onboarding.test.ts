@@ -318,6 +318,52 @@ d('driver onboarding without login (module 1, migration 0016)', () => {
     expect(JSON.parse(bad.body).error).toBe('invalid_doc_type');
   });
 
+  it('admin can view/download the uploaded document file; driver role cannot', async () => {
+    // locate the license row uploaded by the previous test
+    const { rows } = await poolX.query(
+      `SELECT id FROM driver_documents WHERE driver_id = $1 AND doc_type = 'DRIVING_LICENSE'
+        AND status = 'PENDING_REVIEW' ORDER BY uploaded_at DESC LIMIT 1`, [driverId]);
+    expect(rows.length).toBe(1);
+    const docId = rows[0].id;
+
+    const admin = await adminToken();
+    const res = await app.inject({ method: 'GET', url: `/admin/documents/${docId}/file`,
+      headers: { authorization: `Bearer ${admin}` } });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('%JPEGFAKE');
+    expect(res.headers['content-type']).toBe('image/jpeg');
+    expect(String(res.headers['content-disposition'])).toMatch(/^inline; filename="driving-license\.jpg"/);
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+
+    // ?download=1 flips to attachment (the dashboard's Download link)
+    const dl = await app.inject({ method: 'GET', url: `/admin/documents/${docId}/file?download=1`,
+      headers: { authorization: `Bearer ${admin}` } });
+    expect(dl.statusCode).toBe(200);
+    expect(String(dl.headers['content-disposition'])).toMatch(/^attachment;/);
+
+    // every open is audited for traceability
+    const { rows: aud } = await poolX.query(
+      `SELECT count(*)::int n FROM audit_log WHERE action='document_file_accessed'
+        AND detail->>'doc_id' = $1`, [docId]);
+    expect(aud[0].n).toBeGreaterThanOrEqual(2);
+
+    // the driver themself may NOT pull files through the admin surface
+    const { signAccessToken } = await import('../src/lib/jwt.js');
+    const drvToken = signAccessToken({ sub: driverId, role: 'DRIVER', fleetId: UF_FIXED });
+    const denied = await app.inject({ method: 'GET', url: `/admin/documents/${docId}/file`,
+      headers: { authorization: `Bearer ${drvToken}` } });
+    expect(denied.statusCode).toBe(403);
+    expect(JSON.parse(denied.body).error).toBe('forbidden_role');
+
+    // unknown / malformed ids fail closed without touching disk
+    const missing = await app.inject({ method: 'GET', url: `/admin/documents/${randomUUID()}/file`,
+      headers: { authorization: `Bearer ${admin}` } });
+    expect(missing.statusCode).toBe(404);
+    const garbage = await app.inject({ method: 'GET', url: '/admin/documents/not-a-uuid/file',
+      headers: { authorization: `Bearer ${admin}` } });
+    expect(garbage.statusCode).toBe(400);
+  });
+
   /* -------------------- 4. Admin review + B2B assignment ---------------------- */
 
   it('admin sees the driver in the PENDING queue and verifies the license', async () => {
@@ -397,6 +443,13 @@ d('driver onboarding without login (module 1, migration 0016)', () => {
     const res = await app.inject({ method: 'PATCH', url: `/admin/documents/${docId}/status`,
       headers: { authorization: `Bearer ${mgrToken}` }, payload: { status: 'VERIFIED' } });
     expect(res.statusCode).toBe(404); // invisible cross-tenant (target_not_found)
+
+    // same guard on the file route: foreign document ⇒ cross_fleet_denied,
+    // and the poisoned /tmp path is never touched (no 200, no 500 storage error)
+    const fileRes = await app.inject({ method: 'GET', url: `/admin/documents/${docId}/file`,
+      headers: { authorization: `Bearer ${mgrToken}` } });
+    expect(fileRes.statusCode).toBe(403);
+    expect(JSON.parse(fileRes.body).error).toBe('cross_fleet_denied');
 
     await poolX.query(`DELETE FROM driver_documents WHERE id = $1`, [docId]);
     await poolX.query(`DELETE FROM users WHERE id = $1`, [otherDriver]);

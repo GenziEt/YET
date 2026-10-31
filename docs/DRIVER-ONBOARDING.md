@@ -60,15 +60,21 @@ Mandatory B2B path once driver and service taker agree:
 1. `GET /admin/drivers?status=PENDING` — review queue (name/phone/licence/plate search).
 2. `GET /admin/drivers/:id` — full dossier: documents, truck & trailer history, paired devices.
 3. `PATCH /admin/documents/:doc_id/status` — VERIFY / REJECT each document (audited).
-4. `POST /admin/drivers/:id/move` — ADMIN moves the driver from *Unassigned Fleet*
+4. `GET /admin/documents/:doc_id/file` — view/download the uploaded blob
+   (`?download=1` forces attachment). ADMIN sees all documents; FLEET_MANAGER
+   only within their own fleet (cross-fleet ⇒ 403). The stored path is
+   re-resolved inside `DOC_UPLOAD_DIR` (no traversal), and every open writes a
+   `document_file_accessed` audit entry. The dashboard dossier shows View /
+   Download buttons per document via this route.
+5. `POST /admin/drivers/:id/move` — ADMIN moves the driver from *Unassigned Fleet*
    into the real transport-company tenant (activation).
-5. `POST /admin/drivers/:id/assign-vehicle` / `assign-trailer` — the mandatory
+6. `POST /admin/drivers/:id/assign-vehicle` / `assign-trailer` — the mandatory
    assignment; closes any previous assignment (history kept), stamps
    `created_by_admin = true`, and pulls self-registered assets out of the
    placeholder fleet. Vehicles/trailers come from `GET /admin/vehicles|trailers`.
-6. `POST /admin/drivers/:id/suspend` (`{active:true}` reactivates and restores
+7. `POST /admin/drivers/:id/suspend` (`{active:true}` reactivates and restores
    the current device pairing so the driver doesn't re-pair).
-7. `POST /admin/drivers/:id/revoke-device` — force-logout one install.
+8. `POST /admin/drivers/:id/revoke-device` — force-logout one install.
 
 Role scoping: `FLEET_MANAGER` sees and acts only within their own fleet
 (cross-fleet writes fail closed with 403); fleet moves are `ADMIN`-only. Every
