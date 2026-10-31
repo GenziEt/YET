@@ -4,8 +4,9 @@ import RawFixesPage from './pages/RawFixesPage';
 import ZonesPage from './pages/ZonesPage';
 import PilotPage from './pages/PilotPage';
 import ReportsPage from './pages/ReportsPage';
+import DriversPage from './pages/DriversPage';
 
-type View = 'fleet' | 'fixes' | 'zones' | 'pilot' | 'reports';
+type View = 'fleet' | 'fixes' | 'zones' | 'pilot' | 'reports' | 'drivers';
 
 const VIEWS: { id: View; label: string; icon: JSX.Element }[] = [
   {
@@ -42,6 +43,16 @@ const VIEWS: { id: View; label: string; icon: JSX.Element }[] = [
       <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <rect x="3" y="3" width="8" height="8" rx="1.5" /><rect x="13" y="3" width="8" height="5" rx="1.5" />
         <rect x="13" y="10" width="8" height="11" rx="1.5" /><rect x="3" y="13" width="8" height="8" rx="1.5" />
+      </svg>
+    ),
+  },
+  {
+    id: 'drivers',
+    label: 'Drivers',
+    icon: (
+      <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="9" cy="8" r="3.2" /><path d="M3.5 20c.6-3.4 2.7-5.2 5.5-5.2s4.9 1.8 5.5 5.2" />
+        <path d="M16 8.5h5M16 12h5M18.5 5.5v6" />
       </svg>
     ),
   },
@@ -119,7 +130,7 @@ export default function App() {
           </button>
         </div>
         <div id="main-content" className="page-host">
-          {view === 'fixes' ? <RawFixesPage /> : view === 'zones' ? <ZonesPage /> : view === 'pilot' ? <PilotPage /> : view === 'reports' ? <ReportsPage /> : <DashboardPage />}
+          {view === 'fixes' ? <RawFixesPage /> : view === 'zones' ? <ZonesPage /> : view === 'pilot' ? <PilotPage /> : view === 'reports' ? <ReportsPage /> : view === 'drivers' ? <DriversPage /> : <DashboardPage />}
         </div>
       </div>
     </div>

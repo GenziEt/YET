@@ -154,6 +154,9 @@ in this sandbox).
 
 ## Non-negotiable constraints (summary — full text in blueprint §1.2)
 
+0. **No driver passwords** — drivers onboard once via phone OTP + document upload
+   and stay signed in through persistent device pairing; activation and truck/trailer
+   assignment are admin-side (B2B). Runbook: `docs/DRIVER-ONBOARDING.md`.
 1. **Offline-first** — formal Offline Contract, `docs/OFFLINE-CONTRACT.md`. No data loss.
 2. **Battery budget** — ≤ ~20%/8h shift via sensor-gated GPS duty cycling.
 3. **Low-end Android** — Android 10+, 2GB RAM; no heavy native modules. Startup is a

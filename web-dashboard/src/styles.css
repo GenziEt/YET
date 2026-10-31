@@ -341,3 +341,60 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .big-number { font-size: 24px; }
 }
+
+/* ============================================================
+   Module 1 — Drivers page (review queue + B2B assignment).
+   Reuses the MET token palette; drawer is an off-canvas panel
+   on the right of .page-host (fixed so it works at any scroll).
+   ============================================================ */
+.badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 9px;
+  border-radius: var(--met-radius-badge); border: 1px solid transparent; white-space: nowrap; }
+.badge-ok { background: rgba(56, 214, 160, 0.12); border-color: rgba(56, 214, 160, 0.45); color: var(--met-success); }
+.badge-err { background: rgba(255, 109, 125, 0.12); border-color: rgba(255, 109, 125, 0.45); color: var(--met-danger); }
+.badge-warn { background: rgba(243, 189, 82, 0.12); border-color: rgba(243, 189, 82, 0.45); color: var(--met-warning); }
+.badge-pending { background: rgba(91, 167, 242, 0.14); border-color: rgba(91, 167, 242, 0.45); color: var(--met-accent-light); }
+
+.chip[role='tab'] { cursor: pointer; background: var(--met-bg-elevated); color: var(--met-text-2);
+  border: 1px solid var(--met-border); padding: 5px 12px; border-radius: var(--met-radius-badge); margin-right: 6px; }
+.chip[role='tab'].active { background: var(--met-accent); border-color: var(--met-accent); color: #fff; }
+
+.banner { padding: 10px 14px; border-radius: var(--met-radius-input); margin: 8px 0; font-size: 13px; }
+.banner.err { background: rgba(255, 109, 125, 0.10); border: 1px solid rgba(255, 109, 125, 0.35); color: var(--met-danger); }
+.banner.ok { background: rgba(56, 214, 160, 0.10); border: 1px solid rgba(56, 214, 160, 0.35); color: var(--met-success); }
+
+.btn { padding: 6px 14px; border-radius: var(--met-radius-button); border: 1px solid var(--met-accent);
+  background: var(--met-accent); color: #fff; cursor: pointer; font-size: 13px; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn.small { padding: 3px 10px; font-size: 12px; }
+.btn.danger { background: transparent; border-color: var(--met-danger); color: var(--met-danger); }
+.btn.ok { background: transparent; border-color: var(--met-success); color: var(--met-success); }
+.btn.ghost { background: transparent; border-color: var(--met-border); color: var(--met-text-2); }
+
+.link-btn { background: none; border: none; color: var(--met-accent-2); cursor: pointer; padding: 0; font-size: inherit; text-align: left; }
+.link-btn:hover { text-decoration: underline; }
+
+.muted { color: var(--met-text-2); }
+.small { font-size: 12px; }
+.center { text-align: center; padding: 12px; }
+.row-selected td { background: var(--met-surface); }
+
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(480px, 94vw); overflow-y: auto;
+  background: var(--met-bg-elevated); border-left: 1px solid var(--met-border); box-shadow: var(--met-shadow-float);
+  padding: 18px 20px 40px; z-index: 60; }
+.drawer-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
+.drawer h2 { margin: 0; font-size: 18px; }
+.drawer h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--met-text-2); margin: 18px 0 6px; }
+.drawer section { border-bottom: 1px solid var(--met-border); padding-bottom: 10px; }
+
+.kv { display: grid; grid-template-columns: 110px 1fr; gap: 2px 10px; font-size: 13px; margin: 0; }
+.kv dt { color: var(--met-text-2); }
+.kv dd { margin: 0; }
+
+.doc-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.doc-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+.action-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+.action-row select { flex: 1; padding: 6px 10px; border: 1px solid var(--met-border); border-radius: var(--met-radius-input);
+  background: var(--met-surface); color: var(--met-text); }
+
+.drawer ~ * { /* no-op guard: keep stacking context predictable */ }

@@ -380,3 +380,153 @@ export interface TripSummary {
 
 export const getActiveTrips = () =>
   api<{ count: number; trips: TripSummary[] }>('/trips?status=active&limit=50');
+
+/* ---------------------------------------------------------------------------
+ * Module 1 — Driver onboarding & admin assignment (no-login drivers).
+ * Contracts mirror backend src/modules/identity/onboarding.ts:
+ *   GET  /admin/drivers?status&q          review queue / roster
+ *   GET  /admin/drivers/:id               full dossier (docs, history, devices)
+ *   PATCH /admin/documents/:doc_id/status verify/reject an uploaded document
+ *   POST /admin/drivers/:id/move          ADMIN: assign driver to a real fleet
+ *   POST /admin/drivers/:id/assign-vehicle|assign-trailer   mandatory B2B step
+ *   POST /admin/drivers/:id/suspend       body {active?:boolean} to reactivate
+ *   POST /admin/drivers/:id/revoke-device lost/stolen phone ⇒ force re-pair
+ *   GET  /admin/vehicles | /admin/trailers  asset directories for pickers
+ * ------------------------------------------------------------------------- */
+
+export type DriverDocStatus = 'PENDING_REVIEW' | 'VERIFIED' | 'REJECTED' | 'EXPIRED';
+
+export interface DriverDocumentSummary {
+  doc_type: string;
+  status: DriverDocStatus;
+  expires_on: string | null;
+  uploaded_at: string;
+}
+
+export interface DriverDocumentRow {
+  id: string;
+  doc_type: string;
+  mime_type: string | null;
+  size_bytes: number | null;
+  expires_on: string | null;
+  status: DriverDocStatus;
+  review_note: string | null;
+  reviewed_at: string | null;
+  uploaded_at: string;
+}
+
+export interface ActiveVehicleRef {
+  vehicle_id: string;
+  plate_number: string;
+  body_type: string | null;
+  made_by_admin: boolean;
+}
+
+export interface AdminDriverRow {
+  id: string;
+  full_name: string;
+  phone_e164: string;
+  is_active: boolean;
+  created_at: string;
+  fleet_id: string;
+  fleet_name: string;
+  license_number: string | null;
+  license_class: string | null;
+  license_expiry: string | null;
+  association_name: string | null;
+  home_base: string | null;
+  documents: DriverDocumentSummary[];
+  active_vehicle: ActiveVehicleRef | null;
+  active_trailers: number;
+}
+
+export interface AdminVehicleRow {
+  id: string;
+  plate_number: string;
+  vehicle_type: string | null;
+  make_model: string | null;
+  capacity_tons: number | null;
+  body_type: string | null;
+  ownership_status: string | null;
+  fleet_id: string;
+  fleet_name: string;
+  current_driver: { driver_id: string; full_name: string; assigned_at: string; by_admin: boolean } | null;
+}
+
+export interface AdminTrailerRow {
+  id: string;
+  plate_number: string;
+  trailer_type: string | null;
+  capacity_tons: number | null;
+  equipment_details: string | null;
+  fleet_id: string | null;
+  current_driver: { driver_id: string; full_name: string; assigned_at: string } | null;
+}
+
+export interface DriverDossier extends AdminDriverRow {
+  locale: string | null;
+  ownership_status: string | null;
+  documents: DriverDocumentRow[];
+  vehicle_history: Array<{ vehicle_id: string; plate_number: string; assigned_at: string; unassigned_at: string | null; created_by_admin: boolean }>;
+  trailer_history: Array<{ trailer_id: string; plate_number: string; trailer_type: string | null; assigned_at: string; unassigned_at: string | null; created_by_admin: boolean }>;
+  devices: Array<{ id: string; device_id: string; platform: string | null; app_version: string | null; paired_at: string; last_seen_at: string | null; revoked_at: string | null }>;
+}
+
+export type DriverQueueStatus = 'PENDING' | 'ACTIVE' | 'SUSPENDED' | 'ALL';
+
+export const getAdminDrivers = (status: DriverQueueStatus = 'ALL', q?: string) => {
+  const qs = new URLSearchParams({ status });
+  if (q) qs.set('q', q);
+  return api<{ count: number; drivers: AdminDriverRow[] }>(`/admin/drivers?${qs}`);
+};
+
+export const getDriverDossier = (driverId: string) =>
+  api<DriverDossier>(`/admin/drivers/${encodeURIComponent(driverId)}`);
+
+export const reviewDriverDocument = (docId: string, status: 'VERIFIED' | 'REJECTED', reviewNote?: string) =>
+  api<{ id: string; driver_id: string; doc_type: string; status: string }>(
+    `/admin/documents/${encodeURIComponent(docId)}/status`,
+    { method: 'PATCH', body: JSON.stringify({ status, review_note: reviewNote }) },
+  );
+
+export const moveDriverToFleet = (driverId: string, fleetId: string) =>
+  api<{ id: string; full_name: string; fleet_id: string }>(
+    `/admin/drivers/${encodeURIComponent(driverId)}/move`,
+    { method: 'POST', body: JSON.stringify({ fleet_id: fleetId }) },
+  );
+
+export const adminAssignVehicle = (driverId: string, vehicleId: string) =>
+  api<{ driver_id: string; vehicle_id: string; plate_number: string; assigned: boolean }>(
+    `/admin/drivers/${encodeURIComponent(driverId)}/assign-vehicle`,
+    { method: 'POST', body: JSON.stringify({ vehicle_id: vehicleId }) },
+  );
+
+export const adminAssignTrailer = (driverId: string, trailerId: string) =>
+  api<{ driver_id: string; trailer_id: string; plate_number: string; assigned: boolean }>(
+    `/admin/drivers/${encodeURIComponent(driverId)}/assign-trailer`,
+    { method: 'POST', body: JSON.stringify({ trailer_id: trailerId }) },
+  );
+
+/** active=false suspends (revokes pairings); active=true reactivates and
+ *  restores the CURRENT device pairing so the driver keeps using the app. */
+export const setDriverActive = (driverId: string, active: boolean) =>
+  api<{ id: string; full_name: string; is_active: boolean }>(
+    `/admin/drivers/${encodeURIComponent(driverId)}/suspend`,
+    { method: 'POST', body: JSON.stringify({ active }) },
+  );
+
+export const revokeDriverDevice = (driverId: string, deviceId: string, reason?: string) =>
+  api<{ revoked: boolean }>(
+    `/admin/drivers/${encodeURIComponent(driverId)}/revoke-device`,
+    { method: 'POST', body: JSON.stringify({ device_id: deviceId, reason }) },
+  );
+
+export const getAdminVehicles = () =>
+  api<{ count: number; vehicles: AdminVehicleRow[] }>('/admin/vehicles');
+
+export const getAdminTrailers = () =>
+  api<{ count: number; trailers: AdminTrailerRow[] }>('/admin/trailers');
+
+/** Fleet directory (for the "move to fleet" picker). Mirrors GET /fleets. */
+export interface FleetRow { id: string; name: string; status: string }
+export const getFleets = () => api<{ count: number; fleets: FleetRow[] }>('/fleets');
