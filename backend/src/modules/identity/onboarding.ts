@@ -3,6 +3,7 @@ import multipart from '@fastify/multipart';
 import { z } from 'zod';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { pool } from '../../db/pool.js';
 import { signAccessToken } from '../../lib/jwt.js';
@@ -183,6 +184,11 @@ async function authGuard(
 const DOC_EXTENSIONS: Record<string, string> = {
   'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'application/pdf': '.pdf',
 };
+
+/** Reverse map: stored extension -> authoritative mime type. Used when serving
+ *  an uploaded document back to reviewers so the browser renders it inline. */
+const EXT_MIME: Record<string, string> = Object.fromEntries(
+  Object.entries(DOC_EXTENSIONS).map(([mime, ext]) => [ext, mime]));
 
 /* ---------------------------------------------------------------------------
  * SMS delivery for OTP codes. Reuses the SAME local Ethiopian gateway knob as
@@ -824,6 +830,56 @@ export default async function onboardingRoutes(app: FastifyInstance) {
     await audit({ actorId: auth.id, action: `document_${body.data.status.toLowerCase()}`,
                   targetUser: rows[0].driver_id, ip: req.ip, detail: { doc_id: rows[0].id, doc_type: rows[0].doc_type } });
     return rows[0];
+  });
+
+  /** GET /admin/documents/:doc_id/file — stream the uploaded file to reviewers.
+   *  ADMIN sees everything; FLEET_MANAGER only documents of drivers in their own
+   *  fleet (same cross-fleet guard as the dossier). The stored path is re-based
+   *  onto DOC_UPLOAD_DIR and must resolve inside it (no traversal via a poisoned
+   *  row). Every access is audited so leaks are traceable. */
+  app.get('/admin/documents/:doc_id/file', async (req, reply) => {
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
+    if (auth.role !== 'ADMIN' && auth.role !== 'FLEET_MANAGER') return reply.code(403).send({ error: 'forbidden_role' });
+    const params = z.object({ doc_id: z.string().uuid() }).safeParse(req.params);
+    if (!params.success) return reply.code(400).send({ error: 'invalid_id' });
+    const disposition = (typeof (req.query as any)?.download === 'string' && (req.query as any).download !== '0')
+      ? 'attachment' : 'inline';
+    const { rows } = await pool.query(
+      `SELECT d.file_path, d.mime_type, d.size_bytes, d.doc_type::text AS doc_type,
+              d.driver_id, u.fleet_id
+         FROM driver_documents d JOIN users u ON u.id = d.driver_id
+        WHERE d.id = $1`, [params.data.doc_id]);
+    const doc = rows[0];
+    if (!doc) return reply.code(404).send({ error: 'target_not_found' });
+    if (auth.role === 'FLEET_MANAGER' && doc.fleet_id !== auth.fleetId) {
+      return reply.code(403).send({ error: 'cross_fleet_denied' });
+    }
+    // Fail-closed containment: the resolved path must stay inside DOC_UPLOAD_DIR.
+    const dir = path.resolve(env.DOC_UPLOAD_DIR);
+    const stored = path.resolve(String(doc.file_path));
+    if (stored !== dir && !stored.startsWith(dir + path.sep)) {
+      return reply.code(500).send({ error: 'storage_path_invalid' });
+    }
+    let stat;
+    try {
+      stat = await fs.stat(stored);
+    } catch {
+      return reply.code(404).send({ error: 'file_missing' }); // row outlived the blob (e.g. disk wipe)
+    }
+    const ext = path.extname(stored).toLowerCase();
+    const mime = EXT_MIME[ext] ?? doc.mime_type ?? 'application/octet-stream';
+    const fileName = `${String(doc.doc_type).toLowerCase().replace(/_/g, '-')}${ext || '.bin'}`;
+    await audit({ actorId: auth.id, action: 'document_file_accessed', targetUser: doc.driver_id ?? undefined,
+                  ip: req.ip, detail: { doc_id: params.data.doc_id, doc_type: doc.doc_type, disposition } });
+    const stream = createReadStream(stored);
+    return reply
+      .header('content-type', mime)
+      .header('content-length', String(stat.size))
+      .header('content-disposition', `${disposition}; filename="${fileName}"`)
+      .header('x-content-type-options', 'nosniff')
+      .header('cache-control', 'private, max-age=60')
+      .send(stream);
   });
 
   /** POST /admin/drivers/:driver_id/move — assign the driver to a REAL fleet

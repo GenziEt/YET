@@ -392,6 +392,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 .doc-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
 .doc-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.doc-preview { margin-top: 12px; padding: 12px; border: 1px solid var(--met-border); border-radius: var(--met-radius-input, 8px); background: var(--met-bg-alt, #fff); }
+.doc-preview img, .doc-preview object { display: block; margin-top: 8px; border-radius: 4px; }
 
 .action-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
 .action-row select { flex: 1; padding: 6px 10px; border: 1px solid var(--met-border); border-radius: var(--met-radius-input);

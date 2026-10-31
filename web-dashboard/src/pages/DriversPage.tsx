@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ApiError,
   adminAssignTrailer,
   adminAssignVehicle,
   currentRole,
+  fetchDriverDocumentBlob,
   getAdminDrivers,
   getAdminTrailers,
   getAdminVehicles,
@@ -63,6 +64,37 @@ export default function DriversPage() {
   const [dossier, setDossier] = useState<DriverDossier | null>(null);
   const [dossierLoading, setDossierLoading] = useState(false);
   const [actionMsg, setActionMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  // Document viewer: object URL of the fetched blob + its mime, revoked on close.
+  const [docPreview, setDocPreview] = useState<{ url: string; mime: string; name: string } | null>(null);
+  const [docBusyId, setDocBusyId] = useState<string | null>(null);
+  const docPreviewRef = useRef<typeof docPreview>(null);
+
+  const closeDocPreview = useCallback(() => {
+    if (docPreviewRef.current) URL.revokeObjectURL(docPreviewRef.current.url);
+    docPreviewRef.current = null;
+    setDocPreview(null);
+  }, []);
+
+  const openDocument = useCallback(async (doc: { id: string; doc_type: string }) => {
+    setDocBusyId(doc.id);
+    try {
+      const { url, mime } = await fetchDriverDocumentBlob(doc.id);
+      closeDocPreview(); // revoke any previous preview before swapping
+      const next = { url, mime, name: doc.doc_type.replace(/_/g, ' ') };
+      docPreviewRef.current = next;
+      setDocPreview(next);
+    } catch (e: unknown) {
+      const code = e instanceof ApiError ? ` (${e.status})` : '';
+      setActionMsg({ kind: 'err', text: `Could not open document${code}` });
+    } finally {
+      setDocBusyId(null);
+    }
+  }, [closeDocPreview]);
+
+  // Revoke the object URL when the dossier closes / page unmounts.
+  useEffect(() => closeDocPreview, [closeDocPreview]);
+  useEffect(() => { closeDocPreview(); }, [selectedId, closeDocPreview]);
 
   // Assignment pickers (lazy-loaded once per fleet-scope change).
   const [vehicles, setVehicles] = useState<AdminVehicleRow[] | null>(null);
@@ -268,6 +300,11 @@ export default function DriversPage() {
                     <li key={doc.id}>
                       <span>{doc.doc_type.replace(/_/g, ' ')}</span>
                       <span className={`badge ${docBadgeTone(doc.status)}`}>{doc.status.replace('_', ' ')}</span>
+                      <button
+                        className="btn small"
+                        disabled={docBusyId === doc.id}
+                        onClick={() => void openDocument(doc)}
+                      >{docBusyId === doc.id ? 'Loading…' : 'View'}</button>
                       {doc.status === 'PENDING_REVIEW' && (
                         <>
                           <button
@@ -287,6 +324,29 @@ export default function DriversPage() {
                   ))}
                   {dossier.documents.length === 0 && <li className="muted">No documents uploaded yet.</li>}
                 </ul>
+
+                {docPreview && (
+                  <div className="doc-preview" role="dialog" aria-label={`${docPreview.name} preview`}>
+                    <div className="action-row">
+                      <strong>{docPreview.name}</strong>
+                      <a
+                        className="btn small"
+                        href={docPreview.url}
+                        download={docPreview.name.toLowerCase().replace(/ /g, '_')}
+                      >Download</a>
+                      <button className="btn small" onClick={closeDocPreview}>Close</button>
+                    </div>
+                    {docPreview.mime.startsWith('image/') ? (
+                      <img src={docPreview.url} alt={docPreview.name} style={{ maxWidth: '100%' }} />
+                    ) : docPreview.mime === 'application/pdf' ? (
+                      <object data={docPreview.url} type="application/pdf" width="100%" height={480}>
+                        <p className="muted">PDF preview unavailable — use Download.</p>
+                      </object>
+                    ) : (
+                      <p className="muted">Preview unavailable ({docPreview.mime}) — use Download.</p>
+                    )}
+                  </div>
+                )}
               </section>
 
               <section aria-label="Assignment actions">
