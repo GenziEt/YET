@@ -52,6 +52,23 @@ export async function buildApp() {
     trustProxy: true, // behind nginx gateway
   });
 
+  // Machine-readable denial codes thrown as Errors (authGuard etc.) must keep
+  // their message in the response `error` field — Fastify's default error
+  // serializer would otherwise render `{statusCode:403}` + `{error:'Forbidden'}`,
+  // and the driver app branches on `account_inactive`. Applied per-route via
+  // onRequest so it cannot clash with setErrorHandler ordering.
+  const KNOWN_DENIALS = new Set(['consent_required', 'fleet_suspended', 'cross_fleet_denied',
+                                 'forbidden_role', 'target_not_found',
+                                 'account_inactive', 'account_suspended', 'unauthorized']);
+  app.addHook('onRequest', async (req) => {
+    req.errorSerializer = ((err: any) => {
+      if (typeof err?.message === 'string' && KNOWN_DENIALS.has(err.message)) {
+        return { statusCode: err.statusCode ?? 403, code: String(err.statusCode ?? 403), error: err.message };
+      }
+      return undefined as any; // fall through to Fastify/sensible defaults
+    }) as any;
+  });
+
   await app.register(sensible);
   await app.register(helmet, { contentSecurityPolicy: false }); // API-only; CSP applies to dashboard bundle
   await app.register(cors, { origin: isProd ? ['https://yet.et'] : true });

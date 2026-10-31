@@ -176,7 +176,9 @@ d('driver onboarding without login (module 1, migration 0016)', () => {
     expect(res.statusCode).toBe(200);
     const cached = fake.map.get(`otp:${PHONE}`);
     expect(cached).toBeTruthy();
-    expect(cached!.v).not.toMatch(/\d{6}/); // only a sha256 hex digest at rest
+    // cacheSetJson JSON-encodes the string -> strip quotes before matching.
+    expect(String(cached!.v).replace(/"/g, '')).toHaveLength(64); // sha256 hex only
+    expect(String(cached!.v).replace(/"/g, '')).toMatch(/^[0-9a-f]{64}$/);
     const { rows } = await poolX.query(`SELECT purpose FROM otp_requests WHERE phone_e164 = $1`, [PHONE]);
     expect(rows.length).toBeGreaterThan(0);
   });
@@ -340,9 +342,23 @@ d('driver onboarding without login (module 1, migration 0016)', () => {
   it('admin assigns truck (B2B): created_by_admin=true, previous self-declared assignment closed', async () => {
     const token = await adminToken();
     const H = { authorization: `Bearer ${token}` };
-    // Provision a company-owned vehicle in the target fleet.
+    // Provision a company-owned vehicle in the target fleet. plate_number has
+    // a global UNIQUE constraint — an interrupted prior run may have left the
+    // row behind, so rebind it (and close its dangling assignments) instead of
+    // blindly inserting.
     const vehId = randomUUID();
-    await poolX.query(`INSERT INTO vehicles (id, plate_number, fleet_id) VALUES ($1,'OB-FLEET-9',$2)`, [vehId, FLEET]);
+    await poolX.query(
+      `INSERT INTO vehicles (id, plate_number, fleet_id) VALUES ($1,'OB-FLEET-9',$2)
+       ON CONFLICT (plate_number) DO NOTHING`, [vehId, FLEET]);
+    const { rows: vRow } = await poolX.query(`SELECT id FROM vehicles WHERE plate_number='OB-FLEET-9'`);
+    if (vRow[0].id !== vehId) {
+      await poolX.query(`UPDATE driver_vehicle_assignments SET unassigned_at = now()
+                          WHERE vehicle_id = $1 AND unassigned_at IS NULL`, [vRow[0].id]).catch(() => {});
+      await poolX.query(`DELETE FROM audit_log WHERE detail::text LIKE '%' || $1 || '%'`, [vRow[0].id]).catch(() => {});
+      await poolX.query(`DELETE FROM vehicles WHERE id = $1`, [vRow[0].id]).catch(() => {});
+      await poolX.query(`INSERT INTO vehicles (id, plate_number, fleet_id) VALUES ($1,'OB-FLEET-9',$2)`,
+                        [vehId, FLEET]);
+    }
 
     const move = await app.inject({ method: 'POST', url: `/admin/drivers/${driverId}/move`,
       headers: H, payload: { fleet_id: FLEET } });

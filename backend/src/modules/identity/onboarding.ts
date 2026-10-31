@@ -910,6 +910,15 @@ export default async function onboardingRoutes(app: FastifyInstance) {
     if (!params.data.active) {
       await pool.query(`UPDATE device_identities SET revoked_at = now(), revoke_reason = 'admin_suspend'
                         WHERE user_id = $1 AND revoked_at IS NULL`, [rows[0].id]);
+    } else {
+      // Reactivation restores the CURRENT pairing only (the driver keeps using
+      // the app without re-pairing). Devices revoked for other reasons — e.g.
+      // admin_revoke / lost phone — stay dead and require a fresh OTP pairing.
+      await pool.query(
+        `UPDATE device_identities di SET revoked_at = NULL, revoke_reason = NULL
+          WHERE di.user_id = $1 AND di.revoked_at IS NOT NULL AND di.revoke_reason = 'admin_suspend'
+            AND di.device_id = (SELECT device_id FROM users WHERE id = $1 AND device_id IS NOT NULL)`,
+        [rows[0].id]);
     }
     await audit({ actorId: auth.id, action: params.data.active ? 'driver_reactivated' : 'driver_suspended',
                   targetUser: rows[0].id, ip: req.ip });
