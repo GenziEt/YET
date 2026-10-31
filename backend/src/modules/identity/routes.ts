@@ -295,6 +295,8 @@ export async function ensureBootstrapAdmin() {
  */
 export async function ensureSeedDevDriver() {
   if (isProd) return;
+  // Opt-in: onboarding gate tests run against a clean DB without this seed.
+  if (env.SEED_DEV_DRIVER !== 'true') return;
   // Tenant first: the users trigger (migration 0013) rejects a DRIVER/FLEET_MANAGER
   // without fleet_id, so "Pilot Fleet" must exist before the seed driver.
   const { rows: fleetRows } = await pool.query(
@@ -303,15 +305,41 @@ export async function ensureSeedDevDriver() {
      RETURNING id`,
   );
   const pilotFleetId = fleetRows[0].id as string;
+  // Migration 0016 enforces (via DB trigger) that DRIVERs have password_hash =
+  // NULL: drivers authenticate with OTP + device pairing, never a password.
+  // The seed therefore creates the driver without a password and pairs a fixed
+  // dev device identity so /auth/session/refresh works out of the box.
   const { rows } = await pool.query(
-    `INSERT INTO users (role, full_name, phone_e164, password_hash, locale, fleet_id)
-     VALUES ('DRIVER', 'Test Driver A', '+251900000001', $1, 'am', $2)
+    `INSERT INTO users (role, full_name, phone_e164, locale, fleet_id)
+     VALUES ('DRIVER', 'Test Driver A', '+251900000001', 'am', $1)
      ON CONFLICT (phone_e164)
-     DO UPDATE SET password_hash = EXCLUDED.password_hash, fleet_id = EXCLUDED.fleet_id
+     DO UPDATE SET fleet_id = EXCLUDED.fleet_id
      RETURNING id`,
-    [hashPassword('dev-driver-secret'), pilotFleetId],
+    [pilotFleetId],
   );
   const driverId = rows[0].id as string;
+  await pool.query(
+    `INSERT INTO device_identities (user_id, device_id, platform, app_version)
+     VALUES ($1, 'dev-seed-driver-a-device', 'android', 'seed')
+     ON CONFLICT (user_id, device_id) DO UPDATE SET last_seen_at = now()`,
+    [driverId],
+  );
+  await pool.query(`UPDATE users SET device_id = 'dev-seed-driver-a-device' WHERE id = $1`, [driverId]);
+  // Minimal profile + mandatory license document so the driver clears the
+  // PENDING_REVIEW gate deterministically in dev/test environments.
+  await pool.query(
+    `INSERT INTO driver_profiles (driver_id, license_number, license_class)
+     VALUES ($1, 'DEV-LIC-000001', 'Class 3')
+     ON CONFLICT (driver_id) DO UPDATE SET updated_at = now()`,
+    [driverId],
+  );
+  await pool.query(
+    `INSERT INTO driver_documents (driver_id, doc_type, status, file_path)
+     SELECT $1, 'DRIVING_LICENSE', 'VERIFIED', 'seed://dev-license'
+     WHERE NOT EXISTS (SELECT 1 FROM driver_documents
+                       WHERE driver_id = $1 AND doc_type = 'DRIVING_LICENSE')`,
+    [driverId],
+  );
   const { rows: veh } = await pool.query(
     `INSERT INTO vehicles (plate_number, fleet_name, vehicle_type, fleet_id)
      VALUES ('AA-90001', 'Pilot Fleet', 'TRUCK', $1)

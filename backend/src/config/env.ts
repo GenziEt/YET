@@ -36,6 +36,10 @@ const EnvSchema = z.object({
   // the Ethiopian-resident volume — never in Postgres, never off-country (§1.7).
   DOC_UPLOAD_DIR: z.string().default('./var/driver-documents'),
   DOC_MAX_SIZE_BYTES: z.coerce.number().int().positive().default(8 * 1024 * 1024),
+  // Dev/test ONLY: seed the Phase-1 pilot driver + vehicle at boot (ingest
+  // replay gates). Explicitly opt-in so onboarding gate tests can run against
+  // a clean DB; ignored in production regardless of value.
+  SEED_DEV_DRIVER: z.enum(['true', 'false']).default('false'),
 
   OSRM_BASE_URL: z.string().url().default('http://localhost:5000'),
   NOMINATIM_BASE_URL: z.string().url().default('http://localhost:8081'),
