@@ -20,9 +20,14 @@ class TripHomeScreen extends StatefulWidget {
     required this.onToggleLocale,
     this.sync,
     this.runtime,
+    this.onOpenProfile,
   });
   final ConsentRepository consent;
   final VoidCallback onToggleLocale;
+
+  /// Module 1: opens the self-service profile screen (license/truck/trailer/
+  /// document updates — never a re-login). Null in tests and legacy callers.
+  final VoidCallback? onOpenProfile;
 
   /// Null in tests / before the cache has opened; UI then shows the cached
   /// queue-count default and no upload cadence is started.
@@ -173,6 +178,14 @@ class _TripHomeScreenState extends State<TripHomeScreen>
       appBar: AppBar(
         title: Text(l.appTitle),
         actions: [
+          // Module 1: self-service profile — update truck/trailers/documents
+          // without ever re-registering or logging in again.
+          if (widget.onOpenProfile != null)
+            IconButton(
+              icon: const Icon(Icons.person_outline),
+              tooltip: l.obProfileTitle,
+              onPressed: widget.onOpenProfile,
+            ),
           // Phase 4 in-app feedback: one nav hop, chips only, no typing (§1.2).
           IconButton(
             icon: const Icon(Icons.feedback_outlined),

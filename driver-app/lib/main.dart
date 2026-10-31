@@ -11,6 +11,13 @@ import 'core/config/app_config.dart';
 import 'core/config/startup_config.dart';
 import 'core/net/http_clients.dart';
 import 'core/net/preconnect.dart';
+import 'features/auth/device_identity.dart';
+import 'features/auth/document_upload_screen.dart';
+import 'features/auth/onboarding_repository.dart';
+import 'features/auth/otp_screen.dart';
+import 'features/auth/pending_review_screen.dart';
+import 'features/auth/profile_screen.dart';
+import 'features/auth/register_screen.dart';
 import 'features/auth/token_store.dart';
 import 'features/consent/consent_repository.dart';
 import 'features/consent/consent_screen.dart';
@@ -69,14 +76,32 @@ Future<void> main() async {
   // startup_flattening_test's "no request before first frame" invariant holds.
   final consent = ConsentRepository();
   final tokenStore = TokenStore();
-  await Future.wait<void>([consent.loadLocal(), tokenStore.load()]);
-  runApp(YetApp(consent: consent, tokenStore: tokenStore));
+  final deviceIdentity = DeviceIdentity();
+  // Three independent SharedPreferences reads — concurrent so main() blocks
+  // for max(t1,t2,t3). Still zero network I/O before the first frame; the
+  // silent session refresh runs AFTER runApp (see _YetAppState.initState).
+  await Future.wait<void>([
+    consent.loadLocal(),
+    tokenStore.load(),
+    deviceIdentity.ensureLoaded(),
+  ]);
+  runApp(YetApp(
+    consent: consent,
+    tokenStore: tokenStore,
+    deviceIdentity: deviceIdentity,
+  ));
 }
 
 class YetApp extends StatefulWidget {
-  const YetApp({super.key, required this.consent, required this.tokenStore});
+  const YetApp({
+    super.key,
+    required this.consent,
+    required this.tokenStore,
+    required this.deviceIdentity,
+  });
   final ConsentRepository consent;
   final TokenStore tokenStore;
+  final DeviceIdentity deviceIdentity;
 
   @override
   State<YetApp> createState() => _YetAppState();
@@ -85,17 +110,21 @@ class YetApp extends StatefulWidget {
 class _YetAppState extends State<YetApp> {
   Locale _locale = AppConfig.defaultLocale;
   AppRuntime? _runtime;
-  GeolocatorPositionSource? _positionSource;
-  SensorsPlusSource? _sensorSource;
-  StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
-  /// §Phase 5 (E): foreground push-banner bus with the REAL FCM token source.
-  /// firebase_messaging is now a declared dependency and FirebasePushTokenSource
-  /// replaces the Phase-4 IdlePushTokenSource default — getToken()/onTokenRefresh/
-  /// onForegroundMessage all hit the live plugin. The idle source remains for
-  /// headless tests and plugin-less builds only. Registration itself stays
-  /// post-consent + post-login (see _registerPushToken).
-  PushService? _push;
-  FirebasePushTokenSource? _pushSource;
+
+  // ── Module 1: driver onboarding WITHOUT a traditional login ──────────────
+  // Stages: unknown (restore in flight) -> needsOnboarding (OTP step) ->
+  // form (ticket valid, registration incomplete) -> docs (license upload
+  // mandatory before review) -> pending (PENDING_REVIEW / suspended hold) ->
+  // ready (ACTIVE session; existing consent/permissions/trip flow).
+  _AuthStage _stage = _AuthStage.unknown;
+  /// True while the silent POST /auth/session/refresh is running at launch.
+  bool _restoring = true;
+  OnboardingRepository? _onboarding;
+
+  OnboardingRepository get onboarding => _onboarding ??= OnboardingRepository(
+        tokens: widget.tokenStore,
+        device: widget.deviceIdentity,
+      );
 
   @override
   void initState() {
@@ -110,7 +139,164 @@ class _YetAppState extends State<YetApp> {
       // null runtime; the cache opens right after and notifies this state.
       Future.microtask(_bootstrapPipeline);
     }
+    // Silent session restore AFTER the first frame (never blocks cold start).
+    Future.microtask(_restoreSession);
   }
+
+  /// The "always logged in" mechanism: no credentials are typed — the stored
+  /// JWT + this install's device id are re-validated server-side. Outcomes:
+  ///  * 200 → ACTIVE check → ready (or docs/pending hold states);
+  ///  * device_not_paired / expired token → phone known? OTP re-pairing screen;
+  ///    otherwise fresh onboarding;
+  ///  * account_suspended → pending screen in suspended mode;
+  ///  * network error offline → optimistic: render the normal flow (sync
+  ///    worker queues fixes; the next successful refresh re-gates).
+  Future<void> _restoreSession() async {
+    final ts = widget.tokenStore;
+    // Brand-new install (or wiped): straight into registration if a driver id
+    // was never stored here.
+    if (!ts.hasToken && !ts.hasPhone && ts.driverId == null) {
+      if (!mounted) return;
+      setState(() {
+        _stage = ts.registrationTicket != null
+            ? _AuthStage.form
+            : _AuthStage.needsOnboarding;
+        _restoring = false;
+      });
+      return;
+    }
+    try {
+      final ok = await onboarding.refreshSession();
+      if (!mounted) return;
+      if (!ok) {
+        // refreshSession() already handled token persistence; a `false` here
+        // means the server rejected pairing but the call did not throw —
+        // fall through to re-pairing below.
+        setState(() {
+          _stage = _AuthStage.repairs;
+          _restoring = false;
+        });
+        return;
+      }
+      await _routeByStatus();
+    } on OnboardingException catch (e) {
+      if (!mounted) return;
+      if (e.code == 'account_suspended' || e.code == 'fleet_suspended') {
+        setState(() {
+          _stage = _AuthStage.pendingSuspended;
+          _restoring = false;
+        });
+      } else if (e.isDeviceNotPaired) {
+        setState(() {
+          _stage = ts.hasPhone ? _AuthStage.repairs : _AuthStage.needsOnboarding;
+          _restoring = false;
+        });
+      } else {
+        // Network/server error WITH a stored token: optimistic pass-through —
+        // the driver keeps their session and the pipeline drains when online.
+        setState(() {
+          _stage = _AuthStage.ready;
+          _restoring = false;
+        });
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _stage = _AuthStage.ready;
+        _restoring = false;
+      });
+    }
+  }
+
+  /// After a valid session: GET /me/profile decides between the trip flow,
+  /// the mandatory-license upload hold, or the admin-review hold.
+  Future<void> _routeByStatus() async {
+    try {
+      final profile = await onboarding.fetchProfile();
+      if (!mounted) return;
+      final status = profile['registration_status'] as String? ?? 'PENDING_REVIEW';
+      if (status == 'SUSPENDED') {
+        setState(() {
+          _stage = _AuthStage.pendingSuspended;
+          _restoring = false;
+        });
+        return;
+      }
+      final docs = (profile['documents'] as List?) ?? const [];
+      final hasLicense = docs.any((d) =>
+          d is Map && d['doc_type'] == 'DRIVING_LICENSE');
+      if (!hasLicense) {
+        setState(() {
+          _stage = _AuthStage.docs;
+          _restoring = false;
+        });
+        return;
+      }
+      if (status != 'ACTIVE') {
+        setState(() {
+          _stage = _AuthStage.pendingReview;
+          _restoring = false;
+        });
+        return;
+      }
+      setState(() {
+        _stage = _AuthStage.ready;
+        _restoring = false;
+      });
+    } on OnboardingException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _stage = e.isDeviceNotPaired
+            ? _AuthStage.repairs
+            : _AuthStage.pendingReview;
+        _restoring = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _stage = _AuthStage.ready;
+        _restoring = false;
+      });
+    }
+  }
+
+  /// Registration succeeded on the form screen: license upload is mandatory
+  /// before the admin can verify, so go straight to the docs step.
+  void _onRegistered() {
+    setState(() => _stage = _AuthStage.docs);
+  }
+
+  /// Docs step complete (license uploaded) — wait for admin activation.
+  void _onDocsDone() {
+    setState(() => _stage = _AuthStage.pendingReview);
+  }
+
+  /// Admin approved → resume normal launch behaviour.
+  void _onApproved() {
+    setState(() => _stage = _AuthStage.ready);
+    unawaited(_bootstrapPipelineIfEnabled());
+  }
+
+  Future<void> _bootstrapPipelineIfEnabled() async {
+    if (_pipelineEnabled && _runtime == null) await _bootstrapPipeline();
+  }
+
+  /// Sign-out from the profile screen: revoke this install and re-enter
+  /// onboarding (fresh OTP required — by design).
+  void _onSignOut() {
+    setState(() => _stage = _AuthStage.needsOnboarding);
+  }
+  GeolocatorPositionSource? _positionSource;
+  SensorsPlusSource? _sensorSource;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
+  /// §Phase 5 (E): foreground push-banner bus with the REAL FCM token source.
+  /// firebase_messaging is now a declared dependency and FirebasePushTokenSource
+  /// replaces the Phase-4 IdlePushTokenSource default — getToken()/onTokenRefresh/
+  /// onForegroundMessage all hit the live plugin. The idle source remains for
+  /// headless tests and plugin-less builds only. Registration itself stays
+  /// post-consent + post-login (see _registerPushToken).
+  PushService? _push;
+  FirebasePushTokenSource? _pushSource;
 
   /// Build the foreground-banner bus once: real HTTP registrar against
   /// POST /notifications/token, and — §Phase 5 (E) — the REAL FCM token source.
@@ -261,9 +447,53 @@ class _YetAppState extends State<YetApp> {
     );
   }
 
-  /// Flow gate: consent (PDPP §1.7) -> permissions explainer -> trip home.
-  /// Language toggle lives on consent + home screens so switching is one tap.
+  /// Flow gate: device session (Module 1, replaces login) -> consent (PDPP
+  /// §1.7) -> permissions explainer -> trip home. Language toggle lives on
+  /// consent + home screens so switching is one tap.
   Widget _rootForLocale() {
+    // ── Onboarding / persistent-session gate (no passwords anywhere) ──────
+    switch (_stage) {
+      case _AuthStage.unknown:
+        // Silent restore in flight: show a neutral splash — the driver never
+        // sees a login screen because there isn't one.
+        return const _RestoreSplash();
+      case _AuthStage.needsOnboarding:
+        return OtpScreen(
+          repo: onboarding,
+          initialPhone: widget.tokenStore.phone,
+          onVerified: () => setState(() => _stage = _AuthStage.form),
+        );
+      case _AuthStage.repairs:
+        // Session lost on a known phone: re-pair THIS install with one OTP.
+        return OtpScreen(
+          repo: onboarding,
+          initialPhone: widget.tokenStore.phone,
+          repairsMode: true,
+          onRepairsPaired: () => setState(() => _stage = _AuthStage.ready),
+          onVerified: () => setState(() => _stage = _AuthStage.ready),
+        );
+      case _AuthStage.form:
+        final phone = widget.tokenStore.phone ?? '';
+        return RegisterScreen(
+          repo: onboarding,
+          phone: phone,
+          localeCode: _locale.languageCode,
+          onRegistered: (_) => _onRegistered(),
+        );
+      case _AuthStage.docs:
+        return DocumentUploadScreen(repo: onboarding, onDone: _onDocsDone);
+      case _AuthStage.pendingReview:
+        return PendingReviewScreen(repo: onboarding, onReady: _onApproved);
+      case _AuthStage.pendingSuspended:
+        return PendingReviewScreen(
+          repo: onboarding,
+          suspended: true,
+          onReady: _onApproved,
+        );
+      case _AuthStage.ready:
+        break; // fall through to the existing consent/permissions/trip flow.
+    }
+
     if (!widget.consent.accepted) {
       return ConsentScreen(
         repo: widget.consent,
@@ -291,6 +521,45 @@ class _YetAppState extends State<YetApp> {
       onToggleLocale: () => setState(() {
         _locale = _locale.languageCode == 'en' ? const Locale('am') : const Locale('en');
       }),
+      // Self-service profile entry point: update license/truck/trailers and
+      // documents WITHOUT ever re-registering or logging in again.
+      onOpenProfile: () => Navigator.of(context).push(MaterialPageRoute<void>(
+        builder: (_) => ProfileScreen(repo: onboarding, onSignOut: _onSignOut),
+      )),
+    );
+  }
+}
+
+/// Auth stages for the passwordless launch gate (Module 1).
+enum _AuthStage {
+  unknown,
+  needsOnboarding,
+  form,
+  docs,
+  pendingReview,
+  pendingSuspended,
+  repairs,
+  ready,
+}
+
+/// Minimal branded placeholder shown while POST /auth/session/refresh runs.
+class _RestoreSplash extends StatelessWidget {
+  const _RestoreSplash();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.directions_bus_rounded,
+                size: 72, color: Theme.of(context).colorScheme.primary),
+            const SizedBox(height: 16),
+            const CircularProgressIndicator(),
+          ],
+        ),
+      ),
     );
   }
 }
