@@ -1,0 +1,17 @@
+[compliance] ECA data-controller registration not started — required before pilot (tracked in docs/COMPLIANCE-PDPP.md)
+[compliance] BREACH_NOTIFICATION_CONTACT unset — configure before pilot; see docs/COMPLIANCE-PDPP.md breach runbook
+PROBE STATUS 403 BODY {"error":"account_inactive"}
+[05:58:10] [32mINFO[39m (8167): [36mincoming request[39m
+    reqId: "req-1"
+    req: {
+      "method": "GET",
+      "url": "/__probe",
+      "hostname": "localhost:80",
+      "remoteAddress": "127.0.0.1"
+    }
+[05:58:10] [32mINFO[39m (8167): [36mrequest completed[39m
+    reqId: "req-1"
+    res: {
+      "statusCode": 403
+    }
+    responseTime: 5.2964509999146685

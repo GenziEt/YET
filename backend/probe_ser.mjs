@@ -1,0 +1,10 @@
+process.env.DATABASE_URL='postgres://yet:postgres@127.0.0.1:5432/yet';
+process.env.JWT_SECRET ??= 'onboarding-test-secret-0123456789abcdef';
+process.env.NODE_ENV='test'; process.env.OTP_DEV_ECHO='false';
+const { buildApp } = await import('./src/app.ts');
+const app = await buildApp();
+app.route({ method: 'GET', url: '/__probe', handler: async () => { throw Object.assign(new Error('account_inactive'), { statusCode: 403 }); } });
+await app.ready();
+const res = await app.inject({ method: 'GET', url: '/__probe' });
+console.log('PROBE STATUS', res.statusCode, 'BODY', res.body);
+await app.close();
