@@ -489,6 +489,20 @@ export const reviewDriverDocument = (docId: string, status: 'VERIFIED' | 'REJECT
     { method: 'PATCH', body: JSON.stringify({ status, review_note: reviewNote }) },
   );
 
+/** GET /admin/documents/:doc_id/file — fetch the uploaded document as a Blob.
+ *  Needs the auth header, so plain <img src>/window.open won't work; callers
+ *  pass the returned object URL to an <a download> or preview and revoke it. */
+export async function fetchDriverDocumentBlob(docId: string): Promise<{ url: string; mime: string }> {
+  const token = localStorage.getItem('yet_token');
+  const res = await fetch(`${API_BASE}/admin/documents/${encodeURIComponent(docId)}/file`, {
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new ApiError(res.status, `document file -> ${res.status}`);
+  const mime = res.headers.get('content-type') ?? 'application/octet-stream';
+  const blob = await res.blob();
+  return { url: URL.createObjectURL(blob), mime };
+}
+
 export const moveDriverToFleet = (driverId: string, fleetId: string) =>
   api<{ id: string; full_name: string; fleet_id: string }>(
     `/admin/drivers/${encodeURIComponent(driverId)}/move`,
