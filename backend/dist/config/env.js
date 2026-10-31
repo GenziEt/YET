@@ -18,6 +18,24 @@ const EnvSchema = z.object({
     JWT_ACCESS_TTL: z.string().default('12h'),
     ADMIN_BOOTSTRAP_EMAIL: z.string().email().optional(),
     ADMIN_BOOTSTRAP_PASSWORD: z.string().min(8).optional(),
+    // --- Driver onboarding (registration WITHOUT a password) ------------------
+    // Phone-verification OTP for POST /auth/register/otp/request. Codes live ONLY
+    // in Redis (short TTL, hashed at rest); the SMS_GATEWAY_URL/DSE sender is the
+    // existing Ethiopian local gateway knob from Phase 5 notifications.
+    OTP_TTL_S: z.coerce.number().int().positive().default(300), // 5-minute code life
+    OTP_MAX_PER_PHONE_15MIN: z.coerce.number().int().positive().default(5), // abuse ceiling
+    // Dev/test convenience ONLY (never production — validateComplianceBoot fails
+    // the boot if set there): when true and no SMS gateway is configured, the OTP
+    // response echoes the code so the pilot flow can be exercised end-to-end.
+    OTP_DEV_ECHO: z.enum(['true', 'false']).default('false'),
+    // Document uploads (driving license mandatory; others conditional). Stored on
+    // the Ethiopian-resident volume — never in Postgres, never off-country (§1.7).
+    DOC_UPLOAD_DIR: z.string().default('./var/driver-documents'),
+    DOC_MAX_SIZE_BYTES: z.coerce.number().int().positive().default(8 * 1024 * 1024),
+    // Dev/test ONLY: seed the Phase-1 pilot driver + vehicle at boot (ingest
+    // replay gates). Explicitly opt-in so onboarding gate tests can run against
+    // a clean DB; ignored in production regardless of value.
+    SEED_DEV_DRIVER: z.enum(['true', 'false']).default('false'),
     OSRM_BASE_URL: z.string().url().default('http://localhost:5000'),
     NOMINATIM_BASE_URL: z.string().url().default('http://localhost:8081'),
     OSM_USER_AGENT: z.string().default('YET-tracking/0.1 (ops-contact@yet.local)'),
@@ -132,6 +150,11 @@ export function validateComplianceBoot(e = env, prod = isProd) {
         }
         else if (/change-me/i.test(e.ADMIN_BOOTSTRAP_PASSWORD)) {
             errors.push('ADMIN_BOOTSTRAP_PASSWORD still carries a template placeholder value');
+        }
+        // Driver onboarding hardening: the OTP dev-echo would return verification
+        // codes in the HTTP response — an authentication bypass in production.
+        if (e.OTP_DEV_ECHO === 'true') {
+            errors.push('OTP_DEV_ECHO must not be enabled in production (phone-verification bypass)');
         }
     }
     // --- Data residency (PDPP §1.7): primary + replica hosts --------------------
