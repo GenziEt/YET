@@ -1,1 +1,10 @@
 node_modules/
+.env
+.env.local
+.env.*.local
+.vscode/
+.idea/
+*.swp
+*.swo
+*.log
+*.tmp

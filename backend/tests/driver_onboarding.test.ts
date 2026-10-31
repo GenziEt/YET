@@ -73,22 +73,35 @@ d('driver onboarding without login (module 1, migration 0016)', () => {
   let app: any;
   let fake: ReturnType<typeof makeFake>;
 
-  const UF = randomUUID();          // Unassigned Fleet (created by 0016 if absent)
-  const FLEET = randomUUID();       // real tenant the admin moves the driver to
+  let FLEET = randomUUID();         // real tenant the admin moves the driver to
   const ADMIN = randomUUID();
   const MGR = randomUUID();         // fleet manager of FLEET
   const PHONE = '+251911111111';
   const DEVICE = `dev-${randomUUID().slice(0, 13)}`;
   const extraUserIds: string[] = [];
   let driverId = '';
+  let UF_FIXED = randomUUID();      // Unassigned Fleet (created by 0016 if absent)
 
   beforeAll(async () => {
     poolX = new pg.Pool({ connectionString: DB! });
     // Ensure the onboarding prerequisites exist even against older scratch DBs.
     const { rows: uf } = await poolX.query(`SELECT id FROM fleets WHERE name = 'Unassigned Fleet'`);
-    if (uf.length === 0) await poolX.query(`INSERT INTO fleets (id, name) VALUES ($1,'Unassigned Fleet')`, [UF]);
+    if (uf.length === 0) await poolX.query(`INSERT INTO fleets (id, name) VALUES ($1,'Unassigned Fleet')`, [UF_FIXED]);
     else UF_FIXED = uf[0].id;
-    await poolX.query(`INSERT INTO fleets (id, name) VALUES ($1,'Onboard Test Fleet') ON CONFLICT DO NOTHING`, [FLEET]);
+    // ON CONFLICT (name): a scratch DB may already carry this fleet under a
+    // different id; blindly inserting the fresh UUID violates the unique name.
+    await poolX.query(
+      `INSERT INTO fleets (id, name) VALUES ($1,'Onboard Test Fleet')
+       ON CONFLICT (name) DO NOTHING`, [FLEET]);
+    const { rows: fl } = await poolX.query(`SELECT id FROM fleets WHERE name = 'Onboard Test Fleet'`);
+    if (fl[0].id !== FLEET) {
+      // Rebind references to the pre-existing row and adopt its id for the run.
+      await poolX.query(`UPDATE users SET fleet_id = $1 WHERE fleet_id = $2`, [fl[0].id, FLEET]).catch(() => {});
+      await poolX.query(`UPDATE vehicles SET fleet_id = $1 WHERE fleet_id = $2`, [fl[0].id, FLEET]).catch(() => {});
+      await poolX.query(`DELETE FROM fleets WHERE id = $1`, [FLEET]).catch(() => {});
+      await poolX.query(`UPDATE fleets SET status = 'ACTIVE' WHERE id = $1`, [fl[0].id]).catch(() => {});
+      FLEET = fl[0].id;
+    }
     await poolX.query(
       `INSERT INTO users (id, role, full_name, email, password_hash, locale)
        VALUES ($1,'ADMIN','OBG Admin',$2,$3,'en') ON CONFLICT DO NOTHING`,
@@ -105,8 +118,6 @@ d('driver onboarding without login (module 1, migration 0016)', () => {
     app = await buildApp();
     await app.ready();
   }, 60_000);
-
-  let UF_FIXED = UF;
 
   afterAll(async () => {
     if (app) await app.close();
