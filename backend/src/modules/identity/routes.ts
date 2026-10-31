@@ -41,7 +41,11 @@ function hashPassword(pw: string): string {
   const key = crypto.scryptSync(pw, salt, 64);
   return `scrypt$${salt.toString('hex')}$${key.toString('hex')}`;
 }
-function verifyPassword(pw: string, stored: string): boolean {
+function verifyPassword(pw: string, stored: string | null): boolean {
+  // Passwordless accounts (e.g. driver rows created by migration 0016 carry a
+  // NULL password_hash until bootstrap) can never authenticate via password —
+  // treat as invalid credentials instead of crashing on null.split().
+  if (!stored) return false;
   const [tag, saltHex, keyHex] = stored.split('$');
   if (tag !== 'scrypt' || !saltHex || !keyHex) return false;
   const key = crypto.scryptSync(pw, Buffer.from(saltHex, 'hex'), 64);

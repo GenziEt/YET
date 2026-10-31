@@ -300,6 +300,19 @@ d('Phase 0 gates (Postgres integration)', () => {
     expect(goodLogin.statusCode).toBe(200);
   });
 
+  it('login against a passwordless DRIVER row (NULL password_hash) → 401, never 500', async () => {
+    // Regression: migration 0016 forces password_hash IS NULL for drivers and
+    // /auth/login matches on phone_e164 = identifier, so any phone-based login
+    // attempt hitting a driver row used to crash verifyPassword (null.split).
+    const pwPhone = '+251911000111';
+    await poolX.query(`UPDATE users SET phone_e164 = $2 WHERE id = $1`, [driverB, pwPhone]);
+    const res = await app.inject({ method: 'POST', url: '/auth/login',
+      payload: { identifier: pwPhone, password: 'whatever-12345' } });
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(res.body).error).toBe('invalid_credentials');
+    await poolX.query(`UPDATE users SET phone_e164 = NULL WHERE id = $1`, [driverB]);
+  });
+
   /* ----------------------- 3. Cross-fleet read denials ----------------------- */
 
   it('FLEET_MANAGER of B is denied every foundational read path scoped to fleet A', async () => {
