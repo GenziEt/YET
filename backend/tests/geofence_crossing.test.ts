@@ -75,8 +75,8 @@ d('crossing evaluator (Postgres integration)', () => {
     // user_fleet_membership trigger REQUIRES a non-null fleet_id for DRIVER
     // role — attach the driver to the same scratch tenant as the fixtures.
     await poolX.query(
-      `INSERT INTO users (id, role, full_name, password_hash, locale, is_active, fleet_id)
-       VALUES ($1,'DRIVER','Integration Test Driver','not-a-hash','en',true,$2)
+      `INSERT INTO users (id, role, full_name, locale, is_active, fleet_id)
+       VALUES ($1,'DRIVER','Integration Test Driver','en',true,$2)
        ON CONFLICT (id) DO NOTHING`, [driverId, testFleetId]);
     await poolX.query(
       `INSERT INTO trips (trip_id, vehicle_id, driver_id, started_at, ended_at, last_activity_at, state)

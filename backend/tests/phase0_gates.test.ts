@@ -148,10 +148,10 @@ d('Phase 0 gates (Postgres integration)', () => {
       `INSERT INTO fleets (id, name, status) VALUES ($1,'p0g-A','ACTIVE'),($2,'p0g-B','ACTIVE')`,
       [fleetA, fleetB]);
     await poolX.query(
-      `INSERT INTO users (id, role, full_name, email, password_hash, locale, is_active, fleet_id)
-       VALUES ($1,'DRIVER','P0G Driver A',$3,$4,'en',true,$5),
-              ($2,'DRIVER','P0G Driver B',$6,$4,'en',true,$7)`,
-      [driverA, driverB, `p0g-a-${driverA.slice(0,8)}@yet.local`, scrypt('phase0-driver-pw'),
+      `INSERT INTO users (id, role, full_name, email, locale, is_active, fleet_id)
+       VALUES ($1,'DRIVER','P0G Driver A',$3,'en',true,$4),
+              ($2,'DRIVER','P0G Driver B',$5,'en',true,$6)`,
+      [driverA, driverB, `p0g-a-${driverA.slice(0,8)}@yet.local`,
        fleetA, `p0g-b-${driverB.slice(0,8)}@yet.local`, fleetB]);
     await poolX.query(
       `INSERT INTO vehicles (id, plate_number, fleet_id) VALUES ($1,'P0G-A-1',$2)`,
