@@ -66,6 +66,13 @@ async function grantConsent(token: string) {
   expect(res.statusCode).toBe(201);
 }
 
+async function driverToken(driverId: string, fleetId: string): Promise<string> {
+  // Post-0016 drivers have no password (DB trigger enforces password_hash IS
+  // NULL); legacy suites mint the same JWT shape the pairing flow would issue.
+  const { signAccessToken } = await import('../src/lib/jwt.js');
+  return signAccessToken({ sub: driverId, role: 'DRIVER', locale: 'en', fleetId });
+}
+
 const WIN = 'from=2000-01-01T00:00:00Z&to=2100-01-01T00:00:00Z';
 
 d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () => {
@@ -100,11 +107,11 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
       [fleetA, fleetB]);
     await poolX.query(
       `INSERT INTO users (id, role, full_name, email, password_hash, locale, is_active, fleet_id)
-       VALUES ($1,'DRIVER','P5G Driver A',$4,$5,'en',true,$6),
-              ($2,'FLEET_MANAGER','P5G Manager A',$7,$5,'en',true,$6),
-              ($3,'FLEET_MANAGER','P5G Manager B',$8,$5,'en',true,$9)`,
+       VALUES ($1,'DRIVER','P5G Driver A',$4,NULL,'en',true,$5),
+              ($2,'FLEET_MANAGER','P5G Manager A',$7,$6,'en',true,$5),
+              ($3,'FLEET_MANAGER','P5G Manager B',$8,$6,'en',true,$9)`,
       [driverA, mgrA, mgrB,
-       `p5g-a-${driverA.slice(0, 8)}@yet.local`, scrypt('p5g-password-1'), fleetA,
+       `p5g-a-${driverA.slice(0, 8)}@yet.local`, fleetA, scrypt('p5g-password-1'),
        `p5g-ma-${mgrA.slice(0, 8)}@yet.local`, `p5g-mb-${mgrB.slice(0, 8)}@yet.local`, fleetB]);
     await poolX.query(`INSERT INTO vehicles (id, plate_number, fleet_id) VALUES ($1,'P5G-A-1',$2)`,
       [vehicleA, fleetA]);
@@ -315,10 +322,7 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
   /* --------------------- 3. Ingest assignment precondition ------------------ */
 
   it('POST /ingest/locations succeeds once consent+assignment exist (seeded fixture path)', async () => {
-    const login = await app.inject({ method: 'POST', url: '/auth/login',
-      payload: { identifier: `p5g-a-${driverA.slice(0, 8)}@yet.local`, password: 'p5g-password-1' } });
-    expect(login.statusCode).toBe(200);
-    const token = login.json().access_token;
+    const token = await driverToken(driverA, fleetA);
     await grantConsent(token);
     const res = await app.inject({ method: 'POST', url: '/ingest/locations',
       headers: { authorization: `Bearer ${token}` },
@@ -360,9 +364,9 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
     const retVehicle = randomUUID();
     const retBatch = randomUUID();
     await poolX.query(
-      `INSERT INTO users (id, role, full_name, email, password_hash, locale, is_active, fleet_id)
-       VALUES ($1,'DRIVER','P5G Retention',$2,$3,'en',true,$4)`,
-      [retDriver, `p5g-ret-${retDriver.slice(0, 8)}@yet.local`, scrypt('p5g-password-1'), fleetA]);
+      `INSERT INTO users (id, role, full_name, email, locale, is_active, fleet_id)
+       VALUES ($1,'DRIVER','P5G Retention',$2,'en',true,$3)`,
+      [retDriver, `p5g-ret-${retDriver.slice(0, 8)}@yet.local`, fleetA]);
     await poolX.query(`INSERT INTO vehicles (id, plate_number, fleet_id) VALUES ($1,'P5G-RET-1',$2)`,
       [retVehicle, fleetA]);
     await poolX.query(`INSERT INTO ingest_batches (batch_id, driver_id, vehicle_id, fix_count)
@@ -435,16 +439,14 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
   it('POST /ingest/locations with NO active assignment → 409 no_vehicle_assignment (collection gating)', async () => {
     const orphan = randomUUID();
     await poolX.query(
-      `INSERT INTO users (id, role, full_name, email, password_hash, locale, is_active, fleet_id)
-       VALUES ($1,'DRIVER','P5G Orphan',$2,$3,'en',true,$4)`,
-      [orphan, `p5g-orphan-${orphan.slice(0, 8)}@yet.local`, scrypt('p5g-password-1'), fleetA]);
+      `INSERT INTO users (id, role, full_name, email, locale, is_active, fleet_id)
+       VALUES ($1,'DRIVER','P5G Orphan',$2,'en',true,$3)`,
+      [orphan, `p5g-orphan-${orphan.slice(0, 8)}@yet.local`, fleetA]);
     // Consent via HTTP (policy registry is code, not fixture-dependent).
-    const ologin = await app.inject({ method: 'POST', url: '/auth/login',
-      payload: { identifier: `p5g-orphan-${orphan.slice(0, 8)}@yet.local`, password: 'p5g-password-1' } });
-    expect(ologin.statusCode).toBe(200);
-    await grantConsent(ologin.json().access_token);
+    const otok = await driverToken(orphan, fleetA);
+    await grantConsent(otok);
     const res = await app.inject({ method: 'POST', url: '/ingest/locations',
-      headers: { authorization: `Bearer ${ologin.json().access_token}` },
+      headers: { authorization: `Bearer ${otok}` },
       payload: { batch_id: randomUUID(),
                  fixes: [{ fix_timestamp: '2026-10-25T10:00:00Z', lat: 9.03, lng: 38.74 }] } });
     expect(res.statusCode).toBe(409);
