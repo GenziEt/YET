@@ -524,6 +524,390 @@ class AppLocalizations {
         return 'Dismiss';
     }
   }
+  String get obPhoneTitle {
+    switch (localeName) {
+      case 'am':
+        return 'ስልክ ቁጥርዎን ያስገቡ';
+      default:
+        return 'Enter your phone number';
+    }
+  }
+  String get obPhoneBody {
+    switch (localeName) {
+      case 'am':
+        return 'ስልክ ቁጥርዎ መለያዎ ነው። የይለፍ ቃል — ፈጽሞ አይደለም።';
+      default:
+        return 'Your phone number is your account. No password — ever.';
+    }
+  }
+  String get obPhoneHint {
+    switch (localeName) {
+      case 'am':
+        return 'ለምሳሌ 0911234567 ወይም +251911234567';
+      default:
+        return 'e.g. 0911234567 or +251911234567';
+    }
+  }
+  String get obSendCode {
+    switch (localeName) {
+      case 'am':
+        return 'ኮድ ላክ';
+      default:
+        return 'Send code';
+    }
+  }
+  String get obCodeSent {
+    switch (localeName) {
+      case 'am':
+        return 'በSMS 6 ቁጥር ያለው ኮድ ተልኳል።';
+      default:
+        return 'A 6-digit code was sent by SMS.';
+    }
+  }
+  String obDevCodeBanner(Object code) {
+    switch (localeName) {
+      case 'am':
+        return 'የሙከራ ሁነታ፦ ኮድዎ $code';
+      default:
+        return 'Dev mode: your code is $code';
+    }
+  }
+  String get obVerifyCode {
+    switch (localeName) {
+      case 'am':
+        return 'ኮድ አረጋግጥ';
+      default:
+        return 'Verify code';
+    }
+  }
+  String get obResendCode {
+    switch (localeName) {
+      case 'am':
+        return 'አዲስ ኮድ ላክ';
+      default:
+        return 'Send a new code';
+    }
+  }
+  String get obOtpInvalid {
+    switch (localeName) {
+      case 'am':
+        return 'የተሳሳተ ወይም ጊዜው ያለፈ ኮድ። እንደገና ይሞክሩ።';
+      default:
+        return 'Wrong or expired code. Try again.';
+    }
+  }
+  String get obRateLimited {
+    switch (localeName) {
+      case 'am':
+        return 'ከመጠን በላይ ሙከራ። እባክዎ 15 ደቂቃ ይጠብቁ።';
+      default:
+        return 'Too many attempts. Please wait 15 minutes.';
+    }
+  }
+  String get obFormTitle {
+    switch (localeName) {
+      case 'am':
+        return 'ምዝገባ — አንድ ጊዜ ብቻ';
+      default:
+        return 'Registration — one time only';
+    }
+  }
+  String get obPersonalHeading {
+    switch (localeName) {
+      case 'am':
+        return 'ስለ እርስዎ';
+      default:
+        return 'About you';
+    }
+  }
+  String get obFullName {
+    switch (localeName) {
+      case 'am':
+        return 'ሙሉ ስም';
+      default:
+        return 'Full name';
+    }
+  }
+  String get obLicenseNumber {
+    switch (localeName) {
+      case 'am':
+        return 'የማሽከርከሪያ ፈቃድ ቁጥር';
+      default:
+        return 'Driving license number';
+    }
+  }
+  String get obLicenseClass {
+    switch (localeName) {
+      case 'am':
+        return 'የፈቃድ ደረጃ (አማራጭ)';
+      default:
+        return 'License class (optional)';
+    }
+  }
+  String get obLicenseExpiry {
+    switch (localeName) {
+      case 'am':
+        return 'የፈቃድ ጊዜ ማብቂያ (አማራጭ፣ ዓ-ወ-ቀ)';
+      default:
+        return 'License expiry date (optional, YYYY-MM-DD)';
+    }
+  }
+  String get obAssociation {
+    switch (localeName) {
+      case 'am':
+        return 'የትራንስፖርት ማህበር (አማራጭ)';
+      default:
+        return 'Truck association (optional)';
+    }
+  }
+  String get obHomeBase {
+    switch (localeName) {
+      case 'am':
+        return 'መነሻ ከተማ (አማራጭ)';
+      default:
+        return 'Home base city (optional)';
+    }
+  }
+  String get obVehicleHeading {
+    switch (localeName) {
+      case 'am':
+        return 'ከረጢትዎ';
+      default:
+        return 'Your truck';
+    }
+  }
+  String get obPlateNumber {
+    switch (localeName) {
+      case 'am':
+        return 'የከረጢት ሰሌዳ ቁጥር';
+      default:
+        return 'Truck plate number';
+    }
+  }
+  String get obTruckType {
+    switch (localeName) {
+      case 'am':
+        return 'የተሽከርካሪ ዓይነት';
+      default:
+        return 'Truck type';
+    }
+  }
+  String get obMakeModel {
+    switch (localeName) {
+      case 'am':
+        return 'አምራት / ሞዴል (አማራጭ)';
+      default:
+        return 'Make / model (optional)';
+    }
+  }
+  String get obCapacityTons {
+    switch (localeName) {
+      case 'am':
+        return 'የመሸከም አቅም በቶን (አማራጭ)';
+      default:
+        return 'Capacity in tons (optional)';
+    }
+  }
+  String get obBodyType {
+    switch (localeName) {
+      case 'am':
+        return 'የመኛ ዓይነት (ከፍ ያለ፣ ዝቅተኛ...)';
+      default:
+        return 'Bed type (high bed, low bed...)';
+    }
+  }
+  String get obOwnership {
+    switch (localeName) {
+      case 'am':
+        return 'ከረጢቱ የእርስዎ ነው?';
+      default:
+        return 'Do you own the truck?';
+    }
+  }
+  String get obTrailerHeading {
+    switch (localeName) {
+      case 'am':
+        return 'ሬሞርኮች (አማራጭ)';
+      default:
+        return 'Trailers (optional)';
+    }
+  }
+  String get obTrailerPlate {
+    switch (localeName) {
+      case 'am':
+        return 'የሬሞርኮ ሰሌዳ ቁጥር';
+      default:
+        return 'Trailer plate number';
+    }
+  }
+  String get obAddTrailer {
+    switch (localeName) {
+      case 'am':
+        return 'ሌላ ሬሞርኮ ጨምር';
+      default:
+        return 'Add another trailer';
+    }
+  }
+  String get obSubmitRegister {
+    switch (localeName) {
+      case 'am':
+        return 'ምዝገባውን ጨርስ';
+      default:
+        return 'Complete registration';
+    }
+  }
+  String get obRequiredFields {
+    switch (localeName) {
+      case 'am':
+        return 'ስም፣ የፈቃድ ቁጥር እና የሰሌዳ ቁጥር ያስፈልጋሉ።';
+      default:
+        return 'Name, license number and truck plate are required.';
+    }
+  }
+  String get obDocsTitle {
+    switch (localeName) {
+      case 'am':
+        return 'ሰነዶችዎን ይስቀሉ';
+      default:
+        return 'Upload your documents';
+    }
+  }
+  String get obLicenseDocMandatory {
+    switch (localeName) {
+      case 'am':
+        return 'የማሽከርከሪያ ፈቃድ ፎቶ — ግዴታ';
+      default:
+        return 'Driving license photo - REQUIRED';
+    }
+  }
+  String get obTakePhoto {
+    switch (localeName) {
+      case 'am':
+        return 'ፎቶ ያንሱ / ፋይል ይምረጡ';
+      default:
+        return 'Take photo / choose file';
+    }
+  }
+  String get obUploaded {
+    switch (localeName) {
+      case 'am':
+        return 'ተስቅሏል — ግምገማ በመጠበቅ ላይ';
+      default:
+        return 'Uploaded - waiting for review';
+    }
+  }
+  String get obUploadFailed {
+    switch (localeName) {
+      case 'am':
+        return 'መስቀል አልተሳካም። መረብን ያረጋግጡ እና እንደገና ይሞክሩ።';
+      default:
+        return 'Upload failed. Check network and try again.';
+    }
+  }
+  String get obSkipOptionalDocs {
+    switch (localeName) {
+      case 'am':
+        return 'ለአሁን ይለፉ';
+      default:
+        return 'Skip for now';
+    }
+  }
+  String get obPendingTitle {
+    switch (localeName) {
+      case 'am':
+        return 'ፍቃድ በመጠበቅ ላይ';
+      default:
+        return 'Waiting for approval';
+    }
+  }
+  String get obPendingBody {
+    switch (localeName) {
+      case 'am':
+        return 'ምዝገባዎ ደርሷል። የፍሊት አስተዳዳሪ ሰነዶችዎን ያረጋግጣል እና ከረጢትዎን ይመድባል። በዚህ ስልክ ላይ ገብተው ይቆያሉ።';
+      default:
+        return 'Your registration was received. A fleet manager will verify your documents and assign your truck. You will stay logged in on this phone.';
+    }
+  }
+  String get obRefreshApp {
+    switch (localeName) {
+      case 'am':
+        return 'ሁኔታ ያረጋግጡ';
+      default:
+        return 'Check status';
+    }
+  }
+  String get obSuspendedTitle {
+    switch (localeName) {
+      case 'am':
+        return 'መለያ ተሰናክሏል';
+      default:
+        return 'Account on hold';
+    }
+  }
+  String get obSuspendedBody {
+    switch (localeName) {
+      case 'am':
+        return 'መለያዎ በፍሊት አስተዳዳሪዎ ተቋርጧል። ለማነቃቃት ያግኙት።';
+      default:
+        return 'Your account was paused by your fleet manager. Contact them to reactivate it.';
+    }
+  }
+  String get obRepairsTitle {
+    switch (localeName) {
+      case 'am':
+        return 'ይህን ስልክ እንደገና ያያሩ';
+      default:
+        return 'Re-pair this phone';
+    }
+  }
+  String get obRepairsBody {
+    switch (localeName) {
+      case 'am':
+        return 'በስልክዎ ላይ የተላከውን ኮድ ያስገቡ፤ ውሂብዎ አይጠፋም።';
+      default:
+        return 'Enter the code sent to your phone to restore your session. Your data stays intact.';
+    }
+  }
+  String get obProfileTitle {
+    switch (localeName) {
+      case 'am':
+        return 'የእኔ መገለጫ';
+      default:
+        return 'My profile';
+    }
+  }
+  String get obChangeTruck {
+    switch (localeName) {
+      case 'am':
+        return 'ከረጢት ቀየርኩ';
+      default:
+        return 'I changed truck';
+    }
+  }
+  String get obSaveChanges {
+    switch (localeName) {
+      case 'am':
+        return 'ለውጦችን አስቀምጥ';
+      default:
+        return 'Save changes';
+    }
+  }
+  String get obSignOutDevice {
+    switch (localeName) {
+      case 'am':
+        return 'ከዚህ ስልክ ውጣ';
+      default:
+        return 'Sign out of this phone';
+    }
+  }
+  String get obNetworkError {
+    switch (localeName) {
+      case 'am':
+        return 'መረብ የለም። ምልክት ሲመለስ እንደገና ይሞክሩ።';
+      default:
+        return 'No network. Try again when signal returns.';
+    }
+  }
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {

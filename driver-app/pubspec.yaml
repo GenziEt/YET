@@ -17,6 +17,12 @@ dependencies:
   path: ^1.9.0
   http: ^1.2.0
   shared_preferences: ^2.2.0
+  # Module 1 (driver onboarding without login): stable per-install device UUID
+  # used as the pairing credential (features/auth/device_identity.dart).
+  uuid: ^4.4.0
+  # Document uploads for registration (image_picker wraps the native photo
+  # gallery/camera intents; permission handling stays in permissions_screen).
+  image_picker: ^1.1.2
   # Phase 1 production device plugins — wired by the default main.dart
   # bootstrap (lib/platform/*.dart): real GPS position source, sensor stream,
   # battery telemetry, and connectivity-triggered sync (§1.8.1).
