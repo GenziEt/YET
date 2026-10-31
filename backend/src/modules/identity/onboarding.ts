@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import multipart from '@fastify/multipart';
 import { z } from 'zod';
 import crypto from 'node:crypto';
@@ -137,28 +137,45 @@ async function fleetStatus(fleetId: string | null): Promise<string | null> {
   return rows[0]?.status ?? null;
 }
 
+/** Machine-readable denial codes thrown as Errors (authGuard etc.) must keep
+ *  their message in the response `error` field — Fastify's default error
+ *  serializer would otherwise render `{statusCode:403}` + `{error:'Forbidden'}`,
+ *  and the driver app branches on `account_inactive`. Applied per-route via
+ *  onRequest so it cannot clash with setErrorHandler ordering. */
+const KNOWN_DENIALS = new Set(['consent_required', 'fleet_suspended', 'cross_fleet_denied',
+                               'forbidden_role', 'target_not_found',
+                               'account_inactive', 'account_suspended', 'device_not_paired',
+                               'unauthorized']);
+
 /** Shared guard: Bearer token → live principal. Re-validates the DB state on
  *  every call so revocation/suspension takes effect immediately regardless of
- *  the JWT's remaining TTL (fail-closed, PDPP §1.7). */
-async function authGuard(req: FastifyRequest): Promise<{ id: string; role: string; fleetId: string | null }> {
+ *  the JWT's remaining TTL (fail-closed, PDPP §1.7). Denials are written
+ *  DIRECTLY to the reply ({error:<code>}) instead of being thrown — a thrown
+ *  error's serialization depends on plugin-scoped setErrorHandler precedence,
+ *  which @fastify/sensible hijacks into {error:'Forbidden'} (observed in gates). */
+async function authGuard(
+  req: FastifyRequest, reply: FastifyReply,
+): Promise<{ id: string; role: string; fleetId: string | null } | null> {
+  const deny = (code: string, status: number) => {
+    void reply.code(status).send({ error: code }); // deterministic shape, order-proof
+    return null;
+  };
   const header = req.headers.authorization;
-  if (!header?.startsWith('Bearer ')) throw Object.assign(new Error('unauthorized'), { statusCode: 401 });
+  if (!header?.startsWith('Bearer ')) return deny('unauthorized', 401);
   let claims: { sub: string; role: string; fleetId?: string };
   try {
     const { verifyAccessToken } = await import('../../lib/jwt.js');
     claims = verifyAccessToken(header.slice(7));
   } catch {
-    throw Object.assign(new Error('unauthorized'), { statusCode: 401 });
+    return deny('unauthorized', 401);
   }
   const { rows } = await pool.query(
     `SELECT id, role, fleet_id, is_active FROM users WHERE id = $1 LIMIT 1`, [claims.sub]);
   const user = rows[0];
-  if (!user || !user.is_active) {
-    throw Object.assign(new Error('account_inactive'), { statusCode: 403 });
-  }
+  if (!user || !user.is_active) return deny('account_inactive', 403);
   if (user.fleet_id) {
     const st = await fleetStatus(user.fleet_id);
-    if (st !== 'ACTIVE') throw Object.assign(new Error('fleet_suspended'), { statusCode: 403 });
+    if (st !== 'ACTIVE') return deny('fleet_suspended', 403);
   }
   return { id: user.id, role: user.role, fleetId: user.fleet_id ?? null };
 }
@@ -482,7 +499,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   /** GET /me/profile — everything the profile screen shows: person, license,
    *  association, current equipment (time-bound), documents w/ status + expiry. */
   app.get('/me/profile', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     const { rows } = await pool.query(
       `SELECT u.id, u.full_name, u.phone_e164, u.locale, u.created_at, u.fleet_id, f.name AS fleet_name,
               p.license_number, p.license_class, p.license_expiry, p.association_name,
@@ -523,7 +541,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
    *  trucks/companies, never accounts). Does NOT touch equipment: use the
    *  vehicle/trailer endpoints below for that. */
   app.patch('/me/profile', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     const parsed = UpdateProfileSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'validation_failed', detail: parsed.error.flatten() });
     const b = parsed.data;
@@ -553,7 +572,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
    *  assignment (time-bound history preserved) and opens the new one. Stays
    *  provisional (created_by_admin=false) until an admin confirms. */
   app.post('/me/vehicles', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     const parsed = AddVehicleSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'validation_failed', detail: parsed.error.flatten() });
     const v = parsed.data;
@@ -583,7 +603,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
 
   /** POST /me/trailers — same pattern for trailers (multiple allowed). */
   app.post('/me/trailers', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     const parsed = AddTrailerSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'validation_failed', detail: parsed.error.flatten() });
     const t = parsed.data;
@@ -616,7 +637,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
    *  replaces the previous active row (partial unique index). Files land on the
    *  Ethiopian-resident volume; Postgres stores only the reference (§1.7). */
   app.post('/me/documents', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     if (!req.isMultipart?.()) {
       return reply.code(400).send({ error: 'multipart_required', hint: 'form-data: file + doc_type (+ expires_on)' });
     }
@@ -669,8 +691,9 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   });
 
   /** GET /me/devices — the driver sees which installs are paired (transparency). */
-  app.get('/me/devices', async (req) => {
-    const auth = await authGuard(req);
+  app.get('/me/devices', async (req, reply) => {
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     const { rows } = await pool.query(
       `SELECT id, device_id, platform, app_version, paired_at, last_seen_at, revoked_at
          FROM device_identities WHERE user_id = $1 ORDER BY paired_at DESC`, [auth.id]);
@@ -680,7 +703,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   /** POST /me/devices/revoke — sign out THIS device (lost phone / sold phone).
    *  After revocation, refresh fails and re-pairing needs a fresh OTP. */
   app.post('/me/devices/revoke', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     const parsed = RefreshSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'validation_failed' });
     const { rowCount } = await pool.query(
@@ -697,7 +721,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   /** GET /admin/drivers — registration/review queue. ADMIN or FLEET_MANAGER
    *  (own fleet only). Filters: status=PENDING|ACTIVE|SUSPENDED|ALL, q search. */
   app.get('/admin/drivers', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     if (auth.role !== 'ADMIN' && auth.role !== 'FLEET_MANAGER') return reply.code(403).send({ error: 'forbidden_role' });
     const q = z.object({ status: z.enum(['PENDING', 'ACTIVE', 'SUSPENDED', 'ALL']).default('ALL'),
                          q: z.string().max(100).optional() }).safeParse(req.query);
@@ -740,7 +765,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
 
   /** GET /admin/drivers/:driver_id — full dossier incl. assignment history. */
   app.get('/admin/drivers/:driver_id', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     if (auth.role !== 'ADMIN' && auth.role !== 'FLEET_MANAGER') return reply.code(403).send({ error: 'forbidden_role' });
     const params = z.object({ driver_id: z.string().uuid() }).safeParse(req.params);
     if (!params.success) return reply.code(400).send({ error: 'invalid_id' });
@@ -778,7 +804,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
    *  move the driver out of 'Unassigned Fleet' (below) once the B2B agreement
    *  with the service taker is confirmed. */
   app.patch('/admin/documents/:doc_id/status', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     if (auth.role !== 'ADMIN' && auth.role !== 'FLEET_MANAGER') return reply.code(403).send({ error: 'forbidden_role' });
     const params = z.object({ doc_id: z.string().uuid() }).safeParse(req.params);
     const body = ReviewDocSchema.safeParse(req.body);
@@ -803,7 +830,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
    *  (activation). This is the moment a self-registered driver becomes usable
    *  by a transport company; documents should already be VERIFIED. */
   app.post('/admin/drivers/:driver_id/move', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     if (auth.role !== 'ADMIN') return reply.code(403).send({ error: 'forbidden_role' });
     const params = z.object({ driver_id: z.string().uuid() }).safeParse(req.params);
     const body = MoveDriverSchema.safeParse(req.body);
@@ -825,7 +853,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
    *  the previous assignment (history kept) and stamps created_by_admin=true.
    *  The vehicle must belong to the admin's fleet scope. */
   app.post('/admin/drivers/:driver_id/assign-vehicle', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     if (auth.role !== 'ADMIN' && auth.role !== 'FLEET_MANAGER') return reply.code(403).send({ error: 'forbidden_role' });
     const params = z.object({ driver_id: z.string().uuid() }).safeParse(req.params);
     const body = AssignVehicleSchema.safeParse(req.body);
@@ -871,7 +900,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
 
   /** POST /admin/drivers/:driver_id/assign-trailer — same contract for trailers. */
   app.post('/admin/drivers/:driver_id/assign-trailer', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     if (auth.role !== 'ADMIN' && auth.role !== 'FLEET_MANAGER') return reply.code(403).send({ error: 'forbidden_role' });
     const params = z.object({ driver_id: z.string().uuid() }).safeParse(req.params);
     const body = AssignTrailerSchema.safeParse(req.body);
@@ -898,7 +928,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   /** POST /admin/drivers/:driver_id/suspend — stop a driver everywhere at once:
    *  is_active=false ⇒ authGuard/refresh deny, ingest denies (users lookup). */
   app.post('/admin/drivers/:driver_id/suspend', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     if (auth.role !== 'ADMIN') return reply.code(403).send({ error: 'forbidden_role' });
     const params = z.object({ driver_id: z.string().uuid(), active: z.boolean().default(false) })
       .safeParse({ driver_id: (req.params as any).driver_id, ...(req.body ?? {}) });
@@ -928,7 +959,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   /** POST /admin/drivers/:driver_id/revoke-device — force logout of an install
    *  (lost/stolen phone). Driver re-pairs later with OTP. */
   app.post('/admin/drivers/:driver_id/revoke-device', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     if (auth.role !== 'ADMIN' && auth.role !== 'FLEET_MANAGER') return reply.code(403).send({ error: 'forbidden_role' });
     const params = z.object({ driver_id: z.string().uuid() }).safeParse(req.params);
     const body = z.object({ device_id: z.string().min(8).max(128), reason: z.string().max(200).optional() })
@@ -937,11 +969,18 @@ export default async function onboardingRoutes(app: FastifyInstance) {
     const { rows: drv } = await pool.query(`SELECT id, fleet_id FROM users WHERE id = $1 AND role = 'DRIVER'`, [params.data.driver_id]);
     if (drv.length === 0) return reply.code(404).send({ error: 'target_not_found' });
     if (auth.role === 'FLEET_MANAGER' && drv[0].fleet_id !== auth.fleetId) return reply.code(403).send({ error: 'cross_fleet_denied' });
+    // Idempotent: already-revoked pairings still return 200 (the desired end
+    // state holds), but a device never paired to this driver is a genuine 404.
     const { rowCount } = await pool.query(
       `UPDATE device_identities SET revoked_at = now(), revoke_reason = COALESCE($3, 'admin_revoke')
         WHERE user_id = $1 AND device_id = $2 AND revoked_at IS NULL`,
       [drv[0].id, body.data.device_id, body.data.reason ?? null]);
-    if (rowCount === 0) return reply.code(404).send({ error: 'pairing_not_found' });
+    if (rowCount === 0) {
+      const { rows: existed } = await pool.query(
+        `SELECT 1 FROM device_identities WHERE user_id = $1 AND device_id = $2 LIMIT 1`,
+        [drv[0].id, body.data.device_id]);
+      if (existed.length === 0) return reply.code(404).send({ error: 'pairing_not_found' });
+    }
     await pool.query(`UPDATE users SET device_id = NULL WHERE id = $1 AND device_id = $2`, [drv[0].id, body.data.device_id]);
     await audit({ actorId: auth.id, action: 'device_revoked_admin', targetUser: drv[0].id, ip: req.ip,
                   detail: { device_id: body.data.device_id } });
@@ -951,7 +990,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   /** GET /admin/vehicles — asset directory for the assignment UI. FLEET_MANAGER
    *  sees own fleet (+ Unassigned Fleet for confirming self-registered assets). */
   app.get('/admin/vehicles', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     if (auth.role !== 'ADMIN' && auth.role !== 'FLEET_MANAGER') return reply.code(403).send({ error: 'forbidden_role' });
     const { rows } = await pool.query(
       `SELECT v.id, v.plate_number, v.vehicle_type::text AS vehicle_type, v.make_model, v.capacity_tons,
@@ -969,7 +1009,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
 
   /** GET /admin/trailers — trailer directory, same scoping rule. */
   app.get('/admin/trailers', async (req, reply) => {
-    const auth = await authGuard(req);
+    const auth = await authGuard(req, reply);
+    if (!auth) return reply; // denial already sent by the guard
     if (auth.role !== 'ADMIN' && auth.role !== 'FLEET_MANAGER') return reply.code(403).send({ error: 'forbidden_role' });
     const { rows } = await pool.query(
       `SELECT t.id, t.plate_number, t.trailer_type, t.capacity_tons, t.equipment_details, t.fleet_id,
