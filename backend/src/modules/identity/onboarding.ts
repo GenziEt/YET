@@ -11,6 +11,7 @@ import { audit } from '../../lib/audit.js';
 import { env, isProd } from '../../config/env.js';
 import { cacheGetJsonCritical, cacheSetJsonCritical, cacheDelCritical } from '../../lib/redis.js';
 import { otpHashKey } from '../../lib/secrets.js';
+import { bumpTokenVersion } from '../../lib/revocation.js';
 
 /**
  * Module 1 — Driver onboarding WITHOUT a traditional login.
@@ -509,7 +510,7 @@ export default async function onboardingRoutes(app: FastifyInstance) {
       return reply.code(401).send({ error: 'unauthorized', hint: 'pair device via POST /auth/pair-device' });
     }
     const { rows } = await pool.query(
-      `SELECT u.id, u.role, u.locale, u.fleet_id, u.is_active, f.status AS fleet_status
+      `SELECT u.id, u.role, u.locale, u.fleet_id, u.is_active, u.token_version, f.status AS fleet_status
          FROM users u LEFT JOIN fleets f ON f.id = u.fleet_id WHERE u.id = $1`, [claims.sub]);
     const u = rows[0];
     if (!u || !u.is_active) return reply.code(403).send({ error: 'account_inactive' });
@@ -520,7 +521,7 @@ export default async function onboardingRoutes(app: FastifyInstance) {
     if (paired.length === 0) return reply.code(403).send({ error: 'device_not_paired', hint: 're-pair via POST /auth/pair-device (OTP)' });
     await pool.query(`UPDATE device_identities SET last_seen_at = now() WHERE user_id = $1 AND device_id = $2`,
       [u.id, parsed.data.device_id]);
-    const token = signAccessToken({ sub: u.id, role: u.role, locale: u.locale, fleetId: u.fleet_id ?? undefined });
+    const token = signAccessToken({ sub: u.id, role: u.role, locale: u.locale, fleetId: u.fleet_id ?? undefined, tokenVersion: u.token_version });
     return { access_token: token };
   });
 
@@ -778,6 +779,9 @@ export default async function onboardingRoutes(app: FastifyInstance) {
         WHERE user_id = $1 AND device_id = $2 AND revoked_at IS NULL`, [auth.id, parsed.data.device_id]);
     if (rowCount === 0) return reply.code(404).send({ error: 'pairing_not_found' });
     await pool.query(`UPDATE users SET device_id = NULL WHERE id = $1 AND device_id = $2`, [auth.id, parsed.data.device_id]);
+    // Pre-expiry JWT revocation (audit P1): bump the token epoch so every
+    // outstanding 12 h token for this driver dies now, not at natural expiry.
+    await bumpTokenVersion(auth.id);
     await audit({ actorId: auth.id, action: 'device_revoked_self', targetUser: auth.id, ip: req.ip });
     return { revoked: true };
   });
@@ -1057,6 +1061,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
     if (!params.data.active) {
       await pool.query(`UPDATE device_identities SET revoked_at = now(), revoke_reason = 'admin_suspend'
                         WHERE user_id = $1 AND revoked_at IS NULL`, [rows[0].id]);
+      // Suspend = instant session kill: bump the token epoch (audit P1).
+      await bumpTokenVersion(rows[0].id);
     } else {
       // Reactivation restores the CURRENT pairing only (the driver keeps using
       // the app without re-pairing). Devices revoked for other reasons — e.g.
@@ -1098,6 +1104,9 @@ export default async function onboardingRoutes(app: FastifyInstance) {
       if (existed.length === 0) return reply.code(404).send({ error: 'pairing_not_found' });
     }
     await pool.query(`UPDATE users SET device_id = NULL WHERE id = $1 AND device_id = $2`, [drv[0].id, body.data.device_id]);
+    // Lost/stolen phone: kill every outstanding token for this driver now
+    // (audit P1 pre-expiry revocation).
+    await bumpTokenVersion(drv[0].id);
     await audit({ actorId: auth.id, action: 'device_revoked_admin', targetUser: drv[0].id, ip: req.ip,
                   detail: { device_id: body.data.device_id } });
     return { revoked: true };
@@ -1167,6 +1176,6 @@ async function pairDevice(
            last_seen_at = now()`,
     [userId, deviceId, platform ?? null, appVersion ?? null]);
   await pool.query(`UPDATE users SET device_id = $2 WHERE id = $1`, [userId, deviceId]);
-  const { rows } = await pool.query(`SELECT role, locale, fleet_id FROM users WHERE id = $1`, [userId]);
-  return signAccessToken({ sub: userId, role: rows[0].role, locale: rows[0].locale, fleetId: rows[0].fleet_id ?? undefined });
+  const { rows } = await pool.query(`SELECT role, locale, fleet_id, token_version FROM users WHERE id = $1`, [userId]);
+  return signAccessToken({ sub: userId, role: rows[0].role, locale: rows[0].locale, fleetId: rows[0].fleet_id ?? undefined, tokenVersion: rows[0].token_version });
 }
