@@ -1,0 +1,95 @@
+name: backend-web-ci
+
+# Covers the gap left by startup-gates.yml (driver-app only):
+# backend + web-dashboard install/typecheck/lint/unit tests/build,
+# DB-gated suites against a Postgres service container, plus
+# secret scanning and dependency vulnerability gates.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4   # pinned; matches infra/docker-compose.yml
+        env:
+          POSTGRES_DB: yet_test
+          POSTGRES_USER: yet
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U yet -d yet_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      YET_TEST_DB: 'postgres://yet:ci-only-not-a-secret@localhost:5432/yet_test'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install (clean lockfile install)
+        working-directory: backend
+        run: npm ci
+      - name: Typecheck
+        working-directory: backend
+        run: npx tsc --noEmit
+      - name: Lint
+        working-directory: backend
+        run: npm run lint
+      - name: Unit tests (incl. DB-gated suites vs Postgres service)
+        working-directory: backend
+        run: npm test
+      - name: Build
+        working-directory: backend
+        run: npm run build
+
+  web-dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web-dashboard/package-lock.json
+      - name: Install (clean lockfile install)
+        working-directory: web-dashboard
+        run: npm ci
+      - name: Typecheck
+        working-directory: web-dashboard
+        run: npx tsc -b
+      - name: Build
+        working-directory: web-dashboard
+        run: npm run build
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so gitleaks can scan all commits on PR range
+      - name: Secret scanning (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Dependency audit — backend
+        run: |
+          cd backend
+          npm ci --ignore-scripts
+          npm audit --audit-level=high
+      - name: Dependency audit — web dashboard
+        run: |
+          cd web-dashboard
+          npm ci --ignore-scripts
+          npm audit --audit-level=high

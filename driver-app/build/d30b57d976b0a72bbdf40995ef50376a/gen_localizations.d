@@ -1,0 +1,1 @@
+ /workspace/driver-app/.dart_tool/flutter_gen/gen_l10n/app_localizations_am.dart /workspace/driver-app/.dart_tool/flutter_gen/gen_l10n/app_localizations_en.dart /workspace/driver-app/.dart_tool/flutter_gen/gen_l10n/app_localizations.dart:  /workspace/driver-app/l10n.yaml /workspace/driver-app/lib/l10n/app_am.arb /workspace/driver-app/lib/l10n/app_en.arb

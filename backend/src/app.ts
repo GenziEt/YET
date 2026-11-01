@@ -53,7 +53,7 @@ export async function buildApp() {
     // Proxy trust PINNED to known gateway addresses (audit P2): X-Forwarded-For
     // is honored only from TRUSTED_PROXIES entries — the rate-limit key can no
     // longer be spoofed if the API is ever exposed directly.
-    trustProxy: { trusted: buildTrustedMatcher(env.TRUSTED_PROXIES) },
+    trustProxy: buildTrustedMatcher(env.TRUSTED_PROXIES),
   });
 
   /** Compile a comma-separated IP/CIDR list into a Fastify trust-proxy fn.
