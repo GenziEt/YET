@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/app_runtime.dart';
+import '../../core/config/app_config.dart';
 import '../../core/sync/sync_worker.dart';
 import '../../core/theme/yet_theme.dart';
 import '../../core/widgets/status_chip.dart';
@@ -81,11 +82,25 @@ class _TripHomeScreenState extends State<TripHomeScreen>
 
   SyncWorker? get _worker => widget.sync ?? widget.runtime?.worker;
 
+  /// Storage-pressure percent shown in the Offline Contract banner (§1.8.6):
+  /// current cache bytes as a share of the hard storage cap. The worker keeps
+  /// [SyncWorker.lastPruneBytes] fresh on every prune pass — zero before the
+  /// first pass, so the banner simply reads "0%" until prune has measured.
+  String get _storageWarnPercent {
+    final w = _worker;
+    if (w == null) return '0';
+    final pct = (w.lastPruneBytes * 100 / AppConfig.storageHardCapBytes)
+        .clamp(0, 100)
+        .round();
+    return '$pct';
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _worker?.pendingCount.addListener(_onPendingChanged);
+    _worker?.storageWarning.addListener(_onStorageWarningChanged);
     // Reflect current backlog as soon as the screen opens (app-foreground
     // trigger of the Offline Contract state machine).
     _worker?.refreshPendingCount();
@@ -97,7 +112,9 @@ class _TripHomeScreenState extends State<TripHomeScreen>
     final oldWorker = oldWidget.sync ?? oldWidget.runtime?.worker;
     if (oldWorker != _worker) {
       oldWorker?.pendingCount.removeListener(_onPendingChanged);
+      oldWorker?.storageWarning.removeListener(_onStorageWarningChanged);
       _worker?.pendingCount.addListener(_onPendingChanged);
+      _worker?.storageWarning.addListener(_onStorageWarningChanged);
       _worker?.refreshPendingCount();
     }
   }
@@ -119,10 +136,17 @@ class _TripHomeScreenState extends State<TripHomeScreen>
     setState(() => _pendingSyncCount = _worker?.pendingCount.value ?? 0);
   }
 
+  /// §1.8.6: prune raised/cleared byte-pressure — repaint the storage banner.
+  void _onStorageWarningChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _worker?.pendingCount.removeListener(_onPendingChanged);
+    _worker?.storageWarning.removeListener(_onStorageWarningChanged);
     super.dispose();
   }
 
@@ -222,6 +246,9 @@ class _TripHomeScreenState extends State<TripHomeScreen>
 
   Widget _body(BuildContext context, AppLocalizations l) {
     final banner = _assignmentBanner(l);
+    // §1.8.6 Offline Contract: the prune pass flags byte-pressure on the
+    // worker; the driver must see it here (was computed, never displayed).
+    final showStorageWarning = _worker?.storageWarning.value ?? false;
     // Sync pill: live backlog count from the local cache; zero → calm green.
     final syncTone = _pendingSyncCount > 0 ? StatusTone.warn : StatusTone.ok;
     final syncLabel = _pendingSyncCount > 0
@@ -326,6 +353,17 @@ class _TripHomeScreenState extends State<TripHomeScreen>
                           icon: banner.$3,
                           message: banner.$1,
                           tone: banner.$2,
+                        ),
+                      ],
+                      // §1.8.6 storage-pressure banner (warn tone — the app
+                      // keeps evicting ACKED rows, but the driver should sync
+                      // while signal is good).
+                      if (showStorageWarning) ...[
+                        const SizedBox(height: 12),
+                        InlineAlert(
+                          icon: Icons.storage_rounded,
+                          message: l.storageWarning(_storageWarnPercent),
+                          tone: StatusTone.warn,
                         ),
                       ],
                       const Spacer(),

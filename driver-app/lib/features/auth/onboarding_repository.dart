@@ -272,6 +272,21 @@ class OnboardingRepository {
     await _postJson('/me/devices/revoke', {'device_id': device.deviceId});
     await tokens.clear();
   }
+
+  /// PDPP §1.7 self-service erasure receipt (Phase 5 deliverable C):
+  /// DELETE /driver/:id/location-history — raw fixes older than the erasure
+  /// window are deleted outright, the recent window downsampled; trip
+  /// aggregates/events are retained server-side by design. Backend enforces
+  /// DRIVER-self or ADMIN; completion is audit-logged before the 200, so the
+  /// returned JSON is a confirmable receipt for the driver.
+  Future<Map<String, dynamic>> requestLocationErasure(String driverId) async {
+    final res = await _client
+        .delete(_u('/driver/$driverId/location-history'),
+            headers: _jsonHeaders)
+        .timeout(const Duration(seconds: 60));
+    if (res.statusCode >= 400) throw _fail(res);
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
 }
 
 // ------------------------------- value types --------------------------------

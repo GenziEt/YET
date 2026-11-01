@@ -96,6 +96,13 @@ class SyncWorker {
   /// pendingCount listener pattern in AppRuntime).
   final ValueNotifier<bool> storageWarning = ValueNotifier<bool>(false);
 
+  /// Total cache bytes measured by the most recent [prune] pass (fixes +
+  /// sensors). Feeds the storageWarning banner's percent figure; 0 until the
+  /// first prune runs.
+  @visibleForTesting
+  int get lastPruneBytes => _lastPruneBytes;
+  int _lastPruneBytes = 0;
+
   Timer? _tripTimer;
   bool _running = false;
   bool _stopping = false;
@@ -291,6 +298,7 @@ class SyncWorker {
     final fixBytes = await dao.storageBytes();
     final sensorBytes = await sensorDao?.storageBytes() ?? 0;
     final bytes = fixBytes + sensorBytes; // §1.8.6 bounds the WHOLE local cache
+    _lastPruneBytes = bytes;
     var byBudget = 0;
     var warnDriver = false;
     if (bytes > AppConfig.storageWarnBytes) {

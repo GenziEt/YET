@@ -33,6 +33,10 @@ class AppRuntime extends ChangeNotifier {
     required this.pilot,
   }) {
     worker.pendingCount.addListener(notifyListeners);
+    // Offline Contract (§1.8): when the prune pass flags byte-pressure, the
+    // trip screen must surface the storageWarning banner — the notifier lives
+    // on the worker, propagated to listeners here.
+    worker.storageWarning.addListener(notifyListeners);
   }
 
   final FixDao dao;
@@ -174,6 +178,10 @@ class AppRuntime extends ChangeNotifier {
 
   int get pendingFixes => worker.pendingCount.value;
 
+  /// Byte-pressure flag from the last prune pass (Offline Contract). The trip
+  /// screen renders the storageWarning banner while this is true.
+  bool get storageWarning => worker.storageWarning.value;
+
   /// One-tap trip toggle from the home screen (§1.2 max-3-taps budget).
   ///
   /// START: confirm vehicle assignment via GET /me first, then apply the
@@ -237,6 +245,7 @@ class AppRuntime extends ChangeNotifier {
   @override
   void dispose() {
     worker.pendingCount.removeListener(notifyListeners);
+    worker.storageWarning.removeListener(notifyListeners);
     worker.dispose();
     super.dispose();
   }
