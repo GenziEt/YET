@@ -57,7 +57,9 @@ const SCRYPT_KEYLEN = 64;
 // synchronous verifyPassword/hashPassword pair is gone; do not reintroduce it.
 async function hashPassword(pw: string): Promise<string> {
   const salt = crypto.randomBytes(16);
-  const key = await crypto.scrypt(pw, salt, SCRYPT_KEYLEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P });
+  const key = await new Promise<Buffer>((resolve, reject) =>
+    crypto.scrypt(pw, salt, SCRYPT_KEYLEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P },
+      (err, derived) => err ? reject(err) : resolve(derived)));
   return `scrypt$${salt.toString('hex')}$${key.toString('hex')}`;
 }
 async function verifyPassword(pw: string, stored: string | null): Promise<boolean> {
@@ -67,7 +69,9 @@ async function verifyPassword(pw: string, stored: string | null): Promise<boolea
   if (!stored) return false;
   const [tag, saltHex, keyHex] = stored.split('$');
   if (tag !== 'scrypt' || !saltHex || !keyHex) return false;
-  const key = await crypto.scrypt(pw, Buffer.from(saltHex, 'hex'), SCRYPT_KEYLEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P });
+  const key = await new Promise<Buffer>((resolve, reject) =>
+    crypto.scrypt(pw, Buffer.from(saltHex, 'hex'), SCRYPT_KEYLEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P },
+      (err, derived) => err ? reject(err) : resolve(derived)));
   return crypto.timingSafeEqual(key, Buffer.from(keyHex, 'hex'));
 }
 
@@ -96,7 +100,7 @@ export default async function identityRoutes(app: FastifyInstance) {
       [body.identifier, body.identifier],
     );
     const user = rows[0];
-    if (!user || !user.is_active || !verifyPassword(body.password, user.password_hash)) {
+    if (!user || !user.is_active || !(await verifyPassword(body.password, user.password_hash))) {
       await audit({ action: 'login_failed', ip: req.ip });
       return reply.code(401).send({ error: 'invalid_credentials' });
     }
@@ -211,7 +215,7 @@ export default async function identityRoutes(app: FastifyInstance) {
       [body.identifier, body.identifier],
     );
     const user = rows[0];
-    if (!user || !user.is_active || !verifyPassword(body.password, user.password_hash)) {
+    if (!user || !user.is_active || !(await verifyPassword(body.password, user.password_hash))) {
       await audit({ action: 'bootstrap_failed', ip: req.ip });
       return reply.code(401).send({ error: 'invalid_credentials' });
     }
@@ -307,7 +311,7 @@ export async function ensureBootstrapAdmin() {
   await pool.query(
     `INSERT INTO users (role, full_name, email, password_hash)
      VALUES ('ADMIN', 'YET Admin', $1, $2) ON CONFLICT (email) DO NOTHING`,
-    [env.ADMIN_BOOTSTRAP_EMAIL, hashPassword(env.ADMIN_BOOTSTRAP_PASSWORD)],
+    [env.ADMIN_BOOTSTRAP_EMAIL, await hashPassword(env.ADMIN_BOOTSTRAP_PASSWORD)],
   );
 }
 

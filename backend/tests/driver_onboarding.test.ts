@@ -28,18 +28,18 @@ const DB = process.env.YET_TEST_DB;
 const d = DB ? describe : describe.skip;
 
 // env.ts (src/config/env.js) reads process.env AT IMPORT TIME and fail-fasts
-// without DATABASE_URL/JWT_SECRET — mirror phase0_gates/phase5_gates: set the
-// env BEFORE ANY dynamic import of src modules below, otherwise the first
-// `await import('../src/lib/redis.js')` transitively evaluates env.ts against
-// an unconfigured environment and CI dies before a single test runs.
-if (DB) {
-  process.env.DATABASE_URL = DB;
-  process.env.JWT_SECRET ??= 'onboarding-test-secret-0123456789abcdef';
-  process.env.NODE_ENV = 'test';
-  process.env.OTP_DEV_ECHO = 'false';
-}
+// (process.exit(1)) without DATABASE_URL/JWT_SECRET. This suite statically
+// awaits `import('../src/lib/redis.js')` at module scope — which happens even
+// when YET_TEST_DB is unset and every test is skipped — so the shim must be
+// UNCONDITIONAL (audit P1: driver_onboarding died with exit 1 in plain CI).
+// With YET_TEST_DB set we point DATABASE_URL at the real fixture DB.
+process.env.DATABASE_URL = DB ?? 'postgres://yet:postgres@127.0.0.1:5432/yet_test_unused';
+process.env.JWT_SECRET ??= 'onboarding-test-secret-0123456789abcdef';
+process.env.NODE_ENV = 'test';
+process.env.OTP_DEV_ECHO = 'false';
 
 const redis = await import('../src/lib/redis.js');
+const secrets = await import('../src/lib/secrets.js');
 interface Entry { v: string; expiresAt: number }
 function makeFake() {
   const map = new Map<string, Entry>();
@@ -67,13 +67,13 @@ function makeFake() {
 }
 
 // Deterministic OTP injection: bypasses the SMS leg entirely by writing the
-// hashed code into the fake cache exactly as the route does (hashOtp in
-// src/modules/identity/onboarding.ts — keep salt in sync). cacheSetJson is
-// async and the fake store only swaps in via setFakeCache; awaiting here keeps
-// the one-shot OTP semantics race-free across tests.
+// hashed code into the fake cache exactly as the route does. hashOtp is v2
+// HMAC-SHA256 keyed with src/lib/secrets.ts otpHashKey() — replicate it here
+// (keep in sync). Critical write path mirrors production (cacheSetJsonCritical).
 function putOtp(phone: string, code: string) {
-  const hash = crypto.createHash('sha256').update(`${phone}.${code}.yet-otp-v1`).digest('hex');
-  return redis.cacheSetJson(`otp:${phone}`, hash, 300);
+  const key = crypto.createHmac('sha256', secrets.otpHashKey())
+    .update(`v2.${phone}.${code}`).digest('hex');
+  return redis.cacheSetJsonCritical(`otp:${phone}`, key, 300);
 }
 
 d('driver onboarding without login (module 1, migration 0016)', () => {
