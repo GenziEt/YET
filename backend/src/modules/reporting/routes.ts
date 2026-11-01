@@ -198,7 +198,8 @@ export default async function reportingRoutes(app: FastifyInstance) {
              WHERE lf.driver_id = o.driver_id
                AND lf.fix_id = o.fix_id
                AND lf.fix_timestamp = o.fix_timestamp
-               AND (o.rn - 1) % $2 <> 0
+               AND (o.rn > $2 AND (o.rn - 1) % $2 <> 0)
+             RETURNING 1
            )
            SELECT (SELECT count(*) FROM old) AS scanned_old,
                   (SELECT count(*) FROM doomed) AS deleted`,

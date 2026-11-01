@@ -49,8 +49,10 @@ function intEnv(name, dflt) {
   return Number.isFinite(v) && v > 0 ? v : dflt;
 }
 
-// Same ordering + phase rule as retention_kernel.selectDownsample / downsampleWhereSql.
-const WHERE_DELETE = `(rn - 1) % ${KEEP_EVERY_N} <> 0`;
+// Same ordering + phase rule as retention_kernel.downsampleDeletePredicateSql:
+// first KEEP_EVERY_N rows of each driver's scanned stream are permanent anchors,
+// then every Nth thereafter — guarantees the daily re-run is idempotent.
+const WHERE_DELETE = `(rn > ${KEEP_EVERY_N} AND (rn - 1) % ${KEEP_EVERY_N} <> 0)`;
 
 const pool = new pg.Pool({ connectionString: DB_URL, max: 4 });
 
