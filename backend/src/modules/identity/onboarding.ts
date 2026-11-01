@@ -191,9 +191,12 @@ async function authGuard(
     return deny('unauthorized', 401);
   }
   const { rows } = await pool.query(
-    `SELECT id, role, fleet_id, is_active FROM users WHERE id = $1 LIMIT 1`, [claims.sub]);
+    `SELECT id, role, fleet_id, is_active, token_version FROM users WHERE id = $1 LIMIT 1`, [claims.sub]);
   const user = rows[0];
   if (!user || !user.is_active) return deny('account_inactive', 403);
+  // Pre-expiry revocation (audit P1): a bumped users.token_version kills every
+  // outstanding JWT for this principal immediately (device un-pair / suspend).
+  if ((claims.tokenVersion ?? 0) !== user.token_version) return deny('token_revoked', 401);
   if (user.fleet_id) {
     const st = await fleetStatus(user.fleet_id);
     if (st !== 'ACTIVE') return deny('fleet_suspended', 403);
