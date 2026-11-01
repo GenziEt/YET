@@ -270,13 +270,24 @@ d('Phase 0 gates (Postgres integration)', () => {
   /* ---------------------- 2. Fleet suspension denials ------------------------ */
 
   it('PATCH /fleets/:id/status SUSPENDED ⇒ login 403 fleet_suspended and ingest 403', async () => {
+    // Login leg uses a FLEET_MANAGER of fleet A with a real password hash.
+    // Driver rows are passwordless (migration 0016 trigger + the suite's own
+    // regression test below), so a driver login can NEVER reach the
+    // suspension gate — it dies at invalid_credentials first. The tenant
+    // check in /auth/login is role-agnostic; any fleet-A member proves it.
+    const mgrSus = randomUUID();
+    extraUserIds.push(mgrSus);
+    await poolX.query(
+      `INSERT INTO users (id, role, full_name, email, password_hash, locale, is_active, fleet_id)
+       VALUES ($1,'FLEET_MANAGER','P0G Susp Mgr',$2,$3,'en',true,$4)`,
+      [mgrSus, `p0g-mgrsus-${mgrSus.slice(0,8)}@yet.local`, scrypt('phase0-mgr-pw'), fleetA]);
     const adminToken = await login(`p0g-admin-${adminId.slice(0,8)}@yet.local`, 'phase0-admin-pw');
     const patch = await app.inject({ method: 'PATCH', url: `/fleets/${fleetA}/status`,
       headers: { authorization: `Bearer ${adminToken}` }, payload: { status: 'SUSPENDED' } });
     expect(patch.statusCode).toBe(200);
 
     const badLogin = await app.inject({ method: 'POST', url: '/auth/login',
-      payload: { identifier: `p0g-a-${driverA.slice(0,8)}@yet.local`, password: 'phase0-driver-pw' } });
+      payload: { identifier: `p0g-mgrsus-${mgrSus.slice(0,8)}@yet.local`, password: 'phase0-mgr-pw' } });
     expect(badLogin.statusCode).toBe(403);
     expect(JSON.parse(badLogin.body).error).toBe('fleet_suspended');
 
@@ -296,7 +307,7 @@ d('Phase 0 gates (Postgres integration)', () => {
       headers: { authorization: `Bearer ${adminToken}` }, payload: { status: 'ACTIVE' } });
     expect(react.statusCode).toBe(200);
     const goodLogin = await app.inject({ method: 'POST', url: '/auth/login',
-      payload: { identifier: `p0g-a-${driverA.slice(0,8)}@yet.local`, password: 'phase0-driver-pw' } });
+      payload: { identifier: `p0g-mgrsus-${mgrSus.slice(0,8)}@yet.local`, password: 'phase0-mgr-pw' } });
     expect(goodLogin.statusCode).toBe(200);
   });
 
@@ -455,13 +466,18 @@ d('Phase 0 gates (Postgres integration)', () => {
 
     // Keep the env-var-driven parts deterministic for this unit.
     const savedKeys = ['ECA_REGISTRATION_STATUS', 'ECA_REGISTRATION_NUMBER', 'PROCESSORS_ACTIVE',
-                       'DPA_HOSTING_PARTNER_REFERENCE', 'BREACH_NOTIFICATION_CONTACT'] as const;
+                       'DPA_HOSTING_PARTNER_REFERENCE', 'BREACH_NOTIFICATION_CONTACT',
+                       'HOSTING_COUNTRY'] as const;
     const saved = Object.fromEntries(savedKeys.map((k) => [k, process.env[k]]));
     try {
-      process.env.ECA_REGISTRATION_STATUS = 'submitted';
+      // Production boot requires CONFIRMED registration (runbook alignment:
+      // "submitted" is refused — see env.ts validateComplianceBoot). The
+      // happy-path baseline therefore starts at completed + number.
+      process.env.ECA_REGISTRATION_STATUS = 'completed';
       process.env.ECA_REGISTRATION_NUMBER = 'ECA-123456';
       delete process.env.PROCESSORS_ACTIVE;
       process.env.BREACH_NOTIFICATION_CONTACT = 'dpa@yet.et';
+      delete process.env.HOSTING_COUNTRY;
 
       const ok = validateComplianceBoot(base, true);
       expect(ok.errors).toEqual([]);
@@ -478,17 +494,27 @@ d('Phase 0 gates (Postgres integration)', () => {
       process.env.ECA_REGISTRATION_STATUS = 'not_started';
       expect(validateComplianceBoot(base, true).errors
         .some((e: string) => e.includes('Ethiopian Communications Authority'))).toBe(true);
-      // submitted without registration number blocks.
+      // submitted is NOT sufficient for the field pilot (PDPP §1.2 / runbook
+      // reconciliation): production refuses to boot on a bare submission even
+      // with a registration number recorded.
       process.env.ECA_REGISTRATION_STATUS = 'submitted';
+      expect(validateComplianceBoot(base, true).errors
+        .some((e: string) => e.includes('CONFIRMED'))).toBe(true);
+      // submitted without registration number also blocks (number requirement).
       process.env.ECA_REGISTRATION_NUMBER = '';
       expect(validateComplianceBoot(base, true).errors
-        .some((e: string) => e.includes('ECA_REGISTRATION_NUMBER'))).toBe(true);
+        .some((e: string) => e.includes('ECA_REGISTRATION_NUMBER') || e.includes('CONFIRMED'))).toBe(true);
       // Invalid status value rejected even in dev (always an error).
       process.env.ECA_REGISTRATION_NUMBER = 'ECA-123456';
       process.env.ECA_REGISTRATION_STATUS = 'banana';
       expect(validateComplianceBoot(base, false).errors
         .some((e: string) => e.includes('ECA_REGISTRATION_STATUS'))).toBe(true);
-      process.env.ECA_REGISTRATION_STATUS = 'submitted';
+      // completed WITHOUT an authority-assigned number blocks production.
+      process.env.ECA_REGISTRATION_STATUS = 'completed';
+      process.env.ECA_REGISTRATION_NUMBER = '';
+      expect(validateComplianceBoot(base, true).errors
+        .some((e: string) => e.includes('ECA_REGISTRATION_NUMBER'))).toBe(true);
+      process.env.ECA_REGISTRATION_NUMBER = 'ECA-123456';
 
       // Processor agreement required for active processors.
       process.env.PROCESSORS_ACTIVE = 'HOSTING_PARTNER';
@@ -514,6 +540,21 @@ d('Phase 0 gates (Postgres integration)', () => {
       // Replica inherits sovereignty.
       expect(validateComplianceBoot({ ...base, READER_DATABASE_URL: 'postgres://r:s@replica.eu-west-1.rds.amazonaws.com:5432/yet' }, true).errors
         .some((e: string) => e.includes('READER_DATABASE_URL'))).toBe(true);
+
+      // Compose-network DB hosts (infra/docker-compose.yml uses "postgres") are
+      // residency-compliant ONLY under an explicit HOSTING_COUNTRY=ET attestation
+      // — the P0 fix for the compose-vs-validator mismatch. Unattested: fail-closed.
+      const compose = { ...base, DATABASE_URL: 'postgres://u:p@postgres:5432/yet' };
+      delete process.env.HOSTING_COUNTRY;
+      expect(validateComplianceBoot(compose, true).errors
+        .some((e: string) => e.includes('data-residency'))).toBe(true);
+      process.env.HOSTING_COUNTRY = 'ET';
+      expect(validateComplianceBoot(compose, true).errors).toEqual([]);
+      // A non-Ethiopian attestation must NOT unlock the private-host allowance.
+      process.env.HOSTING_COUNTRY = 'DE';
+      expect(validateComplianceBoot(compose, true).errors
+        .some((e: string) => e.includes('data-residency'))).toBe(true);
+      delete process.env.HOSTING_COUNTRY;
     } finally {
       for (const k of savedKeys) {
         if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];

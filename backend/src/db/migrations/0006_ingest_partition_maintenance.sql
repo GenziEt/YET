@@ -22,3 +22,12 @@ END $$ LANGUAGE plpgsql;
 
 SELECT ensure_partition_range('location_fixes',  now() - INTERVAL '12 months', now() + INTERVAL '3 months');
 SELECT ensure_partition_range('sensor_events',   now() - INTERVAL '12 months', now() + INTERVAL '3 months');
+
+-- Production-readiness audit P1 (retention backfill): the retention job and
+-- its integration fixtures insert/read fixes older than the 12-month rolling
+-- window above (e.g. age_days sweeps over data from years past). Without this
+-- catch-up range those INSERTs abort with "no partition of relation
+-- location_fixes found for row". Pre-create 8 further years of monthly
+-- partitions for both time-partitioned tables; idempotent and bounded.
+SELECT ensure_partition_range('location_fixes',  now() - INTERVAL '96 months', now() - INTERVAL '12 months');
+SELECT ensure_partition_range('sensor_events',   now() - INTERVAL '96 months', now() - INTERVAL '12 months');
