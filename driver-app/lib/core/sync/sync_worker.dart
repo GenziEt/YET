@@ -88,6 +88,14 @@ class SyncWorker {
   /// Bound to the "X fixes pending sync" counter on the trip screen (§Phase 1).
   final ValueNotifier<int> pendingCount = ValueNotifier<int>(0);
 
+  /// §1.8.6 Offline Contract: `true` while the local cache sits above the
+  /// warn threshold (storageWarnBytes). Prune keeps evicting ACKED rows down
+  /// to budget, but the driver must SEE the pressure — [prune] raises this
+  /// flag whenever `warnedDriver` fires and clears it once usage drops back
+  /// under the threshold. The trip screen binds a banner to it (mirrors the
+  /// pendingCount listener pattern in AppRuntime).
+  final ValueNotifier<bool> storageWarning = ValueNotifier<bool>(false);
+
   Timer? _tripTimer;
   bool _running = false;
   bool _stopping = false;
@@ -143,6 +151,8 @@ class SyncWorker {
   Future<void> dispose() async {
     _tripTimer?.cancel();
     _tripTimer = null;
+    pendingCount.dispose();
+    storageWarning.dispose();
   }
 
   // ── Core loop ──────────────────────────────────────────────────────────────
@@ -289,6 +299,18 @@ class SyncWorker {
       // only ever evict ACKED rows, so nothing pre-upload is discarded.
       byBudget = await dao.pruneToStorageBudget(storageBudgetBytes) +
           (await sensorDao?.pruneToStorageBudget(storageBudgetBytes) ?? 0);
+    }
+    // Runtime propagation for the UI banner: raise on any over-threshold pass,
+    // clear once the cache is back under the warn line (re-measured AFTER the
+    // budget eviction above — stale pressure must not keep nagging the driver).
+    if (warnDriver) {
+      storageWarning.value = true;
+    } else if (storageWarning.value) {
+      final afterFix = await dao.storageBytes();
+      final afterSensor = await sensorDao?.storageBytes() ?? 0;
+      if (afterFix + afterSensor <= AppConfig.storageWarnBytes) {
+        storageWarning.value = false;
+      }
     }
     return PruneReport(deletedByAge: byAge, deletedByBudget: byBudget, warnedDriver: warnDriver);
   }
