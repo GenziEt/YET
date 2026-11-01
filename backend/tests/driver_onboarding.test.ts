@@ -27,6 +27,11 @@ import { randomUUID } from 'node:crypto';
 const DB = process.env.YET_TEST_DB;
 const d = DB ? describe : describe.skip;
 
+// env.ts (src/config/env.js) reads process.env AT IMPORT TIME and fail-fasts
+// without DATABASE_URL/JWT_SECRET — mirror phase0_gates/phase5_gates: set the
+// env BEFORE ANY dynamic import of src modules below, otherwise the first
+// `await import('../src/lib/redis.js')` transitively evaluates env.ts against
+// an unconfigured environment and CI dies before a single test runs.
 if (DB) {
   process.env.DATABASE_URL = DB;
   process.env.JWT_SECRET ??= 'onboarding-test-secret-0123456789abcdef';
@@ -62,10 +67,13 @@ function makeFake() {
 }
 
 // Deterministic OTP injection: bypasses the SMS leg entirely by writing the
-// hashed code into the fake cache exactly as the route does.
+// hashed code into the fake cache exactly as the route does (hashOtp in
+// src/modules/identity/onboarding.ts — keep salt in sync). cacheSetJson is
+// async and the fake store only swaps in via setFakeCache; awaiting here keeps
+// the one-shot OTP semantics race-free across tests.
 function putOtp(phone: string, code: string) {
   const hash = crypto.createHash('sha256').update(`${phone}.${code}.yet-otp-v1`).digest('hex');
-  redis.cacheSetJson(`otp:${phone}`, JSON.parse(JSON.stringify(hash)), 300);
+  return redis.cacheSetJson(`otp:${phone}`, hash, 300);
 }
 
 d('driver onboarding without login (module 1, migration 0016)', () => {
@@ -184,7 +192,7 @@ d('driver onboarding without login (module 1, migration 0016)', () => {
   });
 
   it('registers once: no password, Unassigned Fleet, PENDING_REVIEW, device paired, token issued', async () => {
-    putOtp(PHONE, '123456');
+    await putOtp(PHONE, '123456');
     const res = await app.inject({ method: 'POST', url: '/auth/register', payload: {
       phone: PHONE, otp_code: '123456', device_id: DEVICE, full_name: 'Ovg Driver',
       license_number: 'OB-LIC-001', license_class: 'C', association_name: 'Adama Truck Owners',
@@ -246,7 +254,7 @@ d('driver onboarding without login (module 1, migration 0016)', () => {
   });
 
   it('re-registration with the SAME phone reuses the person-account (identity ≠ plate)', async () => {
-    putOtp(PHONE, '654321');
+    await putOtp(PHONE, '654321');
     const res = await app.inject({ method: 'POST', url: '/auth/register', payload: {
       phone: PHONE, otp_code: '654321', device_id: DEVICE, full_name: 'Ovg Driver Renamed',
       license_number: 'OB-LIC-001',
@@ -492,7 +500,7 @@ d('driver onboarding without login (module 1, migration 0016)', () => {
     expect(JSON.parse(refresh.body).error).toBe('device_not_paired');
 
     // Re-pair via OTP — no password anywhere in the flow.
-    putOtp(PHONE, '246810');
+    await putOtp(PHONE, '246810');
     const NEWDEV = `dev-new-${randomUUID().slice(0, 8)}`;
     const pair = await app.inject({ method: 'POST', url: '/auth/pair-device', payload: {
       phone: PHONE, otp_code: '246810', device_id: NEWDEV, platform: 'android',
