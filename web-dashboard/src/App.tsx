@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react';
+import AuthGate from './components/AuthGate';
 import DashboardPage from './pages/DashboardPage';
 import RawFixesPage from './pages/RawFixesPage';
 import ZonesPage from './pages/ZonesPage';
 import PilotPage from './pages/PilotPage';
 import ReportsPage from './pages/ReportsPage';
 import DriversPage from './pages/DriversPage';
+import NotificationsPage from './pages/NotificationsPage';
+import AssetsPage from './pages/AssetsPage';
 
-type View = 'fleet' | 'fixes' | 'zones' | 'pilot' | 'reports' | 'drivers';
+type View = 'fleet' | 'fixes' | 'zones' | 'pilot' | 'reports' | 'drivers' | 'notifications' | 'assets';
 
 const VIEWS: { id: View; label: string; icon: JSX.Element }[] = [
   {
@@ -62,6 +65,24 @@ const VIEWS: { id: View; label: string; icon: JSX.Element }[] = [
     icon: (
       <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M6 3h9l4 4v14H6z" /><path d="M14 3v5h5" /><path d="M9 13h6M9 17h6" />
+      </svg>
+    ),
+  },
+  {
+    id: 'notifications',
+    label: 'Notifications',
+    icon: (
+      <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M6 9a6 6 0 1112 0c0 5 2 6 2 6H4s2-1 2-6z" /><path d="M10 19a2 2 0 004 0" />
+      </svg>
+    ),
+  },
+  {
+    id: 'assets',
+    label: 'Vehicles & fleets',
+    icon: (
+      <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M2 16V7h11v9M13 10h4l3 3v3" /><circle cx="6.5" cy="17.5" r="1.8" /><circle cx="16.5" cy="17.5" r="1.8" />
       </svg>
     ),
   },
@@ -130,7 +151,9 @@ export default function App() {
           </button>
         </div>
         <div id="main-content" className="page-host">
-          {view === 'fixes' ? <RawFixesPage /> : view === 'zones' ? <ZonesPage /> : view === 'pilot' ? <PilotPage /> : view === 'reports' ? <ReportsPage /> : view === 'drivers' ? <DriversPage /> : <DashboardPage />}
+          <AuthGate>
+            {view === 'fixes' ? <RawFixesPage /> : view === 'zones' ? <ZonesPage /> : view === 'pilot' ? <PilotPage /> : view === 'reports' ? <ReportsPage /> : view === 'drivers' ? <DriversPage /> : view === 'notifications' ? <NotificationsPage /> : view === 'assets' ? <AssetsPage /> : <DashboardPage />}
+          </AuthGate>
         </div>
       </div>
     </div>

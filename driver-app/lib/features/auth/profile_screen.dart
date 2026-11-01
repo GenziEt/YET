@@ -33,6 +33,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _loading = true;
   String? _errorKey;
 
+  /// PDPP §1.7 self-service erasure state: receipt of the last successful
+  /// request (shown as a banner) and the last failure (retry affordance).
+  Map<String, dynamic>? _erasureReceipt;
+  bool _erasureFailed = false;
+  bool _erasing = false;
+
   @override
   void initState() {
     super.initState();
@@ -117,6 +123,52 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  /// PDPP §1.7 right-to-erasure: confirm dialog → DELETE
+  /// /driver/:id/location-history → receipt banner (deleted_rows +
+  /// completed_at) or failure banner with retry. Trip aggregates/events are
+  /// retained server-side; the copy says so — never promise more than ships.
+  Future<void> _requestErasure() async {
+    final l = AppLocalizations.of(context);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l.obErasureConfirmTitle),
+        content: Text(l.obErasureConfirmBody(_retentionDays)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(ctx).colorScheme.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l.obErasureAction),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final driverId = widget.repo.tokens.driverId ??
+        '${_profile?['id'] ?? ''}';
+    setState(() {
+      _erasing = true;
+      _erasureFailed = false;
+    });
+    try {
+      if (driverId.isEmpty) throw const OnboardingException(0, 'no_driver_id');
+      final receipt = await widget.repo.requestLocationErasure(driverId);
+      if (!mounted) return;
+      setState(() {
+        _erasing = false;
+        _erasureReceipt = receipt;
+      });
+    } on OnboardingException {
+      if (!mounted) return;
+      setState(() {
+        _erasing = false;
+        _erasureFailed = true;
+      });
+    }
+  }
+
   Future<void> _signOut() async {
     final ok = await showDialog<bool>(
       context: context,
@@ -137,6 +189,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
       setState(() => _errorKey = 'network');
     }
   }
+
+  /// Matches the consent screen's promised window (PDPP: raw fixes kept 90
+  /// days, then reduced to summaries) — same number the backend enforces.
+  static const int _retentionDays = 90;
 
   Widget _row(String label, String value) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
@@ -197,6 +253,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 final m = (d as Map).cast<String, dynamic>();
                 return _row('${m['doc_type']}', '${m['status']}');
               }),
+              const Divider(height: 32),
+              // ---- PDPP §1.7 self-service erasure --------------------------
+              Text(l.obErasureTitle, style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 4),
+              Text(l.obErasureBody, style: Theme.of(context).textTheme.bodyMedium),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                icon: _erasing
+                    ? const SizedBox(
+                        width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.location_off_outlined),
+                label: Text(l.obErasureAction),
+                onPressed: _erasing ? null : _requestErasure,
+              ),
+              if (_erasureReceipt != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.secondaryContainer,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      l.obErasureDone('${_erasureReceipt!['deleted_rows'] ?? 0}'),
+                    ),
+                  ),
+                ),
+              if (_erasureFailed)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(l.obErasureFailed,
+                      style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                ),
               const Divider(height: 32),
               TextButton.icon(
                 style: TextButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.error),

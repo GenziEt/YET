@@ -30,16 +30,36 @@ export async function login(identifier: string, password: string): Promise<{ rol
   const body = await res.json() as { access_token: string; role: string };
   localStorage.setItem('yet_token', body.access_token);
   localStorage.setItem('yet_role', body.role);
+  notifySessionChange();
   return { role: body.role };
 }
 
 export const logout = () => {
   localStorage.removeItem('yet_token');
   localStorage.removeItem('yet_role');
+  notifySessionChange();
 };
 
 export const currentRole = () => localStorage.getItem('yet_role');
 export const hasToken = () => !!localStorage.getItem('yet_token');
+
+/** Lightweight pub/sub so a login/logout in one place updates the session
+ *  indicator + auth gate everywhere (App.tsx, DriversPage, …) without prop
+ *  drilling. localStorage alone doesn't notify same-tab listeners. */
+type SessionListener = () => void;
+const sessionListeners = new Set<SessionListener>();
+export function subscribeSession(fn: SessionListener): () => void {
+  sessionListeners.add(fn);
+  return () => sessionListeners.delete(fn);
+}
+export function notifySessionChange() {
+  for (const fn of sessionListeners) fn();
+}
+
+/** Roles allowed to sign into the dashboard (drivers have no dashboard
+ *  account — their session is device pairing inside the app). */
+export const MANAGER_ROLES: ReadonlySet<string> = new Set(['FLEET_MANAGER', 'ADMIN']);
+export const isManagerRole = (role: string | null) => role !== null && MANAGER_ROLES.has(role);
 
 export interface HealthResponse {
   service: string; version: string; phase: string; db: 'ok' | 'degraded'; time: string;
@@ -544,3 +564,33 @@ export const getAdminTrailers = () =>
 /** Fleet directory (for the "move to fleet" picker). Mirrors GET /fleets. */
 export interface FleetRow { id: string; name: string; status: string }
 export const getFleets = () => api<{ count: number; fleets: FleetRow[] }>('/fleets');
+
+/* ---------------------------------------------------------------------------
+ * Assets & notifications screens (Phase 5 audit follow-up). Read-only views
+ * over contracts that already ship:
+ *   GET /admin/vehicles | /admin/trailers | /fleets     (identity module)
+ *   GET /notifications/log?event_type&status&limit      (notification module)
+ * POST /fleets + PATCH /fleets/:id/status exist backend-side (ADMIN only);
+ * vehicle CRUD is NOT part of the Phase 5 contract, so this screen stays
+ * honest and read-only for assets — creation happens through driver/B2B
+ * assignment flows.
+ * ------------------------------------------------------------------------- */
+
+export interface FleetDetailRow extends FleetRow {
+  agreement_ref: string | null;
+  created_at: string;
+  member_count: number;
+  vehicle_count: number;
+}
+
+export const createFleet = (name: string, agreementRef?: string) =>
+  api<FleetDetailRow>('/fleets', {
+    method: 'POST',
+    body: JSON.stringify({ name, agreement_ref: agreementRef }),
+  });
+
+export const setFleetStatus = (fleetId: string, status: 'ACTIVE' | 'SUSPENDED') =>
+  api<{ id: string; name: string; status: string }>(
+    `/fleets/${encodeURIComponent(fleetId)}/status`,
+    { method: 'PATCH', body: JSON.stringify({ status }) },
+  );

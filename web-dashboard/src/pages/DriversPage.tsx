@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSession } from '../components/AuthGate';
 import {
   ApiError,
   adminAssignTrailer,
   adminAssignVehicle,
-  currentRole,
   fetchDriverDocumentBlob,
   getAdminDrivers,
   getAdminTrailers,
@@ -51,7 +51,10 @@ function fmtDate(iso: string | null): string {
 }
 
 export default function DriversPage() {
-  const role = currentRole();
+  // Role now comes from the live session (App-level AuthGate) instead of a
+  // one-shot localStorage read — sign-in/out flips isAdmin without remount,
+  // and the /admin/* list fetch only fires once a manager JWT exists.
+  const role = useSession();
   const isAdmin = role === 'ADMIN';
 
   const [status, setStatus] = useState<DriverQueueStatus>('PENDING');
@@ -118,9 +121,10 @@ export default function DriversPage() {
   }, [status, search]);
 
   useEffect(() => {
+    if (!role) return; // AuthGate shows the sign-in card until a manager JWT exists
     const t = setTimeout(() => void loadList(), search ? 300 : 0); // debounce typing
     return () => clearTimeout(t);
-  }, [loadList, search]);
+  }, [loadList, search, role]);
 
   const openDossier = useCallback(async (id: string) => {
     setSelectedId(id);
