@@ -137,6 +137,7 @@
   "obLicenseDocMandatory": "Driving license photo - REQUIRED",
   "obTakePhoto": "Take photo / choose file",
   "obUploaded": "Uploaded - waiting for review",
+  "obDocsNoneEmpty": "No documents uploaded yet — tap Upload your documents to start.",
   "obUploadFailed": "Upload failed. Check network and try again.",
   "obSkipOptionalDocs": "Skip for now",
   "obPendingTitle": "Waiting for approval",

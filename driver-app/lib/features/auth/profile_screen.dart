@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/theme/yet_theme.dart';
 import '../../l10n/app_localizations.dart';
 import 'onboarding_repository.dart';
 
@@ -248,7 +249,28 @@ class _ProfileScreenState extends State<ProfileScreen> {
               const Divider(height: 32),
               Text(l.obDocsTitle, style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 8),
-              if (docs.isEmpty) Text(l.obUploaded),
+              // Empty state (audit item): docs.isEmpty means nothing uploaded
+              // yet — say so with an icon + caption instead of the misleading
+              // "Uploaded - waiting for review" row. obUploaded stays owned by
+              // document_upload_screen.dart (post-upload confirmation), which
+              // keeps the ARB↔getter parity test honest while giving every
+              // new key a real call site.
+              if (docs.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Row(
+                    children: [
+                      Icon(Icons.folder_open_outlined,
+                          size: 20, color: YetTheme.inkSoft),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(l.obDocsNoneEmpty,
+                            style: TextStyle(
+                                fontSize: 14, color: YetTheme.inkSoft)),
+                      ),
+                    ],
+                  ),
+                ),
               ...docs.map((d) {
                 final m = (d as Map).cast<String, dynamic>();
                 return _row('${m['doc_type']}', '${m['status']}');
