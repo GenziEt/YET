@@ -72,6 +72,48 @@ export async function cacheSetJson(key: string, value: unknown, ttlSeconds: numb
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * FAIL-CRITICAL variants (production-readiness audit, P1 "silent OTP write").
+ *
+ * The degradation contract above (cache outage = miss, never correctness loss)
+ * is right for ROUTE/GEOCODE/FLEET-STATE caches. It is WRONG for OTP codes and
+ * registration tickets: those keys ARE the authentication state. If Redis is
+ * down and cacheSetJson swallows the error, the driver is told "code sent"
+ * while nothing was stored — they can never verify, and an operator reading
+ * logs believes delivery succeeded. Availability theatre that breaks auth must
+ * fail closed instead: these variants RE-THROW on cache errors so the route
+ * returns 503 rather than a false success. Use them for every key whose
+ * absence denies service to a legitimate user (otp:{phone}, otp_ticket:*).
+ * ------------------------------------------------------------------------- */
+export async function cacheSetJsonCritical(key: string, value: unknown, ttlSeconds: number): Promise<void> {
+  const payload = JSON.stringify(value);
+  const ttl = Math.max(1, Math.round(ttlSeconds));
+  if (fakeStore) { fakeStore.set(key, payload, ttl); return; }
+  await getRedis().set(key, payload, 'EX', ttl); // throws -> caller answers 503
+}
+
+/** Read counterpart for auth-state keys: a Redis ERROR must be distinguishable
+ *  from a MISS. cacheGetJson collapses both into null (correct for caches);
+ *  here a thrown error means "we cannot tell", and the caller must NOT treat
+ *  it as "no code stored" — that would let an outage masquerade as an invalid
+ *  OTP (wrong retry semantics, misleading audits). Throws on transport error. */
+export async function cacheGetJsonCritical<T = unknown>(key: string): Promise<T | null> {
+  if (fakeStore) {
+    const raw = fakeStore.get(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  }
+  const raw = await getRedis().get(key); // throws -> caller answers 503
+  return raw ? (JSON.parse(raw) as T) : null;
+}
+
+/** Del counterpart for one-shot auth keys: consuming an OTP/ticket MUST be
+ *  confirmed. A swallowed error here would allow replay of a verified code.
+ *  Throws on transport error. */
+export async function cacheDelCritical(key: string): Promise<void> {
+  if (fakeStore) { fakeStore.del(key); return; }
+  await getRedis().del(key); // throws -> surfaced to caller
+}
+
 /** Prefix scan for invalidation indexes (e.g. all route keys that were written
  *  through a given destination geofence). Uses SCAN (non-blocking), never KEYS. */
 export async function cacheKeysByPrefix(prefix: string): Promise<string[]> {
