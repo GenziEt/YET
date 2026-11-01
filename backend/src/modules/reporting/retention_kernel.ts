@@ -53,3 +53,18 @@ export function selectDownsample(rows: RetentionRow[], policy: RetentionPolicy =
 export function downsampleWhereSql(keepEveryN: number): string {
   return `(rn - 1) % ${Math.max(1, Math.trunc(keepEveryN))} <> 0`;
 }
+
+/**
+ * Idempotence-safe DELETE predicate. The plain phase test above deletes rows
+ * whose renumbered position lands on a delete phase — but after the first pass
+ * survivors renumber (e.g. old rn 12 becomes rn 2), so a naive re-run would
+ * keep pruning previously-kept anchors and never stabilize. Adding `rn <= N`
+ * pins the first N rows of every driver's scanned stream as permanent anchors:
+ *   pass 1: keeps rn 1 & 11 of 15; pass 2: survivors rank 1..4 ⇒ nothing new
+ *   qualifies ((rn-1)%N==0 only at rn=1 ≤ N). Fixed point reached immediately,
+ *   matching selectDownsample()'s documented stability contract.
+ */
+export function downsampleDeletePredicateSql(keepEveryN: number): string {
+  const n = Math.max(1, Math.trunc(keepEveryN));
+  return `(rn > ${n} AND (rn - 1) % ${n} <> 0)`;
+}
