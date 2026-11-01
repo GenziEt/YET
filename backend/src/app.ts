@@ -147,7 +147,10 @@ export async function buildApp() {
     const KNOWN_DENIALS = ['consent_required', 'fleet_suspended', 'cross_fleet_denied',
                            'forbidden_role', 'target_not_found',
                            // Driver onboarding (no-login model): fail-closed states.
-                           'account_inactive', 'account_suspended', 'unauthorized'];
+                           'account_inactive', 'account_suspended', 'unauthorized',
+                           // OTP storage is auth state, not cache: a Redis outage
+                           // surfaces as 503, never a false "code sent" (P1 audit).
+                           'otp_storage_unavailable'];
     if (typeof e?.message === 'string' && KNOWN_DENIALS.includes(e.message)) {
       return reply.code(e.statusCode ?? 403).send({ error: e.message });
     }

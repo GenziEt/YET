@@ -9,7 +9,8 @@ import { pool } from '../../db/pool.js';
 import { signAccessToken } from '../../lib/jwt.js';
 import { audit } from '../../lib/audit.js';
 import { env, isProd } from '../../config/env.js';
-import { cacheGetJson, cacheSetJson, cacheDel } from '../../lib/redis.js';
+import { cacheGetJsonCritical, cacheSetJsonCritical, cacheDelCritical } from '../../lib/redis.js';
+import { otpHashKey } from '../../lib/secrets.js';
 
 /**
  * Module 1 — Driver onboarding WITHOUT a traditional login.
@@ -124,8 +125,27 @@ function normalizePhone(raw: string): string {
   throw Object.assign(new Error('invalid_phone_format'), { statusCode: 400 });
 }
 
+/** OTP-at-rest digest (production-readiness audit, P1 "unsalted SHA-256").
+ *  Format version 2 = HMAC-SHA256 keyed with server secret material
+ *  (src/lib/secrets.ts). An unsalted SHA-256 of phone.code.separator is a
+ *  closed 10^6 candidate space: anyone holding a stray Redis RDB/AOF snapshot
+ *  or backup could brute-force every live code offline, because the phone is
+ *  public to the attacker. HMAC makes verification require the key, which
+ *  never leaves the process memory (or OTP_HASH_SECRET when configured).
+ *  v1 remains listed for documentation; no dual acceptance — codes live 5 min
+ *  and are one-shot, so a rolling deploy simply re-mints any in-flight code. */
 function hashOtp(code: string, phone: string): string {
-  return crypto.createHash('sha256').update(`${phone}.${code}.yet-otp-v1`).digest('hex');
+  return crypto.createHmac('sha256', otpHashKey())
+    .update(`v2.${phone}.${code}`)
+    .digest('hex');
+}
+
+/** Auth-state cache keys must NEVER degrade silently: if Redis is unreachable
+ *  we answer 503 otp_storage_unavailable rather than pretend a code was
+ *  stored (false "code sent") or pretend it was absent (misleading invalid). */
+function cacheUnavailable(err: unknown): never | Promise<any> {
+  void err;
+  throw Object.assign(new Error('otp_storage_unavailable'), { statusCode: 503 });
 }
 
 function opaqueToken(): string {
@@ -241,8 +261,15 @@ export default async function onboardingRoutes(app: FastifyInstance) {
     }
 
     const code = String(crypto.randomInt(100000, 1000000));
-    // Codes live ONLY in Redis, hashed at rest, short TTL (never persisted).
-    await cacheSetJson(`otp:${phone}`, hashOtp(code, phone), env.OTP_TTL_S);
+    // Codes live ONLY in Redis, HMAC-hashed at rest, short TTL (never persisted).
+    // FAIL-CLOSED (P1 audit): if the cache write throws we answer 503 — never a
+    // false "code sent" while nothing was stored (the driver could never verify).
+    try {
+      await cacheSetJsonCritical(`otp:${phone}`, hashOtp(code, phone), env.OTP_TTL_S);
+    } catch (err) {
+      await audit({ action: 'otp_storage_unavailable', ip: req.ip, detail: { phone, stage: 'request' } });
+      return reply.code(503).send({ error: 'otp_storage_unavailable' });
+    }
     await pool.query(`INSERT INTO otp_requests (phone_e164, purpose, ip) VALUES ($1, 'REGISTER', $2)`,
       [phone, /\d/.test(req.ip ?? '') ? req.ip : null]);
     const sent = await sendOtpSms(phone, code);
@@ -262,13 +289,22 @@ export default async function onboardingRoutes(app: FastifyInstance) {
     if (!parsed.success) return reply.code(400).send({ error: 'validation_failed', detail: parsed.error.flatten() });
     const phone = normalizePhone(parsed.data.phone);
     const key = `otp:${phone}`;
-    const expected = await cacheGetJson<string>(key);
+    let expected: string | null;
+    try {
+      expected = await cacheGetJsonCritical<string>(key);
+    } catch {
+      return reply.code(503).send({ error: 'otp_storage_unavailable' });
+    }
     if (!expected || !timingSafeEq(expected, hashOtp(parsed.data.code, phone))) {
       return reply.code(400).send({ error: 'otp_expired_or_invalid' });
     }
-    await cacheDel(key); // one-shot: a verified code cannot be replayed
-    const ticket = opaqueToken();
-    await cacheSetJson(`otp_ticket:${ticket}`, { phone, device_id: parsed.data.device_id }, 900);
+    try {
+      await cacheDelCritical(key); // one-shot: a verified code cannot be replayed
+      const ticket = opaqueToken();
+      await cacheSetJsonCritical(`otp_ticket:${ticket}`, { phone, device_id: parsed.data.device_id }, 900);
+    } catch {
+      return reply.code(503).send({ error: 'otp_storage_unavailable' });
+    }
     await audit({ action: 'otp_verified', ip: req.ip, detail: { phone } });
     return { registration_ticket: ticket, expires_in_s: 900 };
   });
@@ -280,7 +316,12 @@ export default async function onboardingRoutes(app: FastifyInstance) {
     const src = req.method === 'GET' ? req.query : req.body;
     const parsed = TicketCheckSchema.safeParse(src);
     if (!parsed.success) return reply.code(400).send({ error: 'validation_failed' });
-    const tVal = await cacheGetJson<{ phone: string; device_id: string }>(`otp_ticket:${parsed.data.registration_ticket}`);
+    let tVal: { phone: string; device_id: string } | null;
+    try {
+      tVal = await cacheGetJsonCritical<{ phone: string; device_id: string }>(`otp_ticket:${parsed.data.registration_ticket}`);
+    } catch {
+      return reply.code(503).send({ error: 'otp_storage_unavailable' });
+    }
     const ok = !!tVal && tVal.phone === normalizePhone(parsed.data.phone) && tVal.device_id === parsed.data.device_id;
     return { valid: ok };
   };
@@ -305,18 +346,28 @@ export default async function onboardingRoutes(app: FastifyInstance) {
     //     direct code re-check. Both are one-shot.
     if (b.registration_ticket) {
       const tKey = `otp_ticket:${b.registration_ticket}`;
-      const tVal = await cacheGetJson<{ phone: string; device_id: string }>(tKey);
+      let tVal: { phone: string; device_id: string } | null;
+      try {
+        tVal = await cacheGetJsonCritical<{ phone: string; device_id: string }>(tKey);
+      } catch {
+        return reply.code(503).send({ error: 'otp_storage_unavailable' });
+      }
       if (!tVal || tVal.phone !== phone || tVal.device_id !== b.device_id) {
         return reply.code(400).send({ error: 'registration_ticket_invalid' });
       }
-      await cacheDel(tKey);
+      try { await cacheDelCritical(tKey); } catch { /* already validated; TTL bounds residue */ }
     } else if (b.otp_code) {
       const key = `otp:${phone}`;
-      const expected = await cacheGetJson<string>(key);
+      let expected: string | null;
+      try {
+        expected = await cacheGetJsonCritical<string>(key);
+      } catch {
+        return reply.code(503).send({ error: 'otp_storage_unavailable' });
+      }
       if (!expected || !timingSafeEq(expected, hashOtp(b.otp_code, phone))) {
         return reply.code(400).send({ error: 'otp_expired_or_invalid' });
       }
-      await cacheDel(key);
+      try { await cacheDelCritical(key); } catch { /* one-shot consumed logically; TTL bounds residue */ }
     } else {
       return reply.code(400).send({ error: 'otp_required', hint: 'POST /auth/register/otp/verify first' });
     }
@@ -480,11 +531,16 @@ export default async function onboardingRoutes(app: FastifyInstance) {
     const b = parsed.data;
     const phone = normalizePhone(b.phone);
     const key = `otp:${phone}`;
-    const expected = await cacheGetJson<string>(key);
+    let expected: string | null;
+    try {
+      expected = await cacheGetJsonCritical<string>(key);
+    } catch {
+      return reply.code(503).send({ error: 'otp_storage_unavailable' });
+    }
     if (!expected || !timingSafeEq(expected, hashOtp(b.otp_code, phone))) {
       return reply.code(400).send({ error: 'otp_expired_or_invalid' });
     }
-    await cacheDel(key);
+    try { await cacheDelCritical(key); } catch { /* one-shot consumed logically; TTL bounds residue */ }
     const { rows } = await pool.query(
       `SELECT id, role, is_active, fleet_id FROM users WHERE phone_e164 = $1`, [phone]);
     const u = rows[0];

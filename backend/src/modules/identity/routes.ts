@@ -35,20 +35,39 @@ const ConsentSchema = z.object({
   app_version: z.string().optional(),
 });
 
+// Scrypt cost parameters (production-readiness audit: "document the cost
+// choice"). N=2^14 r=8 p=1 are Node's defaults — ~64 MB memory / ~50-100 ms
+// per hash on the pilot VPS (4 cores). We deliberately KEEP the default cost:
+// the login surface is tiny (fleet managers/admins only — drivers authenticate
+// via OTP+device pairing, migration 0016), rate limiting caps attempts at the
+// proxy AND in-app, and raising N would multiply event-loop pressure without a
+// threat-model need. If staff logins ever become hot, raise N to 2^15 here —
+// the format string carries no cost data, so it MUST be bumped together with a
+// re-hash-on-next-login migration, never silently.
+const SCRYPT_N = 2 ** 14;   // CPU/memory cost
+const SCRYPT_R = 8;         // block size
+const SCRYPT_P = 1;         // parallelization
+const SCRYPT_KEYLEN = 64;
+
 // Password hashing without native deps (low-end server constraint parity): scrypt.
-function hashPassword(pw: string): string {
+// ASYNC variants only (audit P1: crypto.scryptSync BLOCKS THE EVENT LOOP on the
+// login/session path — under brute-force load every concurrent request stalls
+// behind each 50-100 ms hash). crypto.scrypt runs on libuv's thread pool, so
+// throughput scales with cores instead of serializing on one thread. The
+// synchronous verifyPassword/hashPassword pair is gone; do not reintroduce it.
+async function hashPassword(pw: string): Promise<string> {
   const salt = crypto.randomBytes(16);
-  const key = crypto.scryptSync(pw, salt, 64);
+  const key = await crypto.scrypt(pw, salt, SCRYPT_KEYLEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P });
   return `scrypt$${salt.toString('hex')}$${key.toString('hex')}`;
 }
-function verifyPassword(pw: string, stored: string | null): boolean {
+async function verifyPassword(pw: string, stored: string | null): Promise<boolean> {
   // Passwordless accounts (e.g. driver rows created by migration 0016 carry a
   // NULL password_hash until bootstrap) can never authenticate via password —
   // treat as invalid credentials instead of crashing on null.split().
   if (!stored) return false;
   const [tag, saltHex, keyHex] = stored.split('$');
   if (tag !== 'scrypt' || !saltHex || !keyHex) return false;
-  const key = crypto.scryptSync(pw, Buffer.from(saltHex, 'hex'), 64);
+  const key = await crypto.scrypt(pw, Buffer.from(saltHex, 'hex'), SCRYPT_KEYLEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P });
   return crypto.timingSafeEqual(key, Buffer.from(keyHex, 'hex'));
 }
 
