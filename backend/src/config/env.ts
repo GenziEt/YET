@@ -11,6 +11,13 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().int().default(3000),
   HOST: z.string().default('0.0.0.0'),
 
+  // PDPP §1.7 hosting attestation: two-letter country code where the DB host
+  // physically resides. Production residency validation for private compose
+  // service names (postgres/db/...) requires HOSTING_COUNTRY=ET; it does NOT
+  // replace the organizational verification of the Ethiopian data-center
+  // partner (docs/COMPLIANCE-PDPP.md) — it makes the code gate deployable.
+  HOSTING_COUNTRY: z.string().length(2).optional().transform((v) => v?.toUpperCase()),
+
   DATABASE_URL: z.string().startsWith('postgres', 'DATABASE_URL must be a Postgres URL stored in Ethiopia (§1.7)'),
   // §1.10.3 read/write separation: Reporting reads here when set. Must also be an
   // Ethiopian-resident replica (PDPP §1.7) — replicas inherit the sovereignty rule.
@@ -146,6 +153,14 @@ export const ETHIOPIA_RESIDENCY_COUNTRY_CODES = ['et'] as const;
 /** Hostname suffixes known to terminate inside Ethiopia (hosting partner). */
 const RESIDENCY_HOST_SUFFIXES = ['.ethiotelecom.net', '.ethernet-et.co.et'];
 
+/** Container-network service names that Docker Compose resolves ONLY inside the
+ *  production stack's private bridge network (see infra/docker-compose.yml).
+ *  These hostnames never leave the Ethiopian-hosted machine, so a DATABASE_URL
+ *  pointing at one of them stays residency-compliant — provided the operator
+ *  has certified Ethiopian hosting via HOSTING_COUNTRY=ET. Without that
+ *  attestation the allowlist below still fail-closes. */
+const PRIVATE_COMPOSE_DB_HOSTNAMES = ['postgres', 'db', 'pg', 'yet-db'];
+
 function hostnameOf(postgresUrl: string): string | null {
   try {
     return new URL(postgresUrl).hostname.toLowerCase();
@@ -155,11 +170,18 @@ function hostnameOf(postgresUrl: string): string | null {
 }
 
 /** True when the DB host is acceptable for Ethiopian personal-data residency.
- *  Loopback/private space is treated as "dev" (no real personal data flows). */
+ *  Loopback/private space is treated as "dev" (no real personal data flows).
+ *  Single-label compose service names (e.g. "postgres") are additionally
+ *  allowed ONLY when the operator has attested Ethiopian hosting via
+ *  HOSTING_COUNTRY=ET — the hostname itself resolves inside the private
+ *  network of that (Ethiopian) machine, so residency follows the host. */
 export function isResidencyHostAllowed(host: string): boolean {
   if (/^(127\.|::1$|localhost$|0\.0\.0\.0$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host)) return true;
   if (host.endsWith('.et')) return true;
-  return RESIDENCY_HOST_SUFFIXES.some((s) => host.endsWith(s));
+  if (RESIDENCY_HOST_SUFFIXES.some((s) => host.endsWith(s))) return true;
+  const attested = env.HOSTING_COUNTRY === 'ET' || process.env.HOSTING_COUNTRY?.trim().toUpperCase() === 'ET';
+  if (PRIVATE_COMPOSE_DB_HOSTNAMES.includes(host) && attested) return true;
+  return false;
 }
 
 export interface ComplianceBootReport {
@@ -218,11 +240,16 @@ export function validateComplianceBoot(e = env, prod = isProd): ComplianceBootRe
   if (!ECA_STATUSES.includes(ecaStatus as EcaRegistrationStatus)) {
     errors.push(`ECA_REGISTRATION_STATUS "${ecaStatus}" is not one of ${ECA_STATUSES.join('|')}`);
   } else if (prod) {
-    if (ecaStatus === 'not_started' || ecaStatus === 'in_progress') {
-      errors.push('Data-controller registration with the Ethiopian Communications Authority must be at least SUBMITTED before production boot (PDPP §1.2, 72h breach duty presupposes a registered controller)');
+    // Runbook alignment (docs/COMPLIANCE-PDPP.md): the FIELD PILOT may only
+    // begin once controller registration is CONFIRMED ("completed") by the
+    // ECA. A bare "submitted" status is therefore refused in production —
+    // reconciliation of the previous code/runbook mismatch. Scale-up was
+    // previously gated on completed; the pilot gate now enforces it too.
+    if (ecaStatus === 'not_started' || ecaStatus === 'in_progress' || ecaStatus === 'submitted') {
+      errors.push('Data-controller registration with the Ethiopian Communications Authority must be CONFIRMED (ECA_REGISTRATION_STATUS=completed) before production boot — submitted is not sufficient for the field pilot (PDPP §1.2, 72h breach duty presupposes a registered controller)');
     }
-    if ((ecaStatus === 'submitted' || ecaStatus === 'completed') && ecaNumber.length < 5) {
-      errors.push('ECA_REGISTRATION_NUMBER must record the authority-assigned reference once submitted');
+    if (ecaStatus === 'completed' && ecaNumber.length < 5) {
+      errors.push('ECA_REGISTRATION_NUMBER must record the authority-assigned reference once confirmed');
     }
   } else if (ecaStatus === 'not_started') {
     warnings.push('ECA data-controller registration not started — required before pilot (tracked in docs/COMPLIANCE-PDPP.md)');
