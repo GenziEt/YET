@@ -150,5 +150,12 @@
   "obChangeTruck": "ከረጢት ቀየርኩ",
   "obSaveChanges": "ለውጦችን አስቀምጥ",
   "obSignOutDevice": "ከዚህ ስልክ ውጣ",
-  "obNetworkError": "መረብ የለም። ምልክት ሲመለስ እንደገና ይሞክሩ።"
+  "obNetworkError": "መረብ የለም። ምልክት ሲመለስ እንደገና ይሞክሩ።",
+  "obErasureTitle": "የአካባቢ ታሪኬን አጥፉ",
+  "obErasureBody": "ከመያዣ መስኮት በፊት የነበሩ ጥሬ የGPS ነብዎችን ይሰርዛል፤ የቅርብ ጊዜ ነብዎችንም ያቀጥናል። የጉዞ ማጠቃለያዎች በውስጥ አስተዳዳሪዎ እንደ ነበሩ ይቆያሉ።",
+  "obErasureAction": "ማጥፋት ይጠይቁ",
+  "obErasureConfirmTitle": "የአካባቢ ታሪክ ይጠፋ?",
+  "obErasureConfirmBody": "ከ{days} ቀናት በፊት የነበሩ ጥሬ የአካባቢ ነብዎች ለዘላለም ይሰረዛሉ። ይህ አይመለስም።",
+  "obErasureDone": "ማጥፋቱ ተጠናቋል፦ {count} የአካባቢ ነብዎች ተሰርዘዋል።",
+  "obErasureFailed": "የማጥፋት ጥያቄው አልተሳካም። ምልክት ሲመለስ እንደገና ይሞክሩ።"
 }

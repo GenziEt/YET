@@ -908,6 +908,62 @@ class AppLocalizations {
         return 'No network. Try again when signal returns.';
     }
   }
+  String get obErasureTitle {
+    switch (localeName) {
+      case 'am':
+        return 'የአካባቢ ታሪኬን አጥፉ';
+      default:
+        return 'Erase my location history';
+    }
+  }
+  String get obErasureBody {
+    switch (localeName) {
+      case 'am':
+        return 'ከመያዣ መስኮት በፊት የነበሩ ጥሬ የGPS ነብዎችን ይሰርዛል፤ የቅርብ ጊዜ ነብዎችንም ያቀጥናል። የጉዞ ማጠቃለያዎች በውስጥ አስተዳዳሪዎ እንደ ነበሩ ይቆያሉ።';
+      default:
+        return 'Deletes your raw GPS fixes older than the retention window and thins recent ones. Trip summaries stay with your fleet manager.';
+    }
+  }
+  String get obErasureAction {
+    switch (localeName) {
+      case 'am':
+        return 'ማጥፋት ይጠይቁ';
+      default:
+        return 'Request erasure';
+    }
+  }
+  String get obErasureConfirmTitle {
+    switch (localeName) {
+      case 'am':
+        return 'የአካባቢ ታሪክ ይጠፋ?';
+      default:
+        return 'Erase location history?';
+    }
+  }
+  String obErasureConfirmBody(Object days) {
+    switch (localeName) {
+      case 'am':
+        return 'ከ$days ቀናት በፊት የነበሩ ጥሬ የአካባቢ ነብዎች ለዘላለም ይሰረዛሉ። ይህ አይመለስም።';
+      default:
+        return 'Raw location points older than $days days will be permanently deleted. This cannot be undone.';
+    }
+  }
+  String obErasureDone(Object count) {
+    switch (localeName) {
+      case 'am':
+        return 'ማጥፋቱ ተጠናቋል፦ $count የአካባቢ ነብዎች ተሰርዘዋል።';
+      default:
+        return 'Erasure complete: $count location points deleted.';
+    }
+  }
+  String get obErasureFailed {
+    switch (localeName) {
+      case 'am':
+        return 'የማጥፋት ጥያቄው አልተሳካም። ምልክት ሲመለስ እንደገና ይሞክሩ።';
+      default:
+        return 'Erasure request failed. Try again when signal returns.';
+    }
+  }
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {

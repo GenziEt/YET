@@ -150,5 +150,26 @@
   "obChangeTruck": "I changed truck",
   "obSaveChanges": "Save changes",
   "obSignOutDevice": "Sign out of this phone",
-  "obNetworkError": "No network. Try again when signal returns."
+  "obNetworkError": "No network. Try again when signal returns.",
+  "obErasureTitle": "Erase my location history",
+  "obErasureBody": "Deletes your raw GPS fixes older than the retention window and thins recent ones. Trip summaries stay with your fleet manager.",
+  "obErasureAction": "Request erasure",
+  "obErasureConfirmTitle": "Erase location history?",
+  "obErasureConfirmBody": "Raw location points older than {days} days will be permanently deleted. This cannot be undone.",
+  "@obErasureConfirmBody": {
+    "placeholders": {
+      "days": {
+        "type": "Object"
+      }
+    }
+  },
+  "obErasureDone": "Erasure complete: {count} location points deleted.",
+  "@obErasureDone": {
+    "placeholders": {
+      "count": {
+        "type": "Object"
+      }
+    }
+  },
+  "obErasureFailed": "Erasure request failed. Try again when signal returns."
 }
