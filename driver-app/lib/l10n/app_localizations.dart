@@ -796,6 +796,14 @@ class AppLocalizations {
         return 'Uploaded - waiting for review';
     }
   }
+  String get obDocsNoneEmpty {
+    switch (localeName) {
+      case 'am':
+        return 'እስከ አሁን ምንም ሰነድ አልተስቀለም — ለመጀመር ሰነዶችዎን ይስቀሉ የሚለውን ይንኩ።';
+      default:
+        return 'No documents uploaded yet — tap Upload your documents to start.';
+    }
+  }
   String get obUploadFailed {
     switch (localeName) {
       case 'am':

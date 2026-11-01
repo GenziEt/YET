@@ -137,6 +137,7 @@
   "obLicenseDocMandatory": "የማሽከርከሪያ ፈቃድ ፎቶ — ግዴታ",
   "obTakePhoto": "ፎቶ ያንሱ / ፋይል ይምረጡ",
   "obUploaded": "ተስቅሏል — ግምገማ በመጠበቅ ላይ",
+  "obDocsNoneEmpty": "እስከ አሁን ምንም ሰነድ አልተስቀለም — ለመጀመር ሰነዶችዎን ይስቀሉ የሚለውን ይንኩ።",
   "obUploadFailed": "መስቀል አልተሳካም። መረብን ያረጋግጡ እና እንደገና ይሞክሩ።",
   "obSkipOptionalDocs": "ለአሁን ይለፉ",
   "obPendingTitle": "ፍቃድ በመጠበቅ ላይ",

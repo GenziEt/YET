@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../../core/app_runtime.dart';
 import '../../core/config/app_config.dart';
@@ -154,6 +155,35 @@ class _TripHomeScreenState extends State<TripHomeScreen>
   /// guards against double-taps starting two cadences.
   bool _toggling = false;
 
+  /// Trip start/end confirmation feedback (audit item: no success signal on
+  /// the most important one-tap action). Medium impact matches the weight of
+  /// the action; the floating dark pill follows the feedback-screen pattern.
+  /// Copy reuses the existing push-notification ARB titles
+  /// ([AppLocalizations.notifTripStartedTitle] / [notifTripEndedTitle]) — the
+  /// localization parity test enforces a strict 1:1 ARB↔getter mapping, so
+  /// no new strings are introduced for this affordance.
+  void _confirmFeedback(BuildContext context, AppLocalizations l,
+      {required bool started}) {
+    HapticFeedback.mediumImpact();
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        duration: const Duration(seconds: 2),
+        content: Row(
+          children: [
+            Icon(started ? Icons.navigation_rounded : Icons.check_circle_rounded,
+                color: const Color(0xFF8BE39A), size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(started
+                  ? l.notifTripStartedTitle
+                  : l.notifTripEndedTitle),
+            ),
+          ],
+        ),
+      ));
+  }
+
   Future<void> _toggleTrip() async {
     if (_toggling) return;
     final runtime = widget.runtime;
@@ -171,6 +201,11 @@ class _TripHomeScreenState extends State<TripHomeScreen>
           _assignment = check;
           if (allowsTripStart(check)) _tripActive = true;
         });
+        // Feedback ONLY on a confirmed start — a blocked start keeps the
+        // InlineAlert path (never show a success snackbar for a failure).
+        if (allowsTripStart(check)) {
+          _confirmFeedback(context, AppLocalizations.of(context), started: true);
+        }
         return;
       }
       // END: never blocked by assignment state (allowsTripEnd == true) — a
@@ -180,6 +215,7 @@ class _TripHomeScreenState extends State<TripHomeScreen>
       final check = await runtime.onTripToggled(active: false);
       if (!mounted) return;
       setState(() => _assignment = check);
+      _confirmFeedback(context, AppLocalizations.of(context), started: false);
       return;
     }
     // No runtime wired (tests / kill-switch fallback): plain UI + cadence.
@@ -193,6 +229,7 @@ class _TripHomeScreenState extends State<TripHomeScreen>
         sync.stopTripCadence();
       }
     }
+    _confirmFeedback(context, AppLocalizations.of(context), started: _tripActive);
   }
 
   @override
