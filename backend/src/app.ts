@@ -17,6 +17,7 @@ import { runCrossingEvaluator } from './modules/geofence/crossing.js';
 import { setRecomputeHook, setNotifyHook } from './modules/ingest/service.js';
 import { runNotificationTrigger, startSeparationSweepLoop } from './modules/notification/triggers.js';
 import { startDispatcherLoop } from './modules/notification/dispatchers.js';
+import { registerRevocationHook } from './lib/revocation.js';
 import { recomputeVehicleWindow } from './modules/trip_engine/service.js';
 
 /**
@@ -49,8 +50,19 @@ export async function buildApp() {
       level: isProd ? 'info' : 'debug',
       transport: isProd ? undefined : { target: 'pino-pretty', options: { colorize: true, translateTime: 'HH:MM:ss' } },
     },
-    trustProxy: true, // behind nginx gateway
+    // Proxy trust PINNED to known gateway addresses (audit P2): X-Forwarded-For
+    // is honored only from TRUSTED_PROXIES entries — the rate-limit key can no
+    // longer be spoofed if the API is ever exposed directly.
+    trustProxy: { trusted: buildTrustedMatcher(env.TRUSTED_PROXIES) },
   });
+
+  /** Compile a comma-separated IP/CIDR list into a Fastify trust-proxy fn.
+   *  Entries are matched literally (IP or CIDR prefix); anything else falls
+   *  back to the socket address (header ignored). */
+  function buildTrustedMatcher(list: string): (ip: string) => boolean {
+    const items = list.split(',').map((s) => s.trim()).filter(Boolean);
+    return (ip: string) => items.some((entry) => ip === entry || ip.startsWith(entry.replace(/\/.*$/, '')) && entry.includes('/'));
+  }
 
   // Machine-readable denial codes are made serialization-proof at the SOURCE:
   // guards/routes send `{error:<code>}` directly (see identity/onboarding.ts),
@@ -62,7 +74,7 @@ export async function buildApp() {
 
   await app.register(sensible);
   await app.register(helmet, { contentSecurityPolicy: false }); // API-only; CSP applies to dashboard bundle
-  await app.register(cors, { origin: isProd ? ['https://yet.et'] : true });
+  await app.register(cors, { origin: isProd ? [env.DASHBOARD_ORIGIN] : true });
   await app.register(rateLimit, { global: false, keyGenerator: (req) => req.ip ?? 'unknown' });
 
   // --- Health (§1.5 Phase 0 deliverable) --------------------------------------
@@ -101,6 +113,12 @@ export async function buildApp() {
   await app.register(geofenceRoutes);              // Module 4: Geofence — /geofences CRUD + state (Phase 3)
   await app.register(reportingRoutes);             // Module 6: Reporting — /reports/* (Phase 4 pilot + Phase 5 reports)
   await app.register(notificationRoutes);          // Module 5: Notification — /notifications/* (Phase 5)
+
+  // Pre-expiry JWT revocation (audit P1): single onRequest hook that checks the
+  // token's stamped epoch against users.token_version for every Bearer request
+  // (device un-pair / suspend / lost-phone revoke kill outstanding 12 h tokens
+  // immediately). Fail-closed on DB errors; public auth entry points skipped.
+  await registerRevocationHook(app);
 
   // Wire the ingest → trip-engine seam (§1.5 bounded contexts): Ingest owns raw
   // storage only; after each accepted batch it fires the late-bound recompute hook
@@ -150,7 +168,10 @@ export async function buildApp() {
                            'account_inactive', 'account_suspended', 'unauthorized',
                            // OTP storage is auth state, not cache: a Redis outage
                            // surfaces as 503, never a false "code sent" (P1 audit).
-                           'otp_storage_unavailable'];
+                           'otp_storage_unavailable',
+                           // Pre-expiry JWT revocation (audit P1): stale token epoch
+                           // or DB unreadable during the version check.
+                           'token_revoked', 'auth_backend_unavailable'];
     if (typeof e?.message === 'string' && KNOWN_DENIALS.includes(e.message)) {
       return reply.code(e.statusCode ?? 403).send({ error: e.message });
     }

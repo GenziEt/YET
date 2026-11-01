@@ -102,6 +102,24 @@ const EnvSchema = z.object({
   ECA_REGISTRATION_NUMBER: z.string().optional(),
   PROCESSORS_ACTIVE: z.string().optional(),
   BREACH_NOTIFICATION_CONTACT: z.string().optional(),
+
+  // --- Production-readiness hardening (audit P2) ------------------------------
+  // OTP HMAC key material for lib/secrets.ts. OPTIONAL by design: when unset we
+  // fall back to random per-process keys (single-worker deployments are fine;
+  // cross-worker OTP verify then fails CLOSED — one extra SMS, never a bypass).
+  // Set it once you scale past one API worker.
+  OTP_HASH_SECRET: z.string().min(16).optional().or(z.literal('')).transform((v) => v || undefined),
+  // Proxy trust pinning: Fastify's `trustProxy: true` blindly trusts ANY
+  // X-Forwarded-For, which poisons the rate-limit key if the API is ever
+  // exposed directly. Pin to the addresses of the trusted nginx gateway(s) /
+  // docker network CIDR. Comma-separated list; default covers the compose
+  // bridge network where nginx lives (172.16.0.0/12 private space) plus
+  // loopback — headers from anywhere else are ignored (req.ip = socket IP).
+  TRUSTED_PROXIES: z.string().default('127.0.0.1,::1,172.16.0.0/12'),
+  // Dashboard origin allowlist for CORS. Must match the production URL exactly
+  // (https://yet.et today); override here if the pilot lands on another host so
+  // the code and the deployment config stay reconcilable without a re-deploy.
+  DASHBOARD_ORIGIN: z.string().default('https://yet.et'),
 });
 
 const parsed = EnvSchema.safeParse(process.env);
