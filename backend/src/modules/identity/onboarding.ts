@@ -298,9 +298,10 @@ export default async function onboardingRoutes(app: FastifyInstance) {
     if (!expected || !timingSafeEq(expected, hashOtp(parsed.data.code, phone))) {
       return reply.code(400).send({ error: 'otp_expired_or_invalid' });
     }
+    let ticket: string;
     try {
       await cacheDelCritical(key); // one-shot: a verified code cannot be replayed
-      const ticket = opaqueToken();
+      ticket = opaqueToken();
       await cacheSetJsonCritical(`otp_ticket:${ticket}`, { phone, device_id: parsed.data.device_id }, 900);
     } catch {
       return reply.code(503).send({ error: 'otp_storage_unavailable' });
