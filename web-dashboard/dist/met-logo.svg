@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 148 48" role="img" aria-label="MET">
+  <defs>
+    <!-- Metallic deep-blue gradient: primary brand identity (light runs left-to-right) -->
+    <linearGradient id="metBlue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#A7D2FF"/>
+      <stop offset="0.35" stop-color="#5BA7F2"/>
+      <stop offset="0.62" stop-color="#2F75B9"/>
+      <stop offset="1" stop-color="#16375C"/>
+    </linearGradient>
+    <!-- Reversed light run for the plate to keep the metal effect legible on dark navy -->
+    <linearGradient id="metPlate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16375C"/>
+      <stop offset="0.45" stop-color="#2F75B9"/>
+      <stop offset="0.75" stop-color="#5BA7F2"/>
+      <stop offset="1" stop-color="#A7D2FF"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="146" height="46" rx="10" fill="url(#metPlate)" stroke="#2B4057"/>
+  <text x="74" y="24" text-anchor="middle" dominant-baseline="central"
+        font-family="Inter, ui-sans-serif, system-ui, sans-serif"
+        font-size="26" font-weight="700" letter-spacing="3" fill="url(#metBlue)">MET</text>
+</svg>

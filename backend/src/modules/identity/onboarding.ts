@@ -184,7 +184,7 @@ async function authGuard(
   };
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) return deny('unauthorized', 401);
-  let claims: { sub: string; role: string; fleetId?: string };
+  let claims: { sub: string; role: string; fleetId?: string; tokenVersion?: number };
   try {
     const { verifyAccessToken } = await import('../../lib/jwt.js');
     claims = verifyAccessToken(header.slice(7));

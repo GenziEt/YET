@@ -1,0 +1,18 @@
+# Build-context hygiene: keep host artifacts out of the image build context.
+node_modules
+dist
+tests
+var
+coverage
+*.log
+*.tmp
+.env
+.env.*
+.git
+.gitignore
+Dockerfile
+docker-compose*
+.eslintrc.json
+tsconfig.tsbuildinfo
+dump.rdb
+scripts/perf/out

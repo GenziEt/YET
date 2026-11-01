@@ -44,7 +44,7 @@ services:
   redis:
     # Provisioned in Phase 0 so caching is available when needed, not retrofitted (§1.10.2).
     # Consumers: OSRM route cache (P3), Nominatim geocode cache (P3), fleet-state query (P5, TTL 30s).
-    image: redis:7-alpine
+    image: redis:7.2-alpine
     restart: unless-stopped
     command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --save ""
     ports:
@@ -58,7 +58,7 @@ services:
   osrm:
     # Self-hosted routing: zero per-request cost, full control (§1.6).
     # Image tag: use an osrm-* image built/pulled locally; project-name matches import script.
-    image: osrm/osrm-backend:latest
+    image: osrm/osrm-backend:v5.27.1
     restart: unless-stopped
     command: osrm-routed --algorithm mld /data/${OSRM_PROFILE:-driving}.osrm
     volumes:
@@ -97,7 +97,7 @@ services:
   tiles:
     # Vector tile server (blueprint §1.6). Rendered AFTER the first driver pilot if raw
     # raster serving performance proves acceptable; kept here so the URL contract is stable.
-    image: maptiler/tileserver-gl:latest
+    image: maptiler/tileserver-gl:v4.3.0
     restart: unless-stopped
     profiles: ["tiles"]                     # opt-in: docker compose --profile tiles up tiles
     volumes:
