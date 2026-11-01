@@ -3,6 +3,7 @@ import { z } from 'zod';
 import crypto from 'node:crypto';
 import { pool } from '../../db/pool.js';
 import { signAccessToken, verifyAccessToken } from '../../lib/jwt.js';
+import { assertTokenLive, bumpTokenVersion } from '../../lib/revocation.js';
 import { audit } from '../../lib/audit.js';
 import { env, isProd } from '../../config/env.js';
 import { cacheGetJson, cacheSetJson, cacheDel } from '../../lib/redis.js';
@@ -79,6 +80,9 @@ async function authGuard(req: FastifyRequest): Promise<{ id: string; role: strin
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) throw Object.assign(new Error('unauthorized'), { statusCode: 401 });
   const claims = verifyAccessToken(header.slice(7));
+  // Pre-expiry revocation (audit P1): reject tokens whose stamped epoch was
+  // bumped by a device-revoke/suspend event even though the JWT is unexpired.
+  await assertTokenLive(claims);
   return { id: claims.sub, role: claims.role };
 }
 
@@ -95,7 +99,7 @@ export default async function identityRoutes(app: FastifyInstance) {
     }
     const body = parsed.data;
     const { rows } = await pool.query(
-      `SELECT id, role, password_hash, locale, is_active, fleet_id FROM users
+      `SELECT id, role, password_hash, locale, is_active, fleet_id, token_version FROM users
        WHERE phone_e164 = $1 OR email = $2 LIMIT 1`,
       [body.identifier, body.identifier],
     );
@@ -113,7 +117,7 @@ export default async function identityRoutes(app: FastifyInstance) {
       }
     }
     await audit({ actorId: user.id, action: 'login', targetUser: user.id, ip: req.ip });
-    const token = signAccessToken({ sub: user.id, role: user.role, locale: user.locale, fleetId: user.fleet_id ?? undefined });
+    const token = signAccessToken({ sub: user.id, role: user.role, locale: user.locale, fleetId: user.fleet_id ?? undefined, tokenVersion: user.token_version });
     return { access_token: token, role: user.role, locale: user.locale, fleet_id: user.fleet_id ?? null };
   });
 
@@ -210,7 +214,7 @@ export default async function identityRoutes(app: FastifyInstance) {
     }
     const body = parsedBoot.data;
     const { rows } = await pool.query(
-      `SELECT id, role, password_hash, locale, is_active, fleet_id FROM users
+      `SELECT id, role, password_hash, locale, is_active, fleet_id, token_version FROM users
        WHERE phone_e164 = $1 OR email = $2 LIMIT 1`,
       [body.identifier, body.identifier],
     );
@@ -225,7 +229,7 @@ export default async function identityRoutes(app: FastifyInstance) {
     await audit({ actorId: user.id, action: 'bootstrap_pair', targetUser: user.id, ip: req.ip });
     // Tenant claim must be stamped here too — a bootstrap token without fleet_id
     // would be fail-closed (403) on every scoped read (lib/tenant.ts).
-    const token = signAccessToken({ sub: user.id, role: user.role, locale: user.locale, fleetId: user.fleet_id ?? undefined });
+    const token = signAccessToken({ sub: user.id, role: user.role, locale: user.locale, fleetId: user.fleet_id ?? undefined, tokenVersion: user.token_version });
     return { access_token: token, role: user.role, locale: user.locale, user_id: user.id, fleet_id: user.fleet_id ?? null };
   });
 

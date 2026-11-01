@@ -9,6 +9,16 @@ export interface TokenClaims {
    *  platform-global and carries no fleetId. Stamped at login from users.fleet_id
    *  (migration 0013 makes the column non-null for tenant roles via trigger). */
   fleetId?: string;
+  /** Revocation epoch (migration 0017). Stamped from users.token_version at mint
+   *  time; guards reject tokens whose tv no longer matches the live row. This is
+   *  the pre-expiry revocation path requested by the audit: un-pairing a device,
+   *  suspending a driver, or self-revoking a lost phone bumps token_version and
+   *  every outstanding JWT for that user dies immediately — without waiting out
+   *  the 12 h TTL. Optional on the interface because tokens minted BEFORE the
+   *  migration carry no claim; verifyAccessToken reports undefined and guards
+   *  treat undefined as "legacy token" (accepted only while the DB-side checks
+   *  they already perform pass — see lib/revocation.ts). */
+  tokenVersion?: number;
 }
 
 export function signAccessToken(claims: TokenClaims): string {
@@ -23,11 +33,12 @@ export function verifyAccessToken(token: string): TokenClaims {
     role: payload.role as TokenClaims['role'],
     locale: payload.locale as string | undefined,
     fleetId: payload.fleet_id as string | undefined,
+    tokenVersion: typeof payload.tv === 'number' ? payload.tv : undefined,
   };
 }
 
 /** Claims → JWT payload (fleet_id snake_case on the wire; stays optional so
  *  pre-tenant tokens keep verifying during rollout). */
 export function claimsToPayload(c: TokenClaims): Record<string, unknown> {
-  return { sub: c.sub, role: c.role, locale: c.locale, fleet_id: c.fleetId };
+  return { sub: c.sub, role: c.role, locale: c.locale, fleet_id: c.fleetId, tv: c.tokenVersion };
 }
