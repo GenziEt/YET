@@ -400,3 +400,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   background: var(--met-surface); color: var(--met-text); }
 
 .drawer ~ * { /* no-op guard: keep stacking context predictable */ }
+
+/* ---- Session bar (app-level AuthGate, Phase 5 audit follow-up) ---------- */
+.session-bar { display: flex; align-items: center; gap: 10px; justify-content: flex-end;
+  padding: 6px 16px; border-bottom: 1px solid var(--met-border); background: var(--met-surface); }
+.session-chip { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: var(--met-radius-badge);
+  border: 1px solid rgba(91, 167, 242, 0.45); background: rgba(91, 167, 242, 0.12); color: var(--met-accent-light); }
+.session-chip.admin { border-color: rgba(243, 189, 82, 0.45); background: rgba(243, 189, 82, 0.12); color: var(--met-warning); }
