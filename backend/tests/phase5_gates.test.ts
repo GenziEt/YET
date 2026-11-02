@@ -160,6 +160,25 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
     await poolX.query(`DELETE FROM vehicles WHERE id = $1`, [vehicleA]).catch(() => {});
     await poolX.query(`DELETE FROM users WHERE id = ANY($1::uuid[])`, [FIX_USERS]).catch(() => {});
     await poolX.query(`DELETE FROM fleets WHERE id IN ($1,$2)`, [fleetA, fleetB]).catch(() => {});
+    // Retention-suite residue: purge the dedicated throwaway fleet's rows so a
+    // rerun (or another suite's global retention pass) sees no stale old window.
+    await poolX.query(
+      `WITH old AS (SELECT id FROM fleets WHERE name = 'p5g-retention'),
+        od AS (SELECT id FROM users WHERE fleet_id IN (SELECT id FROM old))
+       DELETE FROM location_fixes WHERE driver_id IN (SELECT id FROM od)`, []).catch(() => {});
+    await poolX.query(
+      `WITH old AS (SELECT id FROM fleets WHERE name = 'p5g-retention'),
+        od AS (SELECT id FROM users WHERE fleet_id IN (SELECT id FROM old))
+       DELETE FROM ingest_batches WHERE driver_id IN (SELECT id FROM od)`, []).catch(() => {});
+    await poolX.query(
+      `WITH old AS (SELECT id FROM fleets WHERE name = 'p5g-retention'),
+        od AS (SELECT id FROM users WHERE fleet_id IN (SELECT id FROM old))
+       DELETE FROM vehicles WHERE fleet_id IN (SELECT id FROM old)`, []).catch(() => {});
+    await poolX.query(
+      `WITH old AS (SELECT id FROM fleets WHERE name = 'p5g-retention'),
+        od AS (SELECT id FROM users WHERE fleet_id IN (SELECT id FROM old))
+       DELETE FROM users WHERE fleet_id IN (SELECT id FROM old)`, []).catch(() => {});
+    await poolX.query(`DELETE FROM fleets WHERE name = 'p5g-retention'`).catch(() => {});
     await poolX.end();
   });
 
@@ -360,15 +379,50 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
   it('POST /reports/retention/run as ADMIN downsamples old fixes every Nth, keeps recent + audit row', async () => {
     // Throwaway driver so the pass can't disturb other suites' rows (vitest
     // runs files concurrently; we scope by driver and clean up after).
+    // IMPORTANT: this driver must belong to a DEDICATED throwaway fleet, NOT
+    // fleetA. The endpoint's downsample window is GLOBAL per driver (all
+    // location_fixes older than age_days), and earlier p5g-A/p5g-B purge
+    // passes delete users only within those two named fleets — leaving any
+    // prior-run retention drivers (and their 400-day-old fixes) in place.
+    // Those residue rows would then rank ahead of this run's seeds inside the
+    // same driver partition... except ids are fresh UUIDs per run, so the
+    // real contamination path was residue rows under *other* driver ids that
+    // merely inflate the global deleted_rows counter. A dedicated fleet means
+    // the beforeAll purge below removes yesterday's residue BEFORE seeding,
+    // making both the per-batch survivor count and the global lower bound
+    // deterministic on every rerun against a shared database.
+    const retFleet = randomUUID();
     const retDriver = randomUUID();
     const retVehicle = randomUUID();
     const retBatch = randomUUID();
     await poolX.query(
+      `INSERT INTO fleets (id, name) VALUES ($1,'p5g-retention')`, [retFleet]);
+    // Purge residue from previous runs of THIS suite (same stable fleet name)
+    // before seeding, so the old-window partition contains exactly our 15 rows.
+    await poolX.query(
+      `WITH old AS (SELECT id FROM fleets WHERE name = 'p5g-retention'),
+        od AS (SELECT id FROM users WHERE fleet_id IN (SELECT id FROM old))
+       DELETE FROM location_fixes WHERE driver_id IN (SELECT id FROM od)`, []);
+    await poolX.query(
+      `WITH old AS (SELECT id FROM fleets WHERE name = 'p5g-retention'),
+        od AS (SELECT id FROM users WHERE fleet_id IN (SELECT id FROM old))
+       DELETE FROM ingest_batches WHERE driver_id IN (SELECT id FROM od)`, []);
+    await poolX.query(
+      `WITH old AS (SELECT id FROM fleets WHERE name = 'p5g-retention'),
+        od AS (SELECT id FROM users WHERE fleet_id IN (SELECT id FROM old))
+       DELETE FROM vehicles WHERE fleet_id IN (SELECT id FROM old)`, []);
+    await poolX.query(
+      `WITH old AS (SELECT id FROM fleets WHERE name = 'p5g-retention'),
+        od AS (SELECT id FROM users WHERE fleet_id IN (SELECT id FROM old))
+       DELETE FROM users WHERE fleet_id IN (SELECT id FROM old)`, []);
+    await poolX.query(
+      `DELETE FROM fleets WHERE name = 'p5g-retention' AND id <> $1`, [retFleet]);
+    await poolX.query(
       `INSERT INTO users (id, role, full_name, email, locale, is_active, fleet_id)
        VALUES ($1,'DRIVER','P5G Retention',$2,'en',true,$3)`,
-      [retDriver, `p5g-ret-${retDriver.slice(0, 8)}@yet.local`, fleetA]);
+      [retDriver, `p5g-ret-${retDriver.slice(0, 8)}@yet.local`, retFleet]);
     await poolX.query(`INSERT INTO vehicles (id, plate_number, fleet_id) VALUES ($1,'P5G-RET-1',$2)`,
-      [retVehicle, fleetA]);
+      [retVehicle, retFleet]);
     await poolX.query(`INSERT INTO ingest_batches (batch_id, driver_id, vehicle_id, fix_count)
                        VALUES ($1,$2,$3,15)`, [retBatch, retDriver, retVehicle]);
     // 15 OLD fixes (400 days ago ⇒ past the age_days=90 cutoff passed below)
