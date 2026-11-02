@@ -169,6 +169,11 @@ services:
     restart: unless-stopped
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Audit P0 (TLS): certbot-provisioned key material, read-only in the
+      # gateway. tls-certbot.sh writes into the SAME host directory via a
+      # bind mount, so renewals + `nginx -s reload` keep working live.
+      - ./certs:/etc/letsencrypt:ro
+      - ./certs/www:/var/www/certbot:ro     # http-01 challenge webroot
     ports:
       - "80:80"
       - "443:443"                           # TLS terminates here; certs via certbot volume
@@ -176,6 +181,19 @@ services:
       - api
       - web
       - nominatim
+
+  certbot:
+    # Audit P0 (TLS): certificate issuance + automated renewal companion.
+    # Runs `certbot renew` every 12h inside the container's own cron-free
+    # loop; on successful renewal it reloads the gateway through the shared
+    # ./certs tree (no keys ever leave the host). Started only when TLS is
+    # provisioned — harmless to leave running otherwise.
+    image: certbot/certbot:v2.11.0
+    restart: unless-stopped
+    volumes:
+      - ./certs:/etc/letsencrypt
+      - ./certs/www:/var/www/certbot
+    entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet || true; sleep 12h & wait $${!}; done'
 
 volumes:
   pgdata:
