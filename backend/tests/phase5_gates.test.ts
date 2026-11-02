@@ -387,8 +387,30 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
         [retBatch, retDriver, retVehicle, String(i + 1)]);
     }
 
+    // Seed an ADMIN principal (mgrA is a FLEET_MANAGER — the endpoint's
+    // forbidden_role guard would 403 before the retention pass ever ran).
+    // DB trigger: staff roles (ADMIN/FLEET_MANAGER) REQUIRE password_hash
+    // (only drivers are passwordless), so hashPassword-format it via scrypt().
+    // This suite's purge deletes users only within fleets p5g-A/p5g-B, so a
+    // NULL-fleet ADMIN survives cleanup across reruns.
+    // token_version must be STAMPED into the JWT exactly like every production
+    // mint site (identity/routes.ts login does `tokenVersion: user.token_version`):
+    // the global revocation onRequest hook compares the claim against
+    // users.token_version and a MISSING claim fails closed — @fastify/sensible
+    // maps the thrown RevokedError to HTTP 409 (its scoped handler wins over
+    // app.setErrorHandler). The driverToken() helper above already follows this
+    // contract; the retention test must too.
+    const adminId = randomUUID();
+    await poolX.query(`DELETE FROM users WHERE id = $1`, [adminId]);
+    await poolX.query(
+      `INSERT INTO users (id, role, full_name, email, password_hash, locale, is_active)
+       VALUES ($1,'ADMIN','P5G Retention Admin',$2,$3,'en',true)`,
+      [adminId, `p5g-admin-${adminId.slice(0, 8)}@yet.local`, scrypt('p5g-admin-pw')]);
+    const { rows: tvRow } = await poolX.query(
+      `SELECT token_version FROM users WHERE id = $1`, [adminId]);
     const { signAccessToken } = await import('../src/lib/jwt.js');
-    const tokAdmin = signAccessToken({ sub: mgrA, role: 'ADMIN', locale: 'en' });
+    const tokAdmin = signAccessToken({ sub: adminId, role: 'ADMIN', locale: 'en',
+      tokenVersion: tvRow[0].token_version });
     const t0 = new Date();
     const res = await app.inject({ method: 'POST', url: '/reports/retention/run',
       headers: { authorization: `Bearer ${tokAdmin}` },
