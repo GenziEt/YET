@@ -1,7 +1,4 @@
-node_modules/
-dist/
-build/
-.dart_tool/
 .env
 .env.local
-.env.*.local
+*.env.*
+*.log
