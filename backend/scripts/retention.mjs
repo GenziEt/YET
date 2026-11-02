@@ -49,10 +49,13 @@ function intEnv(name, dflt) {
   return Number.isFinite(v) && v > 0 ? v : dflt;
 }
 
-// Same ordering + phase rule as retention_kernel.downsampleDeletePredicateSql:
-// first KEEP_EVERY_N rows of each driver's scanned stream are permanent anchors,
-// then every Nth thereafter — guarantees the daily re-run is idempotent.
-const WHERE_DELETE = `(rn > ${KEEP_EVERY_N} AND (rn - 1) % ${KEEP_EVERY_N} <> 0)`;
+// EXACTLY retention_kernel.downsampleDeletePredicateSql(KEEP_EVERY_N):
+// keep rn==1 and every Nth thereafter ((rn-1) % N == 0), delete the rest.
+// Survivors renumber onto the same phase lattice on the next pass, so the
+// nightly re-run is idempotent and the §1.10.6 "keep every 10th" policy holds
+// for streams longer than one period. (A blanket `rn > N` guard here was an
+// audit-fixed defect: it deleted phase-correct anchors like rn=11.)
+const WHERE_DELETE = `(rn > 1 AND (rn - 1) % ${KEEP_EVERY_N} <> 0)`;
 
 const pool = new pg.Pool({ connectionString: DB_URL, max: 4 });
 
