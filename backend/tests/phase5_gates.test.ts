@@ -395,10 +395,23 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
       payload: { age_days: 90, keep_every_n: 10 } });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    // This driver's old window ranks rn 1..15 ⇒ kept (rn-1)%10==0 are rn 1 & 11
-    // ⇒ exactly 13 deletions attributable to us; global counts include other
-    // suites' old rows, so assert OUR DB state directly, not just the envelope.
-    expect(body.deleted_rows).toBeGreaterThanOrEqual(13);
+    // Downsample contract (shared with scripts/retention.mjs through
+    // retention_kernel.downsampleDeletePredicateSql): within each driver's
+    // OLD window, rank rn 1..15 oldest-first and keep phase (rn-1)%N==0.
+    // With N=10 that keeps rn 1 & 11 and deletes rn 2..10 and 12..15 —
+    // exactly 13 deletions attributable to this suite's throwaway driver.
+    // NOTE: an earlier comment here claimed "13 deletions"; that arithmetic
+    // was wrong (15 seeded − 2 kept = 13 DELETED means 13 removed, leaving 2 —
+    // consistent, but the envelope counter we assert is OUR batch's survivors,
+    // not a global delete count). The envelope's deleted_rows is GLOBAL across
+    // fleets/suites sharing this database (vitest runs files concurrently), so
+    // it cannot be pinned to one suite's seed data. Assert the deterministic
+    // per-batch outcome directly against DB state instead.
+    const { rows: mine } = await poolX.query(
+      `SELECT count(*)::int AS n FROM location_fixes
+        WHERE batch_id = $1 AND fix_timestamp < now() - interval '100 days'`, [retBatch]);
+    expect(mine[0].n).toBe(2); // rn 1 & 11 survived downsample
+    expect(body.deleted_rows).toBeGreaterThanOrEqual(13); // global lower bound
     expect(body.audit_action).toBe('retention_downsample');
 
     const { rows: left } = await poolX.query(
