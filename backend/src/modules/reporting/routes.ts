@@ -183,6 +183,12 @@ export default async function reportingRoutes(app: FastifyInstance) {
       // row_number over (fix_timestamp, fix_id), KEEP phase (rn-1)%N==0, DELETE
       // the rest, strictly older than the cutoff. Idempotent: re-running
       // immediately deletes nothing new (survivors renumber onto kept phases).
+      // Idempotency contract (matches scripts/retention.mjs exactly): the
+      // ranking window is scoped to each driver's OLD WINDOW ONLY
+      // (fix_timestamp < cutoff). Ranking over ALL fixes — recent included —
+      // would renumber survivors on every run and DELETE fresh data that has
+      // not aged past the cutoff yet. This was a real production defect:
+      // the first API pass deleted 4 of 3 seeded RECENT fixes for a driver.
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
