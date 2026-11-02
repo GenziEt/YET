@@ -470,8 +470,12 @@ d('driver onboarding without login (module 1, migration 0016)', () => {
       headers: { authorization: `Bearer ${token}` }, payload: {} });
     expect(sus.statusCode).toBe(200);
 
+    // Suspend also bumps users.token_version (audit P1 pre-expiry revocation),
+    // so mint the test token with the LIVE epoch — otherwise the revocation
+    // hook denies 401 token_revoked before the account-status gate is exercised.
     const { signAccessToken } = await import('../src/lib/jwt.js');
-    const drvToken = signAccessToken({ sub: driverId, role: 'DRIVER', fleetId: FLEET });
+    const { rows: tvRow } = await poolX.query(`SELECT token_version FROM users WHERE id = $1`, [driverId]);
+    const drvToken = signAccessToken({ sub: driverId, role: 'DRIVER', fleetId: FLEET, tokenVersion: tvRow[0].token_version });
     const prof = await app.inject({ method: 'GET', url: '/me/profile',
       headers: { authorization: `Bearer ${drvToken}` } });
     expect(prof.statusCode).toBe(403);
@@ -493,7 +497,11 @@ d('driver onboarding without login (module 1, migration 0016)', () => {
     expect(rev.statusCode).toBe(200);
 
     const { signAccessToken } = await import('../src/lib/jwt.js');
-    const drvToken = signAccessToken({ sub: driverId, role: 'DRIVER', fleetId: FLEET });
+    // Mint with the LIVE token epoch: revoke-device bumps token_version
+    // (audit P1), and an epoch-blind token would die at the revocation hook
+    // (401) before reaching the pairing gate this test exercises (403).
+    const { rows: tvRow2 } = await poolX.query(`SELECT token_version FROM users WHERE id = $1`, [driverId]);
+    const drvToken = signAccessToken({ sub: driverId, role: 'DRIVER', fleetId: FLEET, tokenVersion: tvRow2[0].token_version });
     const refresh = await app.inject({ method: 'POST', url: '/auth/session/refresh',
       headers: { authorization: `Bearer ${drvToken}` }, payload: { device_id: DEVICE } });
     expect(refresh.statusCode).toBe(403);

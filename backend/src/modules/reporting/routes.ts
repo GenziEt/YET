@@ -6,6 +6,7 @@ import { pool } from '../../db/pool.js';
 import { PilotQuerySchema, getPilotSummary } from './pilot_service.js';
 import { getTripReport, getSeparationIncidents, getFleetOverview } from './service.js';
 import { FLEET_STATE_CACHE_KEY } from './kernel.js';
+import { downsampleDeletePredicateSql } from './retention_kernel.js';
 import { cacheDel, cacheDelMany, cacheKeysByPrefix } from '../../lib/redis.js';
 import { env, isProd } from '../../config/env.js';
 import { assertTargetInFleet, deny, isDenial, scopeFleetId } from '../../lib/tenant.js';
@@ -198,12 +199,12 @@ export default async function reportingRoutes(app: FastifyInstance) {
              WHERE lf.driver_id = o.driver_id
                AND lf.fix_id = o.fix_id
                AND lf.fix_timestamp = o.fix_timestamp
-               AND (o.rn > $2 AND (o.rn - 1) % $2 <> 0)
+               AND ${downsampleDeletePredicateSql(keepEveryN)}
              RETURNING 1
            )
            SELECT (SELECT count(*) FROM old) AS scanned_old,
                   (SELECT count(*) FROM doomed) AS deleted`,
-          [ageDays, keepEveryN]);
+          [ageDays]);
         const scannedOld = Number(counts[0]?.scanned_old ?? 0);
         const deleted = Number(counts[0]?.deleted ?? 0);
         // Batch provenance with zero surviving fixes is residue — purge it too
