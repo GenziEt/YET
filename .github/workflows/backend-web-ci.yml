@@ -29,6 +29,8 @@ jobs:
           --health-retries 10
     env:
       YET_TEST_DB: 'postgres://yet:ci-only-not-a-secret@localhost:5432/yet_test'
+      # migrate.ts boot-validates the env schema; a CI-only secret is fine here.
+      JWT_SECRET: 'ci-only-jwt-secret-not-a-real-key-0123456789'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -39,15 +41,44 @@ jobs:
       - name: Install (clean lockfile install)
         working-directory: backend
         run: npm ci
+      # Release gate (audit P0): integration suites expect an ALREADY-MIGRATED
+      # database. Apply all migrations from the clean service DB BEFORE any
+      # test runs, so skipped-suite drift can never hide behind "no DB".
+      - name: Migrate (clean Postgres/PostGIS → full schema)
+        working-directory: backend
+        run: npm run migrate
       - name: Typecheck
         working-directory: backend
         run: npx tsc --noEmit
       - name: Lint
         working-directory: backend
         run: npm run lint
-      - name: Unit tests (incl. DB-gated suites vs Postgres service)
+      - name: Unit tests (no DB required)
         working-directory: backend
         run: npm test
+      # Release gate (audit P0): the four DB-gated suites MUST execute and
+      # MUST NOT be silently skipped. Fail the workflow if they are absent
+      # from the passing set (vitest exits non-zero on failures; this grep
+      # closes the "skipped counts as green" hole).
+      - name: Database integration suites (required — fail if skipped)
+        working-directory: backend
+        run: |
+          npx vitest run \
+            tests/phase0_gates.test.ts \
+            tests/phase5_gates.test.ts \
+            tests/driver_onboarding.test.ts \
+            tests/geofence_crossing.test.ts \
+            --reporter=verbose 2>/dev/null | tee /tmp/db-integration.log
+          # vitest itself exits non-zero on any failed test; the checks below
+          # close the "silently skipped counts as green" hole. NOTE: match
+          # only vitest's own summary lines — benign app logs (e.g.
+          # "[osm-gateway] OSRM unavailable") must not trip the gate.
+          for f in phase0_gates phase5_gates driver_onboarding geofence_crossing; do
+            grep -q "$f.test.ts" /tmp/db-integration.log || { echo "::error::DB integration suite $f did not run"; exit 1; }
+          done
+          grep -E "Test Files.*(failed|skipped)|Tests +(.*failed|.*skipped)" /tmp/db-integration.log && { echo "::error::A required DB integration file failed or was skipped"; exit 1; } || true
+          grep -q "Test Files  4 passed" /tmp/db-integration.log || { echo "::error::Expected exactly 4 passing DB integration files"; exit 1; }
+          echo "All four DB-gated integration suites executed and passed."
       - name: Build
         working-directory: backend
         run: npm run build
