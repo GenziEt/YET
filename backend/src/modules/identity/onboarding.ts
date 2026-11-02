@@ -209,6 +209,33 @@ const DOC_EXTENSIONS: Record<string, string> = {
   'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'application/pdf': '.pdf',
 };
 
+/**
+ * Audit P1 (file-validation weakness): the client-supplied multipart MIME type
+ * is only a CLAIM. The authoritative type is derived from the actual file
+ * signature (magic bytes) and the claim must match — a JPEG renamed to
+ * application/pdf (or any polyglot/malformed blob) is rejected with 415 before
+ * it ever reaches the review queue. WebP is validated as RIFF....WEBP plus the
+ * required VP8/VP8L/VP8X chunk fourcc; PDF requires the %PDF- header AND at
+ * least one %%EOF trailer marker so truncated garbage is refused.
+ */
+export function sniffDocMagic(buf: Buffer): string | null {
+  if (!buf || buf.length < 12) return null;
+  // JPEG: SOI marker FFD8 and no trailing EOI (FFD9) tolerance — keep strict-ish.
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf.includes(Buffer.from([0xff, 0xd9]), 2)) return 'image/jpeg';
+  // PNG: 8-byte signature + IHDR chunk within the first 33 bytes.
+  if (buf.length >= 33 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      && buf.subarray(12, 16).toString('latin1') === 'IHDR') return 'image/png';
+  // WEBP: RIFF????WEBPVP8 | VP8L | VP8X
+  if (buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP'
+      && ['VP8 ', 'VP8L', 'VP8X'].includes(buf.subarray(12, 16).toString('latin1'))) return 'image/webp';
+  // PDF: %PDF- header near the start and %%EOF somewhere in the tail.
+  if (buf.subarray(0, 1024).toString('latin1').includes('%PDF-')) {
+    const tail = buf.subarray(Math.max(0, buf.length - 4096)).toString('latin1');
+    if (tail.includes('%%EOF') || tail.includes('%%EOF\n') || /%%EOF\s*$/.test(tail)) return 'application/pdf';
+  }
+  return null;
+}
+
 /** Reverse map: stored extension -> authoritative mime type. Used when serving
  *  an uploaded document back to reviewers so the browser renders it inline. */
 const EXT_MIME: Record<string, string> = Object.fromEntries(
@@ -718,34 +745,61 @@ export default async function onboardingRoutes(app: FastifyInstance) {
       await data.toBuffer().catch(() => {});
       return reply.code(400).send({ error: 'invalid_doc_type', allowed: DocumentType.options });
     }
-    const mimetype = data.mimetype ?? '';
-    if (!(mimetype in DOC_EXTENSIONS)) {
+    const claimedMime = data.mimetype ?? '';
+    if (!(claimedMime in DOC_EXTENSIONS)) {
       await data.toBuffer().catch(() => {});
       return reply.code(415).send({ error: 'unsupported_media_type', allowed: Object.keys(DOC_EXTENSIONS) });
     }
     const buf = await data.toBuffer(); // size capped by @fastify/multipart limits
+    // Audit P1 hardening #1/#2: authoritative type comes from the file's magic
+    // bytes, and the client claim must match it. Mismatched/polyglot/malformed
+    // files are rejected before anything is written or inserted.
+    const sniffed = sniffDocMagic(buf);
+    if (!sniffed || sniffed !== claimedMime) {
+      return reply.code(415).send({ error: 'file_signature_mismatch',
+                                    hint: 'the uploaded bytes are not a valid ' + claimedMime + ' file' });
+    }
     const dir = path.resolve(env.DOC_UPLOAD_DIR);
     await fs.mkdir(dir, { recursive: true });
     const fileId = crypto.randomUUID();
-    const filePath = path.join(dir, `${auth.id}.${parsedType.data.toLowerCase()}${DOC_EXTENSIONS[mimetype]}`);
-    // Atomic replace: write temp then rename over the previous active document.
-    const tmp = `${filePath}.${fileId}.tmp`;
-    await fs.writeFile(tmp, buf);
-    await fs.rename(tmp, filePath);
+    // Audit P1 hardening #3: unique immutable storage filename (UUID). The DB
+    // row is the only pointer; superseded blobs stay untouched for forensic
+    // history instead of being overwritten in place.
+    const filePath = path.join(dir, `${fileId}.${auth.id}.${parsedType.data.toLowerCase()}${DOC_EXTENSIONS[sniffed]}`);
+    // Write to a temp name, fsync, then atomic rename — a reader never sees a
+    // half-written blob even if the process dies mid-write.
+    const tmp = `${filePath}.tmp`;
+    try {
+      const fh = await fs.open(tmp, 'w');
+      try { await fh.write(buf); await fh.sync(); } finally { await fh.close(); }
+      await fs.rename(tmp, filePath);
+    } catch (err) {
+      await fs.rm(tmp, { force: true }).catch(() => {});
+      throw err;
+    }
 
     const expiresOn = typeof fields.expires_on?.value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(fields.expires_on.value)
       ? fields.expires_on.value : null;
 
-    const { rows } = await pool.query(
-      `WITH retire AS (
-         UPDATE driver_documents SET status = 'REJECTED', review_note = 'Superseded by re-upload'
-          WHERE driver_id = $1 AND doc_type = $2::document_type
-            AND status IN ('PENDING_REVIEW','VERIFIED')
-       )
-       INSERT INTO driver_documents (driver_id, doc_type, file_path, mime_type, size_bytes, expires_on)
-       VALUES ($1, $2::document_type, $3, $4, $5, $6)
-       RETURNING id, doc_type::text AS doc_type, status::text AS status, expires_on, uploaded_at`,
-      [auth.id, parsedType.data, filePath.replace(/\\/g, '/'), mimetype, buf.length, expiresOn]);
+    let docRow;
+    try {
+      const { rows } = await pool.query(
+        `WITH retire AS (
+           UPDATE driver_documents SET status = 'REJECTED', review_note = 'Superseded by re-upload'
+            WHERE driver_id = $1 AND doc_type = $2::document_type
+              AND status IN ('PENDING_REVIEW','VERIFIED')
+         )
+         INSERT INTO driver_documents (driver_id, doc_type, file_path, mime_type, size_bytes, expires_on)
+         VALUES ($1, $2::document_type, $3, $4, $5, $6)
+         RETURNING id, doc_type::text AS doc_type, status::text AS status, expires_on, uploaded_at`,
+        [auth.id, parsedType.data, filePath.replace(/\\/g, '/'), sniffed, buf.length, expiresOn]);
+      docRow = rows[0];
+    } catch (err) {
+      // Audit P1 hardening #4: recoverable swap — if the DB side fails, remove
+      // the orphaned blob we just wrote so storage and database cannot drift.
+      await fs.rm(filePath, { force: true }).catch(() => {});
+      throw err;
+    }
 
     // License expiry mirrored onto the profile keeps tracking consistent.
     if (parsedType.data === 'DRIVING_LICENSE' && expiresOn) {
@@ -754,7 +808,7 @@ export default async function onboardingRoutes(app: FastifyInstance) {
     }
     await audit({ actorId: auth.id, action: 'document_uploaded', targetUser: auth.id, ip: req.ip,
                   detail: { doc_type: parsedType.data, size_bytes: buf.length } });
-    return reply.code(201).send({ ...rows[0], mandatory: parsedType.data === 'DRIVING_LICENSE' });
+    return reply.code(201).send({ ...docRow, mandatory: parsedType.data === 'DRIVING_LICENSE' });
   });
 
   /** GET /me/devices — the driver sees which installs are paired (transparency). */

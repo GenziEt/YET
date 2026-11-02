@@ -310,10 +310,13 @@ d('driver onboarding without login (module 1, migration 0016)', () => {
       `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="lic.jpg"\r\n` +
       `Content-Type: image/jpeg\r\n\r\n`);
     const end = Buffer.from(`\r\n--${boundary}--\r\n`);
+    // Audit P1 hardening: uploads must carry a REAL JPEG signature (SOI FFD8
+    // ... EOI FFD9). Magic-byte sniffing now rejects client-MIME-only claims.
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.from('%JPEGFAKE'), Buffer.from([0xff, 0xd9])]);
 
     const ok = await app.inject({ method: 'POST', url: '/me/documents',
       headers: { authorization: `Bearer ${token}`, 'content-type': `multipart/form-data; boundary=${boundary}` },
-      payload: Buffer.concat([filePart('DRIVING_LICENSE'), Buffer.from('%JPEGFAKE'), end]) });
+      payload: Buffer.concat([filePart('DRIVING_LICENSE'), jpeg, end]) });
     expect(ok.statusCode).toBe(201);
     const doc = JSON.parse(ok.body);
     expect(doc.status).toBe('PENDING_REVIEW');
@@ -321,9 +324,17 @@ d('driver onboarding without login (module 1, migration 0016)', () => {
 
     const bad = await app.inject({ method: 'POST', url: '/me/documents',
       headers: { authorization: `Bearer ${token}`, 'content-type': `multipart/form-data; boundary=${boundary}` },
-      payload: Buffer.concat([filePart('SELFIE'), Buffer.from('%JPEGFAKE'), end]) });
+      payload: Buffer.concat([filePart('SELFIE'), jpeg, end]) });
     expect(bad.statusCode).toBe(400);
     expect(JSON.parse(bad.body).error).toBe('invalid_doc_type');
+
+    // Signature/claim mismatch is refused fail-closed with 415 (audit P1):
+    // claiming image/jpeg while sending plain text must never be stored.
+    const spoof = await app.inject({ method: 'POST', url: '/me/documents',
+      headers: { authorization: `Bearer ${token}`, 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: Buffer.concat([filePart('DRIVING_LICENSE'), Buffer.from('<script>not-a-jpeg</script>'.repeat(3)), end]) });
+    expect(spoof.statusCode).toBe(415);
+    expect(JSON.parse(spoof.body).error).toBe('file_signature_mismatch');
   });
 
   it('admin can view/download the uploaded document file; driver role cannot', async () => {

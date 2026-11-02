@@ -53,6 +53,21 @@ say "staging files on remote (nginx.conf.new / compose.new — live untouched)"
 rsync -a --delete=false "$HERE/nginx.conf" "$TARGET_HOST:$REMOTE_DIR/nginx.conf.staged.$TS"
 rsync -a "$HERE/docker-compose.yml"        "$TARGET_HOST:$REMOTE_DIR/docker-compose.yml.staged.$TS"
 
+# ---- Audit P0 (TLS): render the staged nginx.conf before validation --------
+# 1) substitute ${YET_TLS_ENFORCE} from the host env file (default off until a
+#    cert exists, so a plain re-deploy never redirects traffic unexpectedly);
+# 2) when certs ARE present AND enforcement is on, uncomment the 443 server
+#    block shipped in nginx.conf; 3) `nginx -t` below then validates the REAL
+#    rendered config against the live binary BEFORE anything is swapped.
+ssh_run "cd '$REMOTE_DIR' \
+  && TLS_ENFORCE=\$(grep -E '^YET_TLS_ENFORCE=' .env 2>/dev/null | cut -d= -f2 || true) \
+  && TLS_ENFORCE=\${TLS_ENFORCE:-off} \
+  && [ \"\$TLS_ENFORCE\" = 1 ] && TLS_ENFORCE=on || TLS_ENFORCE=\$TLS_ENFORCE \
+  && sed -i \"s|\\\${YET_TLS_ENFORCE}|\$TLS_ENFORCE|g\" nginx.conf.staged.\$TS \
+  && if [ \"\$TLS_ENFORCE\" = on ] && docker compose exec -T gateway test -f /etc/letsencrypt/live/YET_DOMAIN/fullchain.pem 2>/dev/null; then \
+       sed -i '/Audit P0 (TLS deployment blocker): functional HTTPS server/,/^# }\$/ s/^# //' nginx.conf.staged.\$TS; \
+     fi"
+
 # ---------------------------------------------------------------------------
 say "validate staged compose file (config render only, no container ops)"
 ssh_run "cd '$REMOTE_DIR' && cp docker-compose.yml docker-compose.yml.bak.$TS \
