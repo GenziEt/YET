@@ -403,6 +403,14 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
       `WITH old AS (SELECT id FROM fleets WHERE name = 'p5g-retention'),
         od AS (SELECT id FROM users WHERE fleet_id IN (SELECT id FROM old))
        DELETE FROM location_fixes WHERE driver_id IN (SELECT id FROM od)`, []);
+    // Also purge residue under OTHER drivers (e.g. fleetA's seeded driver,
+    // whose /ingest/locations test inserts a hard-dated 2026-10-25 fix that
+    // ages past the 90-day cutoff on real clocks). The downsample pass ranks
+    // per-driver across ALL old rows; residue in another driver's partition
+    // would delete that driver's rows and make this suite's global counters
+    // non-deterministic across reruns/days.
+    await poolX.query(
+      `DELETE FROM location_fixes WHERE fix_timestamp < now() - interval '300 days'`, []);
     await poolX.query(
       `WITH old AS (SELECT id FROM fleets WHERE name = 'p5g-retention'),
         od AS (SELECT id FROM users WHERE fleet_id IN (SELECT id FROM old))

@@ -55,16 +55,47 @@ export function downsampleWhereSql(keepEveryN: number): string {
 }
 
 /**
- * Idempotence-safe DELETE predicate. The plain phase test above deletes rows
- * whose renumbered position lands on a delete phase — but after the first pass
- * survivors renumber (e.g. old rn 12 becomes rn 2), so a naive re-run would
- * keep pruning previously-kept anchors and never stabilize. Adding `rn <= N`
- * pins the first N rows of every driver's scanned stream as permanent anchors:
- *   pass 1: keeps rn 1 & 11 of 15; pass 2: survivors rank 1..4 ⇒ nothing new
- *   qualifies ((rn-1)%N==0 only at rn=1 ≤ N). Fixed point reached immediately,
- *   matching selectDownsample()'s documented stability contract.
+ * Idempotence-safe DELETE predicate. The plain phase test (downsampleWhereSql)
+ * deletes rows whose RENUMBERED position lands on a delete phase — after the
+ * first pass survivors renumber (e.g. old rn 12 becomes rn 2), so a naive
+ * re-run keeps pruning previously-kept anchors and never stabilizes (proved
+ * live: pass 2 deleted the surviving rn=2 anchor of a 4-row stream).
+ *
+ * Stable rule: within each driver's scanned OLD window, keep the FIRST N rows
+ * as permanent anchors plus every Nth thereafter; delete only rows beyond one
+ * full period that are not on the keep lattice:
+ *   doomed := rn > N AND rn % N <> 0        (keep rn<=N always; then rn=N+? …
+ *                                            only multiples of N survive)
+ * Induction proof of idempotence: pass 1 leaves {rn <= N} ∪ {m·N}. Renumbered,
+ * the first N survivors rank 1..N (anchor-protected again) and the lattice
+ * survivors rank ≥ N+1 at positions congruent to 0 mod N — so pass 2 deletes
+ * nothing new. Fixed point reached immediately.
+ * Policy fidelity (§1.10.6 "keep every 10th fix, delete the rest"): for streams
+ * longer than one period this retains exactly every Nth row of the aged tail.
+ * NOTE (audit trail): two earlier revisions were wrong — `(rn > N AND (rn-1)%N
+ * <> 0)` deleted the rn=11 anchor of a 15-row stream (11 survivors instead of
+ * the expected phase pattern), and `(rn > 1 AND (rn-1)%N <> 0)` broke idempotence
+ * because survivors renumber off the phase lattice. Both observed live.
  */
 export function downsampleDeletePredicateSql(keepEveryN: number): string {
   const n = Math.max(1, Math.trunc(keepEveryN));
-  return `(rn > ${n} AND (rn - 1) % ${n} <> 0)`;
+  return `(rn > ${n} AND rn % ${n} <> 0)`;
+}
+
+/** Pure mirror of downsampleDeletePredicateSql over ONE driver's already-sorted
+ *  old-window stream (positions are 1-based ranks, exactly like SQL rn()).
+ *  This is the contract the production DELETE executes; selectDownsample()
+ *  below keeps the original naive-phase semantics for its own unit tests. */
+export function selectStableDownsample(rows: RetentionRow[], policy: RetentionPolicy = RETENTION_DEFAULTS): {
+  keepIds: Array<number | string>; deleteIds: Array<number | string>;
+} {
+  const sorted = [...rows].sort(compareRetentionRows);
+  const n = Math.max(1, Math.trunc(policy.keepEveryN));
+  const keepIds: Array<number | string> = [];
+  const deleteIds: Array<number | string> = [];
+  sorted.forEach((r, i) => {
+    const rn = i + 1;
+    (rn <= n || rn % n === 0 ? keepIds : deleteIds).push(r.fix_id);
+  });
+  return { keepIds, deleteIds };
 }
