@@ -480,32 +480,35 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
     expect(res.statusCode).toBe(200);
     const body = res.json();
     // Downsample contract (shared with scripts/retention.mjs through
-    // retention_kernel.downsampleDeletePredicateSql): within each driver's
-    // OLD window, rank rn 1..15 oldest-first and keep phase (rn-1)%N==0.
-    // With N=10 that keeps rn 1 & 11 and deletes rn 2..10 and 12..15 —
-    // exactly 13 deletions attributable to this suite's throwaway driver.
-    // NOTE: an earlier comment here claimed "13 deletions"; that arithmetic
-    // was wrong (15 seeded − 2 kept = 13 DELETED means 13 removed, leaving 2 —
-    // consistent, but the envelope counter we assert is OUR batch's survivors,
-    // not a global delete count). The envelope's deleted_rows is GLOBAL across
-    // fleets/suites sharing this database (vitest runs files concurrently), so
-    // it cannot be pinned to one suite's seed data. Assert the deterministic
-    // per-batch outcome directly against DB state instead.
+    // retention_kernel.downsampleDeletePredicateSql): stable rule
+    //   doomed := rn > N AND rn % N <> 0
+    // i.e. keep the FIRST N rows as permanent anchors PLUS every Nth
+    // thereafter. With N=10 over the 15-row OLD window this keeps rn 1..10
+    // plus lattice survivor rn 10, and deletes rn 11..15 (none of 11..15 is a
+    // multiple of 10) → EXACTLY 10 old rows remain and 5 are deleted. This is
+    // the idempotent fixed point: re-ranking the 10 survivors yields rn 1..10,
+    // all anchor-protected, so pass 2 deletes nothing.
+    // (Historic note: earlier revisions of this file asserted "rn 1 & 11
+    // survive ⇒ 2" under a naive-phase rule; that rule broke idempotence on
+    // re-rank and was replaced by the kernel's stable predicate.)
+    // The envelope's deleted_rows is GLOBAL across fleets/suites sharing this
+    // database (vitest runs files concurrently), so it cannot be pinned to one
+    // suite's seed data; assert our batch's deterministic outcome directly.
     const { rows: mine } = await poolX.query(
       `SELECT count(*)::int AS n FROM location_fixes
         WHERE batch_id = $1 AND fix_timestamp < now() - interval '100 days'`, [retBatch]);
-    expect(mine[0].n).toBe(2); // rn 1 & 11 survived downsample
-    expect(body.deleted_rows).toBeGreaterThanOrEqual(13); // global lower bound
+    expect(mine[0].n).toBe(10); // rn 1..10 anchor-kept by stable rule
+    expect(body.deleted_rows).toBeGreaterThanOrEqual(5); // global lower bound (our batch alone)
     expect(body.audit_action).toBe('retention_downsample');
 
     const { rows: left } = await poolX.query(
       `SELECT count(*)::int AS n FROM location_fixes WHERE driver_id = $1`, [retDriver]);
-    // 3 recent survive + exactly 2 old anchors (rn 1 & 11 of the 15 seeded).
-    expect(left[0].n).toBe(5);
+    // 3 recent survive + exactly 10 old anchors (rn 1..10 of the 15 seeded).
+    expect(left[0].n).toBe(13);
     const { rows: oldLeft } = await poolX.query(
       `SELECT count(*)::int AS n FROM location_fixes
         WHERE driver_id=$1 AND fix_timestamp < now() - interval '100 days'`, [retDriver]);
-    expect(oldLeft[0].n).toBe(2);
+    expect(oldLeft[0].n).toBe(10);
 
     // Idempotence: an immediate re-run deletes nothing further for this driver.
     const res2 = await app.inject({ method: 'POST', url: '/reports/retention/run',
@@ -514,7 +517,7 @@ d('Phase 5 gates (Postgres integration): cross-fleet denials + CSV export', () =
     expect(res2.statusCode).toBe(200);
     const { rows: left2 } = await poolX.query(
       `SELECT count(*)::int AS n FROM location_fixes WHERE driver_id=$1`, [retDriver]);
-    expect(left2[0].n).toBe(5);
+    expect(left2[0].n).toBe(13);
 
     // Audit receipt lands in the same ledger the API uses (§Gate traceability).
     const { rows: aud } = await poolX.query(
