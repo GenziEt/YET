@@ -414,12 +414,10 @@ class PilotService {
 
   Future<Directory> tileCacheRoot() async {
     final base = await getApplicationSupportDirectory();
-    final dir = Directory('${base.path}$separator$tileCacheDirName');
+    final dir = Directory('${base.path}${Platform.pathSeparator}$tileCacheDirName');
     if (!await dir.exists()) await dir.create(recursive: true);
     return dir;
   }
-
-  static String get separator => Platform.isWindows ? '\\' : '/';
 
   /// Download every tile in [bounds] from the SELF-HOSTED tile server only
   /// (§1.9.3: public OSM servers forbidden in production; AppConfig.tileUrlTemplate
@@ -463,8 +461,9 @@ class PilotService {
     Future<void> worker() async {
       while (queue.isNotEmpty) {
         final job = queue.removeAt(0);
-        final rel = '$job.z$separator$job.x$separator$job.y.png';
-        final f = File('${root.path}$separator$rel');
+        // Canonical layout helper (§audit: writer and reader share ONE path
+        // function so the two sides can never drift apart).
+        final f = File(tileFilePathFor(root.path, job.z, job.x, job.y));
         if (await f.exists()) {
           done++;
           emit(false);

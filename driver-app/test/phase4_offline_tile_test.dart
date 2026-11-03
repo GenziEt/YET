@@ -11,7 +11,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:yet_driver/core/config/app_config.dart';
 import 'package:yet_driver/features/auth/token_store.dart';
-import 'package:yet_driver/features/pilot/offline_map_screen.dart';
+import 'package:yet_driver/features/pilot/offline_map_screen.dart'
+    show OfflineTileImage, tileFilePathFor;
 import 'package:yet_driver/features/pilot/pilot_service.dart';
 
 /// §Phase 4: "Offline tile-download logic is connected to the actual map layer
@@ -37,6 +38,7 @@ void main() {
 
   late Directory tmp;
   late String rootWithSlash; // cache root passed to filePathFor/widget
+  String get progresslessRoot => tmp.path; // same root, NO trailing slash
 
   setUp(() async {
     tmp = await Directory.systemTemp.createTemp('yet_tiles_test');
@@ -52,9 +54,16 @@ void main() {
 
   group('OfflineTileImage read path', () {
     test('filePathFor canonical layout matches prefetch write layout', () {
-      // '$root{z}/{x}/{y}.png' — root must end with the separator.
+      // '{root}{z}/{x}/{y}.png' — root may end WITH or WITHOUT a trailing
+      // separator; the canonical helper normalises both to one layout.
       expect(OfflineTileImage.filePathFor(rootWithSlash, 6, 34, 21),
           '${rootWithSlash}6/34/21.png');
+      expect(OfflineTileImage.filePathFor(tmp.path, 6, 34, 21),
+          '$rootWithSlash' + '6/34/21.png');
+      // Writer (PilotService.prefetchTiles) and reader share this exact
+      // function now, so round-trip equality below proves both sides.
+      expect(tileFilePathFor(progresslessRoot, 6, 34, 21),
+          OfflineTileImage.filePathFor(progresslessRoot, 6, 34, 21));
     });
 
     testWidgets('tile written at filePathFor renders as Image (not error)',
@@ -156,8 +165,10 @@ void main() {
         final xr = bounds.xRange(z), yr = bounds.yRange(z);
         for (var x = xr[0]; x <= xr[1]; x++) {
           for (var y = yr[0]; y <= yr[1]; y++) {
+            // Deliberately pass the root WITHOUT a trailing separator:
+            // the canonical helper must still resolve the writer's layout.
             final p = OfflineTileImage.filePathFor(
-                '${progress.cacheRoot}/', z, x, y);
+                progress.cacheRoot, z, x, y);
             expect(File(p).existsSync(), isTrue, reason: 'missing $p');
             expect(await File(p).readAsBytes(), pngBytes);
           }

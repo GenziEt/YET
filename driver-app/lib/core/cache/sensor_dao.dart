@@ -123,18 +123,6 @@ class SensorDao {
         'CREATE INDEX idx_sensors_time ON $tableSensors (event_timestamp)');
   }
 
-  /// Open + crash recovery (§1.8.1). Call once at startup alongside FixDao.open.
-  static Future<SensorDao> openAndRecover(String path) async {
-    final db = await openDatabase(
-      path,
-      version: dbVersion,
-      onCreate: onCreate,
-    );
-    final dao = SensorDao(db);
-    await dao.recoverUnackedUploads();
-    return dao;
-  }
-
   /// §1.8.1: UPLOADING rows that were never ACKed return to PENDING on restart.
   Future<int> recoverUnackedUploads() => db.update(
         tableSensors,

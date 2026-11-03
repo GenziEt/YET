@@ -79,7 +79,10 @@ Rules (implemented in `driver-app/lib/core/cache/sync_state.dart`, gated by
 - Cache ceiling under normal operation: **100 MB**.
 - At >80 MB: warn the driver and prioritize uploading GPS fixes over sensor events.
 - **GPS fixes are never discarded before upload.** Sensor events may be downsampled if
-  storage is critically constrained (>95 MB sustained).
+  storage is critically constrained (>95 MB sustained). Implemented in
+  `SyncWorker.prune()` as ACKED-only eviction: when the shared cache file stays above
+  95 MB after the budget pass, already-uploaded (ACKED) sensor rows are dropped
+  oldest-first until the 50 MB budget is met; un-ACKED rows are never touched.
 - Constants live in `driver-app/lib/core/config/app_config.dart` — change them there and
   update this document in the same PR.
 
