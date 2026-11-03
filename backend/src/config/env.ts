@@ -25,7 +25,15 @@ const EnvSchema = z.object({
   REDIS_URL: z.string().default('redis://localhost:6379'),
 
   JWT_SECRET: z.string().min(16, 'JWT_SECRET too short'),
-  JWT_ACCESS_TTL: z.string().default('12h'),
+  // Access-token TTL. Audit P3 fix: previously a bare z.string() with an `as`
+  // cast at the sign site, so typos ("12h " / "1H") or absurd values (e.g.
+  // "100y") booted fine and silently widened the token's lifetime window.
+  // Strictly validated as a jsonwebtoken-compatible duration string now —
+  // fail-closed at boot like every other compliance knob. The 12 h default is
+  // accepted WITHOUT refresh rotation because migration 0017's token_version
+  // epoch (lib/revocation.ts) revokes outstanding tokens immediately on
+  // un-pair / suspend / lost-phone; see docs/COMPLIANCE-PDPP.md §Token policy.
+  JWT_ACCESS_TTL: z.string().regex(/^\d{1,5}[smhdw]?$/, 'JWT_ACCESS_TTL must be a duration like 900s, 15m, 12h, 7d').default('12h'),
   ADMIN_BOOTSTRAP_EMAIL: z.string().email().optional(),
   ADMIN_BOOTSTRAP_PASSWORD: z.string().min(8).optional(),
 

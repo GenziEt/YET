@@ -57,11 +57,43 @@ export async function buildApp() {
   });
 
   /** Compile a comma-separated IP/CIDR list into a Fastify trust-proxy fn.
-   *  Entries are matched literally (IP or CIDR prefix); anything else falls
-   *  back to the socket address (header ignored). */
+   *  Audit P2 fix: entries are matched by true containment, not string prefix —
+   *  the old `ip.startsWith('172.')` shortcut trusted public space like
+   *  172.99.x.x as if it were inside 172.16.0.0/12, poisoning the rate-limit
+   *  key via spoofed X-Forwarded-For. Bare IPs must match exactly; CIDRs use
+   *  integer octet + prefix-length comparison (IPv4 only; anything unparseable
+   *  is never trusted and falls back to the socket address). */
   function buildTrustedMatcher(list: string): (ip: string) => boolean {
     const items = list.split(',').map((s) => s.trim()).filter(Boolean);
-    return (ip: string) => items.some((entry) => ip === entry || ip.startsWith(entry.replace(/\/.*$/, '')) && entry.includes('/'));
+    return (remoteIp: string) => items.some((entry) => isIpOrCidrMatch(remoteIp, entry));
+  }
+
+  /** Parse an IPv4 dotted quad to a 32-bit unsigned int; null if malformed. */
+  function ipv4ToInt(ip: string): number | null {
+    const parts = ip.split('.');
+    if (parts.length !== 4) return null;
+    let n = 0;
+    for (const p of parts) {
+      if (!/^\d{1,3}$/.test(p)) return null;
+      const o = Number(p);
+      if (o > 255) return null;
+      n = n * 256 + o;
+    }
+    return n >>> 0;
+  }
+
+  /** Exact-IP or CIDR-containment check (e.g. 172.16.3.4 in 172.16.0.0/12). */
+  function isIpOrCidrMatch(ip: string, entry: string): boolean {
+    if (!entry.includes('/')) return ip === entry;
+    const [cidrBase, bitsStr] = entry.split('/');
+    const bits = Number(bitsStr);
+    if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+    if (bits === 0) return true;
+    const a = ipv4ToInt(ip);
+    const b = ipv4ToInt(cidrBase);
+    if (a === null || b === null) return false;
+    const mask = (0xffffffff << bits) >>> 0;
+    return (a & mask) === (b & mask);
   }
 
   // Machine-readable denial codes are made serialization-proof at the SOURCE:
