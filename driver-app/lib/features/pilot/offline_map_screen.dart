@@ -1,4 +1,4 @@
-import 'dart:io' show Directory, File;
+import 'dart:io' show Directory, File, Platform;
 import 'dart:typed_data' show Uint8List;
 
 import 'package:flutter/material.dart';
@@ -9,6 +9,19 @@ import '../../core/theme/yet_theme.dart';
 import '../../core/widgets/status_chip.dart';
 import '../../l10n/app_localizations.dart';
 import 'pilot_service.dart';
+
+/// Canonical on-disk location of one tile inside a prefetch cache root.
+/// The single source of truth for the tile layout ({root}/{z}/{x}/{y}.png):
+/// PilotService.prefetchTiles WRITES through this helper and OfflineTileImage
+/// READS through it, so the two paths can never drift apart. Tolerates a
+/// root with or without a trailing separator.
+String tileFilePathFor(String root, int z, int x, int y) {
+  final sep = Platform.isWindows ? r'\' : '/';
+  final normalized =
+      root.endsWith('/') || root.endsWith(r'\') ? root : '$root$sep';
+  return '$normalized$z$sep$x$sep$y.png';
+}
+
 
 /// Offline tile read path (§Phase 4: "the map widget reads from the downloaded
 /// cache directory when offline"). [OfflineTileImage] resolves a Web-Mercator
@@ -46,8 +59,10 @@ class OfflineTileImage extends StatefulWidget {
   final Duration fadeDuration;
 
   /// Canonical on-disk location of one tile inside a prefetch cache root.
+  /// Delegates to the library-level [tileFilePathFor], which is also the
+  /// writer used by [PilotService.prefetchTiles] — one layout, one helper.
   static String filePathFor(String root, int z, int x, int y) =>
-      '$root${z.toString()}/${x.toString()}/${y.toString()}.png';
+      tileFilePathFor(root, z, x, y);
 
   @override
   State<OfflineTileImage> createState() => _OfflineTileImageState();

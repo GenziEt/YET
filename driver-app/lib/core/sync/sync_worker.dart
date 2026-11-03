@@ -351,14 +351,9 @@ class SyncWorker {
       deletedByAge: byAge,
       deletedByBudget: byBudget,
       warnedDriver: warnDriver,
-      downsampledSensors: downsamplesensorsGuard(downsampledSensors),
+      downsampledSensors: downsampledSensors,
     );
   }
-
-  /// §1.8.6 critical tier: extra ACKED-only sensor eviction beyond the normal
-  /// budget pass. Delegates to the DAO's oldest-first ACKED pruning; returns
-  /// rows deleted. Never touches PENDING/UPLOADING rows.
-  static bool downsamplesensorsGuard(bool v) => v;
 
   // ── Default uploader (production wiring) ───────────────────────────────────
 
@@ -413,9 +408,6 @@ class SyncWorker {
       }
     };
   }
-
-  /// Test/dev helper: stop taking new cycles (used by widget teardown).
-  void pause() => _stopping = true;
 
   // ── Pilot telemetry transports (Phase 4) ───────────────────────────────────
 
@@ -599,10 +591,15 @@ class PruneReport {
     required this.deletedByAge,
     required this.deletedByBudget,
     required this.warnedDriver,
+    this.downsampledSensors = false,
   });
   final int deletedByAge;
   final int deletedByBudget;
   final bool warnedDriver;
+  /// §1.8.6 critical tier (>95 MB): true when ACKED sensor history was
+  /// additionally evicted to keep the shared cache file under its ceiling.
+  /// Never implies un-ACKED data loss — GPS fixes are untouched pre-upload.
+  final bool downsampledSensors;
 }
 
 class RetryableUploadException implements Exception {

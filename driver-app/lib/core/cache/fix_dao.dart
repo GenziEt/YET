@@ -126,19 +126,6 @@ class FixDao {
     await db.execute('CREATE INDEX idx_fixes_time ON $tableFixes (fix_timestamp)');
   }
 
-  /// Open + crash recovery. Call once at startup (pre-warmed off the cold-start
-  /// critical path per §1.9.1).
-  static Future<FixDao> openAndRecover(String path) async {
-    final db = await openDatabase(
-      path,
-      version: dbVersion,
-      onCreate: onCreate,
-    );
-    final dao = FixDao(db);
-    await dao.recoverUnackedUploads();
-    return dao;
-  }
-
   /// §1.8.1: "UPLOADING rows that were never ACKed return to PENDING on process
   /// restart." Their batch_id is cleared so they get re-stamped fresh.
   Future<int> recoverUnackedUploads() => db.update(
