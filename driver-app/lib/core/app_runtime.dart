@@ -292,6 +292,12 @@ class AppRuntime extends ChangeNotifier {
       // picked up within one tick) and resubscribes only on tier changes.
       _tripActive = true;
       _lastDiscreteEventAt = null;
+      // Seed with the interval the just-built stream was configured with:
+      // beginCollection() synchronously calls the source factory, which reads
+      // gps.currentInterval before any fix has flowed. Without this the first
+      // watchdog tick would see wanted(10 s) != applied(2 s) and resubscribe
+      // for no reason.
+      _appliedGpsInterval = gps.currentInterval;
       _adaptiveSamplingTimer?.cancel();
       _adaptiveSamplingTimer = Timer.periodic(
         const Duration(seconds: 20),

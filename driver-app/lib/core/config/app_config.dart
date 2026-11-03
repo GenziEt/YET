@@ -30,6 +30,10 @@ class AppConfig {
   static const backoffCap = Duration(minutes: 5); // exponential backoff cap
   static const storageWarnBytes = 80 * 1024 * 1024; // §1.8.6 warn threshold
   static const storageHardCapBytes = 100 * 1024 * 1024;
+  /// §1.8.6 critical tier: sustained pressure above this line triggers the
+  /// sensor-downsample pass (ACKED-only eviction). The constant lives here so
+  /// docs and code change in one PR; see SyncWorker.prune().
+  static const storageCriticalBytes = 95 * 1024 * 1024;
   static const ackedRetention = Duration(days: 7); // ACKED pruned after 7 days (§1.8.1)
 
   static bool get isAndroid => Platform.isAndroid;
