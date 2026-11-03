@@ -92,7 +92,7 @@ export default async function reportingRoutes(app: FastifyInstance) {
     from: z.string().datetime(),
     to: z.string().datetime(),
     driver_id: z.string().uuid().optional(),
-    format: z.enum(['json', 'csv']).default('json'),
+    format: FormatSchema.shape.format, // single source of truth for the export format enum
   });
 
   const TRIP_CSV_COLUMNS = [

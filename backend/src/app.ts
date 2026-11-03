@@ -85,7 +85,8 @@ export async function buildApp() {
   /** Exact-IP or CIDR-containment check (e.g. 172.16.3.4 in 172.16.0.0/12). */
   function isIpOrCidrMatch(ip: string, entry: string): boolean {
     if (!entry.includes('/')) return ip === entry;
-    const [cidrBase, bitsStr] = entry.split('/');
+    const cidrBase = entry.slice(0, entry.indexOf('/'));
+    const bitsStr = entry.slice(entry.indexOf('/') + 1);
     const bits = Number(bitsStr);
     if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false;
     if (bits === 0) return true;
