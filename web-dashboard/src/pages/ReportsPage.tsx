@@ -84,28 +84,9 @@ export default function ReportsPage() {
     }
   };
 
-  const submitLogin = (e: FormEvent) => { e.preventDefault(); void doLogin(); };
-
-  if (!signedIn) {
-    return (
-      <div className="page reports-page">
-        <form className="auth-card" onSubmit={submitLogin} aria-label="Fleet manager sign-in">
-          <h2>Fleet reports</h2>
-          <p>Sign in with a fleet-manager account to read trip / separation reports. All reads are audit-logged.</p>
-          <label>Email or phone
-            <input placeholder="email or +251 phone" autoComplete="username" value={creds.identifier}
-                   onChange={(e) => setCreds({ ...creds, identifier: e.target.value })} />
-          </label>
-          <label>Password
-            <input placeholder="password" type="password" autoComplete="current-password" value={creds.password}
-                   onChange={(e) => setCreds({ ...creds, password: e.target.value })} />
-          </label>
-          {authMsg && <p className="auth-error" role="alert">{authMsg}</p>}
-          <button type="submit" className="btn btn-primary">Sign in</button>
-        </form>
-      </div>
-    );
-  }
+  // Sign-in UI lives in the app-level AuthGate; this page only renders content
+  // once a live manager session exists (App gates it, but keep a safe fallback).
+  if (!signedIn) return null;
 
   return (
     <div className="page reports-page">
@@ -124,7 +105,7 @@ export default function ReportsPage() {
         <button className="btn btn-primary" onClick={() => void load()} disabled={loading}>{loading ? 'Loading…' : 'Run report'}</button>
         <button className="btn" onClick={exportCsv}
                 disabled={(tab === 'trips' ? !trips : !seps)}>Export CSV</button>
-        <button className="btn" onClick={() => { logout(); setSignedIn(false); }}>Sign out</button>
+        <button className="btn" onClick={logout}>Sign out</button>
       </div>
       {err && <p className="auth-error" role="alert">{err}</p>}
 
