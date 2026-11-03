@@ -635,24 +635,37 @@ void main() {
     });
 
     test('backoff grows exponentially and caps at 5 minutes (§1.8.1)', () {
+      // Default base is the contract value (5 s); no override passed here so
+      // the test also pins AppConfig.backoffBase against §1.8.1 rule 3.
+      final w = SyncWorker(
+        dao: FixDao(FakeDb()),
+        uploader: (_, __) async => throw UnimplementedError(),
+        random: Random(7),
+      );
+      // attempt 1: ~5*2^1 = 10s ±20%
+      final b1 = w.backoffForAttempt(1);
+      expect(b1.inMilliseconds >= 8000, isTrue);
+      expect(b1.inMilliseconds <= 12000, isTrue);
+      // attempt 3: ~5*2^3 = 40s ±20%
+      final b3 = w.backoffForAttempt(3);
+      expect(b3.inMilliseconds >= 32000, isTrue);
+      expect(b3.inMilliseconds <= 48000, isTrue);
+      // huge attempt count: capped at backoffCap ± jitter (0.8*cap .. cap)
+      final bBig = w.backoffForAttempt(40);
+      expect(bBig.inMilliseconds >= 240000, isTrue); // >= 0.8 * 5min
+      expect(bBig.inMilliseconds <= 300000, isTrue); // <= cap
+    });
+
+    test('explicit baseBackoff override still honored (tests/diagnostics)', () {
       final w = SyncWorker(
         dao: FixDao(FakeDb()),
         uploader: (_, __) async => throw UnimplementedError(),
         baseBackoff: const Duration(seconds: 2),
         random: Random(7),
       );
-      // attempt 1: ~2*2^1 = 4s ±20%
-      final b1 = w.backoffForAttempt(1);
+      final b1 = w.backoffForAttempt(1); // ~2*2^1 = 4s ±20%
       expect(b1.inMilliseconds >= 3200, isTrue);
       expect(b1.inMilliseconds <= 4800, isTrue);
-      // attempt 3: ~2*2^3 = 16s ±20%
-      final b3 = w.backoffForAttempt(3);
-      expect(b3.inMilliseconds >= 12800, isTrue);
-      expect(b3.inMilliseconds <= 19200, isTrue);
-      // huge attempt count: capped at backoffCap ± jitter (0.8*cap .. cap)
-      final bBig = w.backoffForAttempt(40);
-      expect(bBig.inMilliseconds >= 240000, isTrue); // >= 0.8 * 5min
-      expect(bBig.inMilliseconds <= 300000, isTrue); // <= cap
     });
 
     test('runOnce: empty cache -> nothingPending, no HTTP call', () async {

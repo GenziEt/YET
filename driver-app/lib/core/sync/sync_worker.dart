@@ -68,7 +68,7 @@ class SyncWorker {
     this.sensorBatchLimit = AppConfig.maxBatchSensors,
   })  : _uploader = uploader,
         _sensorUploader = sensorUploader,
-        _baseBackoff = baseBackoff ?? const Duration(seconds: 2),
+        _baseBackoff = baseBackoff ?? AppConfig.backoffBase, // §1.8.1: 5 s base
         _rng = random ?? Random.secure();
 
   static const ackedRetention = AppConfig.ackedRetention; // 7 days (§1.8.1)
