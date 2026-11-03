@@ -66,9 +66,10 @@ export default function FleetMap() {
           <span>
             {state.counts.total} vehicles · {state.counts.on_trip} on trip ·{' '}
             {state.counts.separated_open} separated open · {state.counts.offline} offline/stale
-            {' — snapshot '}
-            {new Date(state.generated_at).toLocaleTimeString()}
-            {state.cached ? ' (cached)' : ''}
+            {' — snapshot ' + new Date(state.generated_at).toLocaleTimeString()}
+            {state.sw_served_from === 'indexeddb'
+              ? ' · OFFLINE: last known good from device cache'
+              : state.cached ? ' (cached)' : ''}
             {state.replica_lag_s != null && state.replica_lag_s > 5 ? ` · data may be ${state.replica_lag_s}s behind` : ''}
           </span>
         )}

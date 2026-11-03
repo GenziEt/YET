@@ -1,0 +1,32 @@
+{
+  "name": "YET — Fleet Dashboard",
+  "short_name": "YET Fleet",
+  "description": "Last-mile fleet visibility dashboard for YET managers: live map, trips, geofences, separations, pilot telemetry.",
+  "id": "/dashboard",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#0D1420",
+  "theme_color": "#0D1420",
+  "lang": "en",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "/met-logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/met-logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    { "name": "Fleet map", "url": "/?view=fleet" },
+    { "name": "Reports", "url": "/?view=reports" }
+  ]
+}

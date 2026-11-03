@@ -1,4 +1,4 @@
-dist/
-*.tsbuildinfo
 node_modules/
-backend/var/
+.env
+.env.local
+*.env.*
