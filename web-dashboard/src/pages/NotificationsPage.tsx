@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getNotificationLog, type NotificationLogRow } from '../lib/api';
+import { useSession } from '../components/AuthGate';
+import { getNotificationLog, handleUnauthorized, type NotificationLogRow } from '../lib/api';
 
 /**
  * Phase 5 audit follow-up — notification delivery ledger.
@@ -26,6 +27,7 @@ function fmtTime(iso: string | null): string {
 }
 
 export default function NotificationsPage() {
+  const role = useSession(); // /notifications/log is managers-only + audited
   const [eventType, setEventType] = useState<string>('');
   const [status, setStatus] = useState<string>('');
   const [rows, setRows] = useState<NotificationLogRow[]>([]);
@@ -33,6 +35,7 @@ export default function NotificationsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    if (!role) return; // managers-only audited read — needs a JWT
     setLoading(true);
     try {
       const r = await getNotificationLog({
@@ -43,11 +46,12 @@ export default function NotificationsPage() {
       setRows(r.notifications);
       setError(null);
     } catch (e) {
+      handleUnauthorized(e);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [eventType, status]);
+  }, [role, eventType, status]);
 
   useEffect(() => { void load(); }, [load]);
 

@@ -37,8 +37,21 @@ export async function login(identifier: string, password: string): Promise<{ rol
 export const logout = () => {
   localStorage.removeItem('yet_token');
   localStorage.removeItem('yet_role');
+  // PDPP privacy: tell the service worker to wipe the IndexedDB fleet-state
+  // snapshot so a cached personal-data copy never outlives the session on
+  // shared machines (see public/sw.js YET_CLEAR_CACHE handler).
+  navigator.serviceWorker?.getRegistration()
+    .then((reg) => reg?.active?.postMessage({ type: 'YET_CLEAR_CACHE' }))
+    .catch(() => { /* no SW registered — nothing to clear */ });
   notifySessionChange();
 };
+
+/** Unified 401 handling: an expired/invalid JWT must drop the stale session
+ *  and flip the AuthGate back to the sign-in card instead of leaving every
+ *  page spinning on silent fetch failures. */
+export function handleUnauthorized(err: unknown): void {
+  if (err instanceof ApiError && err.status === 401 && hasToken()) logout();
+}
 
 export const currentRole = () => localStorage.getItem('yet_role');
 export const hasToken = () => !!localStorage.getItem('yet_token');

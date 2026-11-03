@@ -1,5 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
-import { getDrivers, getFixes, type DriverRosterEntry, type LocationFixRow } from '../lib/api';
+import { useSession } from '../components/AuthGate';
+import { getDrivers, getFixes, handleUnauthorized, type DriverRosterEntry, type LocationFixRow } from '../lib/api';
 
 // §1.9.2: Leaflet chunk stays lazy — the picker/table render without it.
 const FixTrailMap = lazy(() => import('../components/FixTrailMap'));
@@ -20,6 +21,10 @@ function todayStr(): string {
 const TABLE_PAGE_SIZE = 50; // §1.9.2: paginated lists, default 50 rows
 
 export default function RawFixesPage() {
+  // /ingest/drivers + /ingest/fixes are audited personal-data reads that
+  // require a bearer token backend-side; only fetch once a manager session
+  // exists (AuthGate gates the shell, so this mainly guards token expiry).
+  const role = useSession();
   const [drivers, setDrivers] = useState<DriverRosterEntry[]>([]);
   const [driversError, setDriversError] = useState<string | null>(null);
   const [driverId, setDriverId] = useState('');
@@ -32,6 +37,7 @@ export default function RawFixesPage() {
 
   // Roster: drivers with fixes in the last 7 days (backend default `since`).
   useEffect(() => {
+    if (!role) return; // audited personal-data read — needs a manager JWT
     let cancelled = false;
     getDrivers()
       .then((r) => {
@@ -40,12 +46,16 @@ export default function RawFixesPage() {
         setDriversError(null);
         setDriverId((cur) => cur || r.drivers[0]?.driver_id || '');
       })
-      .catch((e: unknown) => !cancelled && setDriversError(String(e)));
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        handleUnauthorized(e); // expired session ⇒ flip back to sign-in card
+        setDriversError(String(e));
+      });
     return () => { cancelled = true; };
-  }, []);
+  }, [role]);
 
   const loadFixes = useCallback(async () => {
-    if (!driverId) return;
+    if (!role || !driverId) return;
     setLoading(true);
     setError(null);
     try {
@@ -55,12 +65,13 @@ export default function RawFixesPage() {
       setLoadedAt(Date.now());
       setTablePage(0);
     } catch (e: unknown) {
+      handleUnauthorized(e);
       setError(e instanceof Error ? e.message : String(e));
       setFixes([]);
     } finally {
       setLoading(false);
     }
-  }, [driverId, date]);
+  }, [role, driverId, date]);
 
   useEffect(() => { void loadFixes(); }, [loadFixes]);
 

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useSession } from '../components/AuthGate';
 import {
-  getTripReport, getSeparations, login, currentRole, hasToken, logout,
+  getTripReport, getSeparations, handleUnauthorized, logout,
   type TripReportDto, type SeparationsDto,
 } from '../lib/api';
 import { toCsv, downloadBlob } from '../lib/csv';
@@ -10,6 +11,8 @@ import { toCsv, downloadBlob } from '../lib/csv';
  * history (§Master Module 6 "export a weekly trip report", §1.4 separations).
  * Reads go through /reports/* which require a FLEET_MANAGER/ADMIN JWT and are
  * audited server-side; CSV export is purely client-side (lib/csv.ts).
+ * v2: sign-in lives in the app-level AuthGate — this page just consumes the
+ * live session so an expired token flips the whole shell back to the gate.
  */
 
 const DAY = 24 * 3600_000;
@@ -23,10 +26,9 @@ function defaultWindow(): { fromIso: string; toIso: string } {
 type Tab = 'trips' | 'separations';
 
 export default function ReportsPage() {
+  const role = useSession(); // managers-only roles guaranteed by AuthGate
+  const signedIn = !!role;
   const [tab, setTab] = useState<Tab>('trips');
-  const [creds, setCreds] = useState({ identifier: '', password: '' });
-  const [authMsg, setAuthMsg] = useState<string | null>(null);
-  const [signedIn, setSignedIn] = useState(hasToken() && ['FLEET_MANAGER', 'ADMIN'].includes(currentRole() ?? ''));
   const [win, setWin] = useState(defaultWindow);
   const [trips, setTrips] = useState<TripReportDto | null>(null);
   const [seps, setSeps] = useState<SeparationsDto | null>(null);
@@ -39,6 +41,7 @@ export default function ReportsPage() {
       if (tab === 'trips') setTrips(await getTripReport({ fromIso: win.fromIso, toIso: win.toIso }));
       else setSeps(await getSeparations({ fromIso: win.fromIso, toIso: win.toIso }));
     } catch (e) {
+      handleUnauthorized(e); // expired JWT ⇒ AuthGate flips back to sign-in card
       setErr(String(e instanceof Error ? e.message : e));
     } finally {
       setLoading(false);
@@ -46,19 +49,6 @@ export default function ReportsPage() {
   }, [tab, win]);
 
   useEffect(() => { if (signedIn) void load(); }, [signedIn, load]);
-
-  const doLogin = async () => {
-    setAuthMsg(null);
-    try {
-      const { role } = await login(creds.identifier, creds.password);
-      if (role !== 'FLEET_MANAGER' && role !== 'ADMIN') {
-        setAuthMsg(`Signed in as ${role} — reports need fleet-manager rights.`);
-        logout();
-      } else setSignedIn(true);
-    } catch {
-      setAuthMsg('Login failed.');
-    }
-  };
 
   const exportCsv = () => {
     const stamp = `${win.fromIso.slice(0, 10)}_${win.toIso.slice(0, 10)}`;

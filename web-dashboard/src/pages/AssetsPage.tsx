@@ -5,6 +5,7 @@ import {
   getAdminTrailers,
   getAdminVehicles,
   getFleets,
+  handleUnauthorized,
   setFleetStatus,
   type AdminTrailerRow,
   type AdminVehicleRow,
@@ -42,6 +43,7 @@ export default function AssetsPage() {
   const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
+    if (!role) return; // /admin/* reads need a manager JWT (401 otherwise)
     setLoading(true);
     try {
       const [v, t, f] = await Promise.all([getAdminVehicles(), getAdminTrailers(), getFleets()]);
@@ -50,11 +52,12 @@ export default function AssetsPage() {
       setFleets(f.fleets);
       setError(null);
     } catch (e) {
+      handleUnauthorized(e);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [role]);
 
   useEffect(() => { void load(); }, [load]);
 

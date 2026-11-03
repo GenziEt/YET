@@ -5,6 +5,7 @@ import {
   adminAssignTrailer,
   adminAssignVehicle,
   fetchDriverDocumentBlob,
+  handleUnauthorized,
   getAdminDrivers,
   getAdminTrailers,
   getAdminVehicles,
@@ -114,6 +115,7 @@ export default function DriversPage() {
       setDrivers(r.drivers);
       setListError(null);
     } catch (e: unknown) {
+      handleUnauthorized(e); // expired JWT ⇒ AuthGate flips back to sign-in
       setListError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);

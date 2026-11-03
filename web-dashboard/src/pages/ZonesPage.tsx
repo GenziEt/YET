@@ -2,9 +2,10 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { TILE_URL, ATTRIBUTION, ADDIS_ABABA, DEFAULT_ZOOM } from '../config';
+import { useSession } from '../components/AuthGate';
 import {
   getDrivers, listGeofences, createGeofence, updateGeofence, deleteGeofence,
-  getVehicleGeofenceState, login, logout, currentRole, hasToken, ApiError,
+  getVehicleGeofenceState, handleUnauthorized, ApiError,
   type DriverRosterEntry, type GeofenceDto, type RouteResponse, type VehicleGeofenceState,
 } from '../lib/api';
 import GeofenceLayer from '../components/GeofenceLayer';
@@ -37,12 +38,10 @@ function FitToRoute({ route }: { route: RouteResponse | null }) {
 const WRITE_ROLES = ['FLEET_MANAGER', 'ADMIN'];
 
 export default function ZonesPage() {
-  // ---- auth (Phase 3 write actions need a manager/admin JWT) ----------------
-  const [tokened, setTokened] = useState(hasToken());
-  const [role, setRole] = useState(currentRole() ?? '');
-  const [ident, setIdent] = useState('');
-  const [pw, setPw] = useState('');
-  const [authError, setAuthError] = useState<string | null>(null);
+  // ---- auth: the app-level AuthGate owns sign-in/out; this page only needs
+  // the live role to decide write permissions (§Phase 3 writes are manager-only).
+  const role = useSession() ?? '';
+  const tokened = !!role;
 
   // ---- data ------------------------------------------------------------------
   const [drivers, setDrivers] = useState<DriverRosterEntry[]>([]);
@@ -59,33 +58,25 @@ export default function ZonesPage() {
 
   const canWrite = WRITE_ROLES.includes(role);
 
-  async function doLogin(e: React.FormEvent) {
-    e.preventDefault();
-    setAuthError(null);
-    try {
-      const r = await login(ident.trim(), pw);
-      setRole(r.role); setTokened(true);
-    } catch (err) {
-      setAuthError(err instanceof Error ? err.message : String(err));
-    }
-  }
-  function doLogout() { logout(); setTokened(false); setRole(''); }
-
   const reloadGeofences = useCallback(async () => {
     try {
       const r = await listGeofences(canWrite);
       setGeofences(r.geofences.filter((g) => canWrite || g.active));
       setLoadedAt(Date.now());
       setError(null);
-    } catch (e) { setError(String(e)); }
+    } catch (e) {
+      handleUnauthorized(e); // expired JWT ⇒ gate flips back to sign-in card
+      setError(String(e));
+    }
   }, [canWrite]);
 
   useEffect(() => {
+    if (!tokened) return; // roster read is token-gated + audited backend-side
     getDrivers().then((r) => {
       setDrivers(r.drivers);
       setVehicleId((cur) => cur || r.drivers.find((d) => d.vehicle_id)?.vehicle_id || '');
     }).catch(() => {});
-  }, []);
+  }, [tokened]);
 
   useEffect(() => { void reloadGeofences(); }, [reloadGeofences]);
 
@@ -113,13 +104,21 @@ export default function ZonesPage() {
       }
       setEditing(null);
       await reloadGeofences();
+    } catch (e) {
+      handleUnauthorized(e);
+      setError(String(e));
     } finally { setBusy(false); }
   }
 
   async function handleDelete(g: GeofenceDto) {
     if (!confirm(`Deactivate "${g.name}"? Historical events remain linked.`)) return;
-    await deleteGeofence(g.geofence_id);
-    await reloadGeofences();
+    try {
+      await deleteGeofence(g.geofence_id);
+      await reloadGeofences();
+    } catch (e) {
+      handleUnauthorized(e);
+      setError(String(e));
+    }
   }
 
   const staleMin = loadedAt ? Math.floor((Date.now() - loadedAt) / 60_000) : 0;
@@ -129,17 +128,11 @@ export default function ZonesPage() {
       <header>
         <h1>Zones &amp; ETA</h1>
         {!tokened ? (
-          <form className="login-bar" onSubmit={doLogin}>
-            <input aria-label="Email or phone" placeholder="email / +251…" value={ident} onChange={(e) => setIdent(e.target.value)} />
-            <input aria-label="Password" placeholder="password" type="password" value={pw} onChange={(e) => setPw(e.target.value)} />
-            <button type="submit">Sign in</button>
-            {authError && <span className="error" role="alert">{authError}</span>}
-          </form>
+          <span className="pill warn">read-only — sign in above to manage zones</span>
         ) : (
           <>
             <span className="pill ok">signed in · {role}</span>
             {!canWrite && <span className="pill warn">read-only (writes need FLEET_MANAGER/ADMIN)</span>}
-            <button className="linkish" onClick={doLogout}>Sign out</button>
           </>
         )}
         {staleMin > 2 && <span className="pill warn">zones last updated {staleMin} min ago</span>}
