@@ -107,6 +107,16 @@ export default function App() {
 
   const go = (v: View) => { setView(v); setDrawerOpen(false); };
 
+  // Roving tabindex for the vertical tablist (WAI-ARIA APG): arrow keys move selection.
+  const onTabListKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    const idx = VIEWS.findIndex((v) => v.id === view);
+    const next = e.key === 'ArrowDown' ? (idx + 1) % VIEWS.length : (idx - 1 + VIEWS.length) % VIEWS.length;
+    go(VIEWS[next].id);
+    requestAnimationFrame(() => document.getElementById(`nav-tab-${VIEWS[next].id}`)?.focus());
+  };
+
   return (
     <div className={`app-shell${drawerOpen ? ' drawer-open' : ''}`}>
       <a className="skip-link" href="#main-content">Skip to content</a>
@@ -119,13 +129,16 @@ export default function App() {
           <img className="brand-logo" src="/met-logo.svg" alt="MET" />
           <span className="wordmark"><strong>YET</strong><span>Fleet Intelligence</span></span>
         </div>
-        <div className="sidebar-nav" role="tablist" aria-orientation="vertical">
+        <div className="sidebar-nav" role="tablist" aria-orientation="vertical" aria-label="Dashboard views" onKeyDown={onTabListKeyDown}>
           {VIEWS.map((v) => (
             <button
               key={v.id}
               role="tab"
+              id={`nav-tab-${v.id}`}
+              aria-controls="main-content"
               aria-selected={view === v.id}
               aria-current={view === v.id ? 'page' : undefined}
+              tabIndex={view === v.id ? 0 : -1}
               className={`nav-item${view === v.id ? ' active' : ''}`}
               onClick={() => go(v.id)}
             >
@@ -150,7 +163,7 @@ export default function App() {
             </svg>
           </button>
         </div>
-        <div id="main-content" className="page-host">
+        <div id="main-content" className="page-host" role="tabpanel" aria-labelledby={`nav-tab-${view}`} tabIndex={-1}>
           <AuthGate>
             {view === 'fixes' ? <RawFixesPage /> : view === 'zones' ? <ZonesPage /> : view === 'pilot' ? <PilotPage /> : view === 'reports' ? <ReportsPage /> : view === 'drivers' ? <DriversPage /> : view === 'notifications' ? <NotificationsPage /> : view === 'assets' ? <AssetsPage /> : <DashboardPage />}
           </AuthGate>

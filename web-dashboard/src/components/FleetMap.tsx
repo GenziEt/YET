@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import L from 'leaflet';
-import { TILE_URL, ATTRIBUTION, ADDIS_ABABA, DEFAULT_ZOOM } from '../config';
+import { TILE_URL, ATTRIBUTION, ADDIS_ABABA, DEFAULT_ZOOM, MARKER_ICON_URL, MARKER_ICON_2X_URL, MARKER_SHADOW_URL } from '../config';
 import { getFleetState, hasToken, type FleetStateDto, type FleetVehicleStateDto } from '../lib/api';
 
+// §1.9.3: icons vendored locally (public/leaflet-images/) — no unpkg fetch at runtime.
 const liveIcon = L.icon({
-  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  iconUrl: MARKER_ICON_URL,
+  iconRetinaUrl: MARKER_ICON_2X_URL,
+  shadowUrl: MARKER_SHADOW_URL,
   iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34],
+  shadowSize: [41, 41], shadowAnchor: [12, 41],
 });
 // §1.4 honesty rule: a stale/offline truck must NEVER look live — gray, hollow marker.
 const staleIcon = L.divIcon({

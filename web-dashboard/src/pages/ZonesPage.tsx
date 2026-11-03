@@ -1,7 +1,7 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, useMap } from 'react-leaflet';
 import L from 'leaflet';
-import { TILE_URL, ATTRIBUTION, ADDIS_ABABA, DEFAULT_ZOOM } from '../config';
+import { TILE_URL, ATTRIBUTION, ADDIS_ABABA, DEFAULT_ZOOM, MARKER_ICON_URL, MARKER_ICON_2X_URL, MARKER_SHADOW_URL } from '../config';
 import { useSession } from '../components/AuthGate';
 import {
   getDrivers, listGeofences, createGeofence, updateGeofence, deleteGeofence,
@@ -16,8 +16,11 @@ const GeofenceEditor = lazy(() => import('../components/GeofenceEditor'));
 const RoutePanel = lazy(() => import('../components/RoutePanel'));
 
 const truckIcon = L.icon({
-  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  iconUrl: MARKER_ICON_URL,
+  iconRetinaUrl: MARKER_ICON_2X_URL,
+  shadowUrl: MARKER_SHADOW_URL,
   iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34],
+  shadowSize: [41, 41], shadowAnchor: [12, 41],
 });
 
 /** Fit map bounds to route + geofences when a new route arrives (keeps one container). */
