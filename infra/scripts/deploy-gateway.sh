@@ -70,9 +70,9 @@ ssh_run "cd '$REMOTE_DIR' \
   && YET_DOMAIN=\${YET_DOMAIN:-yet.example.et} \
   && sed -i \"s|\\\${YET_TLS_ENFORCE}|\$TLS_ENFORCE|g\" nginx.conf.staged.\$TS \
   && if [ \"\$TLS_ENFORCE\" = on ] && docker compose exec -T gateway test -f \"/etc/letsencrypt/live/\$YET_DOMAIN/fullchain.pem\" 2>/dev/null; then \
-       sed -i '/Audit P0 (TLS deployment blocker): functional HTTPS server/,/^# }\$/ s/^# //' nginx.conf.staged.\$TS; \
+       sed -i '/BEGIN-TLS-BLOCK/,/END-TLS-BLOCK/ { /BEGIN-TLS-BLOCK/d; /END-TLS-BLOCK/d; s/^# //; }' nginx.conf.staged.\$TS; \
      fi \
-  && sed -i \"s|YET_DOMAIN|\$YET_DOMAIN|g\" nginx.conf.staged.\$TS"
+  && sed -i \"s|YET__DOMAIN__|\$YET_DOMAIN|g\" nginx.conf.staged.\$TS"
 
 # ---------------------------------------------------------------------------
 say "validate staged compose file (config render only, no container ops)"
