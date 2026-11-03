@@ -33,6 +33,17 @@ requirement, not a feature.**
   recognition (sensors), notifications, battery-exemption.
 - Raw fixes retained 90 days, then downsampled to every 10th fix (§1.10.6); trip
   aggregates retained per contract/billing need.
+- Audit-log minimization (security audit P3): onboarding OTP/driver-registration
+  audit rows store an HMAC pseudonym of the phone (`phone_hmac`), never the raw
+  E.164 number. The full phone remains only in `users.phone_e164` /
+  `otp_requests` where it is operationally required and covered by §4 erasure.
+- Token policy (security audit P3): access JWTs carry a 12 h TTL with NO refresh
+  rotation. This is accepted because migration 0017's `users.token_version`
+  epoch (enforced pre-expiry by `lib/revocation.ts` on every Bearer request)
+  revokes outstanding tokens immediately on un-pair / suspension / lost-phone
+  self-revoke; the residual risk is a stolen token usable up to 12 h only if
+  the device-side credential is also compromised AND no revoke action follows.
+  `JWT_ACCESS_TTL` is zod-validated at boot (duration format only).
 
 ## 3. Data sovereignty (hard constraint)
 

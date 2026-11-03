@@ -86,12 +86,17 @@ async function authGuard(req: FastifyRequest): Promise<{ id: string; role: strin
 }
 
 export default async function identityRoutes(app: FastifyInstance) {
-  /** POST /auth/login — JWT access token. Rate-limited at nginx + in-app.
+  /** POST /auth/login — JWT access token. Rate-limited at nginx AND in-app
+   *  (audit P1 fix: defense-in-depth — the in-app limit holds even if the API is
+   *  reached directly, bypassing the gateway). Staff accounts are few and logins
+   *  are rare, so 10/min per IP is generous for real use and caps brute force.
    *  Validation errors are answered inline with a structured 400 rather than
    *  bubbling a ZodError to the global error handler: plugin-level handlers
    *  (@fastify/sensible) can shadow setErrorOrder('shallowest') overrides, so
    *  route-local handling keeps the offline contract deterministic. */
-  app.post('/auth/login', async (req, reply) => {
+  app.post('/auth/login', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (req, reply) => {
     const parsed = LoginSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: 'validation_failed', detail: parsed.error.flatten() });
@@ -205,8 +210,11 @@ export default async function identityRoutes(app: FastifyInstance) {
   /** POST /me/bootstrap — one-time pairing of a pre-provisioned driver account.
    *  Body carries the login identifier (phone_e164 or email) + password; on success
    *  returns a JWT and stamps the device_id onto the user record so later logins can
-   *  be recognized. The app stores ONLY the token — never the password. */
-  app.post('/me/bootstrap', async (req, reply) => {
+   *  be recognized. The app stores ONLY the token — never the password.
+   *  Rate-limited in-app (audit P1 fix): same credential-check surface as login. */
+  app.post('/me/bootstrap', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (req, reply) => {
     const parsedBoot = BootstrapSchema.safeParse(req.body);
     if (!parsedBoot.success) {
       return reply.code(400).send({ error: 'validation_failed', detail: parsedBoot.error.flatten() });

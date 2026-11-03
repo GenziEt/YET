@@ -22,6 +22,8 @@ export interface TokenClaims {
 }
 
 export function signAccessToken(claims: TokenClaims): string {
+  // env.JWT_ACCESS_TTL is zod-validated at boot (config/env.ts, audit P3) —
+  // a malformed TTL aborts startup instead of silently mis-signing tokens.
   return jwt.sign(claimsToPayload(claims), env.JWT_SECRET, { expiresIn: env.JWT_ACCESS_TTL as jwt.SignOptions['expiresIn'] });
 }
 

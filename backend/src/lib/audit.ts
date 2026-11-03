@@ -17,6 +17,17 @@ export async function audit(params: {
   ip?: string | null;
   detail?: Record<string, unknown>;
 }): Promise<void> {
+  // Data minimization (security audit P3): raw phone numbers never enter the
+  // audit trail. Any `phone` field in a detail payload is replaced with a
+  // one-way HMAC pseudonym (`phone_hmac`) — still correlatable across rows
+  // for incident/breach analysis, useless to leak readers. The authoritative
+  // number stays only in users.phone_e164 / otp_requests (operationally
+  // required, covered by the §4 erasure path). See docs/COMPLIANCE-PDPP.md §2.
+  let detail = params.detail;
+  if (detail && typeof detail.phone === 'string') {
+    const { phone, ...rest } = detail;
+    detail = { ...rest, phone_hmac: phonePseudonym(phone) };
+  }
   // Hardening: audit_log.ip is an INET column. req.ip can carry proxy-supplied
   // or malformed values; a bad insert would fail every audited read path.
   // Validate leniently — anything non-parseable is recorded as NULL rather
