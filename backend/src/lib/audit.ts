@@ -1,5 +1,19 @@
+import crypto from 'node:crypto';
 import net from 'node:net';
 import { pool } from '../db/pool.js';
+import { otpHashKey } from './secrets.js';
+
+/**
+ * One-way pseudonym for phone numbers in audit details (PDPP minimization).
+ * Deterministic HMAC keyed with the server's OTP hash key so analysts can
+ * correlate rows across events without ever seeing the number itself.
+ */
+function phonePseudonym(phone: string): string {
+  return crypto.createHmac('sha256', otpHashKey())
+    .update(`audit-phone:${phone}`)
+    .digest('hex')
+    .slice(0, 32);
+}
 
 /** True for a valid IPv4/IPv6 string (what a Postgres INET column accepts). */
 function isIpAddress(value: string): boolean {
@@ -40,7 +54,7 @@ export async function audit(params: {
       `INSERT INTO audit_log (actor_id, action, target_user, ip, detail)
        VALUES ($1,$2,$3,$4,$5)`,
       [params.actorId ?? null, params.action, params.targetUser ?? null,
-       ip, params.detail ? JSON.stringify(params.detail) : null],
+       ip, detail ? JSON.stringify(detail) : null],
     );
   } catch (err) {
     // Audit must never break the request path, but a silent audit failure is a

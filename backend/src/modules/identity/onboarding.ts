@@ -143,11 +143,9 @@ function hashOtp(code: string, phone: string): string {
 
 /** Auth-state cache keys must NEVER degrade silently: if Redis is unreachable
  *  we answer 503 otp_storage_unavailable rather than pretend a code was
- *  stored (false "code sent") or pretend it was absent (misleading invalid). */
-function cacheUnavailable(err: unknown): never | Promise<any> {
-  void err;
-  throw Object.assign(new Error('otp_storage_unavailable'), { statusCode: 503 });
-}
+ *  stored (false "code sent") or pretend it was absent (misleading invalid).
+ *  The throw sites inline this error directly (audit P3 cleanup removed the
+ *  unused helper); this comment block stays as the policy statement. */
 
 function opaqueToken(): string {
   return crypto.randomBytes(32).toString('base64url');
@@ -159,15 +157,11 @@ async function fleetStatus(fleetId: string | null): Promise<string | null> {
   return rows[0]?.status ?? null;
 }
 
-/** Machine-readable denial codes thrown as Errors (authGuard etc.) must keep
- *  their message in the response `error` field — Fastify's default error
- *  serializer would otherwise render `{statusCode:403}` + `{error:'Forbidden'}`,
- *  and the driver app branches on `account_inactive`. Applied per-route via
- *  onRequest so it cannot clash with setErrorHandler ordering. */
-const KNOWN_DENIALS = new Set(['consent_required', 'fleet_suspended', 'cross_fleet_denied',
-                               'forbidden_role', 'target_not_found',
-                               'account_inactive', 'account_suspended', 'device_not_paired',
-                               'unauthorized']);
+/* Machine-readable denial codes thrown as Errors (authGuard etc.) must keep
+ * their message in the response `error` field. Guards send `{error:<code>}`
+ * directly; the canonical code list lives in lib/tenant.ts (DENIAL_CODES) and
+ * app.ts keeps a fallback copy for its error handler. Audit P3 cleanup: the
+ * unused local duplicate of that list was removed from this module. */
 
 /** Shared guard: Bearer token → live principal. Re-validates the DB state on
  *  every call so revocation/suspension takes effect immediately regardless of

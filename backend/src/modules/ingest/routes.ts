@@ -6,7 +6,7 @@ import {
 } from './service.js';
 import { FixQuerySchema, listActiveDrivers, listFixes } from './read_service.js';
 import { verifyAccessToken, type TokenClaims } from '../../lib/jwt.js';
-import { assertTargetInFleet, deny, forbiddenCrossFleet, getDriverFleet, isDenial } from '../../lib/tenant.js';
+import { assertTargetInFleet, deny, forbiddenCrossFleet, isDenial } from '../../lib/tenant.js';
 import { assertConsentActive } from '../identity/consent.js';
 import { pool } from '../../db/pool.js';
 import { audit } from '../../lib/audit.js';
@@ -105,8 +105,11 @@ async function bearerClaims(req: any): Promise<TokenClaims> {
 }
 
 export default async function ingestRoutes(app: FastifyInstance) {
-  // Per-driver backpressure (§1.10.4): 60 batches/minute -> 429 + Retry-After.
-  const limiter = app.rateLimit.bind(app);
+  // Per-driver backpressure (§1.10.4): route-level config.rateLimit below
+  // (max: INGEST_RATE_LIMIT_PER_MIN, keyed per-IP via the plugin registered
+  // in app.ts). Audit P3 note: an earlier half-wired `app.rateLimit.bind`
+  // helper here was dead code — if per-*driver* (not per-IP) limiting is
+  // ever needed, build a custom keyGenerator instead of re-adding it.
 
   app.post('/ingest/locations', {
     config: { rateLimit: { max: env.INGEST_RATE_LIMIT_PER_MIN, timeWindow: '1 minute' } },
