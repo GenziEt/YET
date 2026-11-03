@@ -369,6 +369,9 @@ export interface FleetStateDto {
   cached: boolean;
   replica_lag_s: number | null;
   live_window_s: number;
+  /** Set by the service worker (public/sw.js) when it serves the IndexedDB
+   *  last-known-good snapshot because the network was unavailable. */
+  sw_served_from?: 'indexeddb';
 }
 
 /** GET /reports/fleet-state — poll this (server TTL is 30s; polling faster is harmless). */
