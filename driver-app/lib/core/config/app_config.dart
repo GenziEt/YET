@@ -25,6 +25,8 @@ class AppConfig {
   /// INGEST_MAX_BATCH_SENSORS=2000; we stay smaller so one request fits a
   /// weak-3G round trip inside the uploader timeout.
   static const maxBatchSensors = 500;
+  /// §1.8.1 rule 3: backoff base 5 s, factor 2, cap 300 s, jitter ±20 %.
+  static const backoffBase = Duration(seconds: 5);
   static const backoffCap = Duration(minutes: 5); // exponential backoff cap
   static const storageWarnBytes = 80 * 1024 * 1024; // §1.8.6 warn threshold
   static const storageHardCapBytes = 100 * 1024 * 1024;

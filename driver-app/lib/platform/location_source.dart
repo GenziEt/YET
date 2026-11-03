@@ -22,16 +22,35 @@ class GeolocatorPositionSource {
   GeolocatorPositionSource({
     this.desiredAccuracy = LocationAccuracy.high,
     this.distanceFilterMeters = 0,
-  });
+    Duration Function()? samplingInterval,
+  }) : _samplingInterval = samplingInterval;
 
   final LocationAccuracy desiredAccuracy;
   final int distanceFilterMeters;
 
+  /// §1.3 adaptive sampling cadence: consulted every time the plugin stream
+  /// is (re)built. When null the stream runs at the fixed Phase-1 default
+  /// ([_defaultInterval]). Pass `gps.currentInterval` (via AppRuntime) to get
+  /// the speed-based 5/10/30 s policy from [AdaptiveInterval].
+  final Duration Function()? _samplingInterval;
+
+  static const _defaultInterval = Duration(seconds: 2);
+
   StreamSubscription<Position>? _sub;
   bool _stopped = false;
+  Duration _lastAppliedInterval = _defaultInterval;
+
+  /// Current interval the live stream was configured with (diagnostics/tests).
+  Duration get appliedInterval => _lastAppliedInterval;
 
   /// Map the plugin's Position stream into the pipeline's [RawPosition] shape.
   /// One subscription for the collector's lifetime; [dispose] cancels it.
+  /// With an adaptive policy supplied, a change in the requested interval
+  /// rebuilds the plugin stream — geolocator only reads `intervalDuration`
+  /// at stream creation. The collector's own restart path calls [stream]
+  /// again after its 30 s retry, so mid-trip cadence changes land there too;
+  /// while stationary (no fixes flowing) the cadence cannot be re-evaluated
+  /// anyway, and on resume the collector resubscribes with the fresh value.
   Stream<RawPosition> stream() {
     final out = StreamController<RawPosition>();
     () async {
@@ -39,11 +58,13 @@ class GeolocatorPositionSource {
         await _ensureServiceEnabled();
         await _ensurePermission();
         if (_stopped) return;
+        final interval = _samplingInterval?.call() ?? _defaultInterval;
+        _lastAppliedInterval = interval;
         _sub = Geolocator.getPositionStream(
           locationSettings: AndroidSettings(
             accuracy: desiredAccuracy,
             distanceFilter: distanceFilterMeters,
-            intervalDuration: const Duration(seconds: 2),
+            intervalDuration: interval,
             // Foreground-service lifecycle (§Phase 1): collect with a
             // persistent driver-visible notification so Android keeps the
             // location stream alive when the app backgrounds mid-trip. The

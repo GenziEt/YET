@@ -107,7 +107,13 @@ class AppRuntime extends ChangeNotifier {
     );
     await worker.refreshPendingCount();
 
-    final gps = GpsCollector(dao: dao, positionSource: positionSource);
+    final gps = GpsCollector(
+      dao: dao,
+      positionSource: positionSource,
+      // §1.3 boost hook: a fresh harsh/turn event pulls GPS to the 5 s
+      // cadence for AdaptiveInterval.boostWindow (see _gpsBoostActive).
+      boostRequested: () => runtime._gpsBoostActive(),
+    );
     final sensors = SensorCollector(dao: sensorDao, source: null);
     // Phase 2 fusion: the classifier sits BETWEEN the raw sensor stream and
     // the collector — it consumes every raw sample, emits discrete harsh/turn/
@@ -115,7 +121,16 @@ class AppRuntime extends ChangeNotifier {
     // cache path. Thresholds refresh at trip start (see onTripToggled).
     final classifier = EventClassifier(
       thresholds: ClassificationThresholds.defaults,
-      sink: sensors.ingest,
+      // Discrete harsh/turn events also arm the §1.3 GPS boost window —
+      // recorded here (single fan-in) so GpsCollector can read it via
+      // _gpsBoostActive without owning plugin or classifier internals.
+      sink: (s) async {
+        if (s.kind == 'harsh_brake' || s.kind == 'harsh_accel' ||
+            s.kind == 'turn') {
+          runtime._lastDiscreteEventAt = s.timestampUtc;
+        }
+        await sensors.ingest(s);
+      },
     );
     final cfgSource = configSource ??
         HttpClassificationConfigSource(
@@ -144,11 +159,52 @@ class AppRuntime extends ChangeNotifier {
     // Late-bind the source so the collector subscribes THROUGH the classifier
     // (single fan-in point; keeps SensorCollector plugin-free).
     runtime._sensorSource = sensorSource;
+    // §1.3 adaptive GPS sampling: the position stream is rebuilt whenever the
+    // speed/boost-derived interval changes (geolocator only reads
+    // intervalDuration at stream creation, so a live cadence change needs a
+    // resubscribe — cheap, and only fires on 5/10/30 s tier transitions).
+    runtime._resubscribePositions = () async {
+      await runtime.gps.endCollection();
+      if (runtime._tripActive) await runtime.gps.beginCollection();
+    };
     return runtime;
   }
 
   /// Raw-sample producer, late-bound after construction (see bootstrap).
   SensorStreamFactory? _sensorSource;
+
+  /// Position-stream rebuilder, late-bound after construction. Null when no
+  /// real position source is wired (headless tests) — [tickAdaptiveSampling]
+  /// is then a no-op.
+  Future<void> Function()? _resubscribePositions;
+
+  /// Last discrete harsh/turn event timestamp (arms the §1.3 boost window).
+  DateTime? _lastDiscreteEventAt;
+
+  bool _tripActive = false;
+  Duration _appliedGpsInterval = const Duration(seconds: 2);
+  Timer? _adaptiveSamplingTimer;
+
+  bool _gpsBoostActive() {
+    final last = _lastDiscreteEventAt;
+    if (last == null) return false;
+    return DateTime.now().difference(last) <= AdaptiveInterval.boostWindow;
+  }
+
+  /// Evaluate the §1.3 speed-based sampling policy and, if the requested
+  /// cadence changed since the stream was built, rebuild the position stream
+  /// with the new `intervalDuration`. Called on a slow watchdog timer while a
+  /// trip is active (see [onTripToggled]) — tier transitions are rare (speed
+  /// crossing ~14 m/s or a harsh/turn event), so the resubscribe cost is
+  /// negligible next to the battery saved by dropping to 30 s on highways.
+  @visibleForTesting
+  Future<void> tickAdaptiveSampling() async {
+    if (!_tripActive || _resubscribePositions == null) return;
+    final wanted = gps.currentInterval;
+    if (wanted == _appliedGpsInterval) return;
+    _appliedGpsInterval = wanted;
+    await _resubscribePositions!();
+  }
 
   /// SQLite file lives in app-support storage; PDPP §1.7 keeps it on-device
   /// until the driver's own upload sends it to the Ethiopian gateway.
@@ -231,8 +287,21 @@ class AppRuntime extends ChangeNotifier {
               }));
       unawaited(gps.beginCollection());
       unawaited(sensors.beginCollection());
+      // §1.3 adaptive sampling watchdog: re-evaluates the speed/boost-based
+      // GPS cadence every 20 s (≥ boostWindow, so a fresh harsh/turn event is
+      // picked up within one tick) and resubscribes only on tier changes.
+      _tripActive = true;
+      _lastDiscreteEventAt = null;
+      _adaptiveSamplingTimer?.cancel();
+      _adaptiveSamplingTimer = Timer.periodic(
+        const Duration(seconds: 20),
+        (_) => unawaited(tickAdaptiveSampling()),
+      );
       return check;
     }
+    _tripActive = false;
+    _adaptiveSamplingTimer?.cancel();
+    _adaptiveSamplingTimer = null;
     await gps.endCollection();
     await classifier.flush();
     await sensors.endCollection();
@@ -244,6 +313,12 @@ class AppRuntime extends ChangeNotifier {
 
   @override
   void dispose() {
+    _tripActive = false;
+    _adaptiveSamplingTimer?.cancel();
+    _adaptiveSamplingTimer = null;
+    // Cancel the collector's own retry timer + stream so no position keeps
+    // being written to the cache after teardown.
+    unawaited(gps.endCollection());
     worker.pendingCount.removeListener(notifyListeners);
     worker.storageWarning.removeListener(notifyListeners);
     worker.dispose();
