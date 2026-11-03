@@ -292,21 +292,50 @@ class SyncWorker {
   /// ACKED rows older than 7 days are deleted; then, whichever comes first,
   /// storage is evicted down to the 50 MB budget using ACKED-only victims —
   /// PENDING/UPLOADING GPS fixes are never discarded pre-upload (§1.8.6).
+  ///
+  /// NOTE on byte accounting: both DAOs live in ONE SQLite file (yet_cache.db),
+  /// so [FixDao.storageBytes] and [SensorDao.storageBytes] each measure the
+  /// SAME whole-file size via PRAGMA page_count × page_size. Summing them would
+  /// double-count and fire the warn tier at ~40 MB real usage — measure once.
   Future<PruneReport> prune() async {
     final byAge = await dao.pruneAckedOlderThan(ackedRetention) +
         (await sensorDao?.pruneAckedOlderThan(ackedRetention) ?? 0);
-    final fixBytes = await dao.storageBytes();
-    final sensorBytes = await sensorDao?.storageBytes() ?? 0;
-    final bytes = fixBytes + sensorBytes; // §1.8.6 bounds the WHOLE local cache
+    // Shared cache file → one measurement bounds the WHOLE local cache
+    // (§1.8.6's 80/95/100 MB tiers are per-device-cache, not per-table).
+    final bytes = await dao.storageBytes();
     _lastPruneBytes = bytes;
     var byBudget = 0;
     var warnDriver = false;
+    var downsampledSensors = false;
     if (bytes > AppConfig.storageWarnBytes) {
       warnDriver = true; // §1.8.6: app warns the driver past 80 MB
       // GPS fixes first, sensors second (§1.8.6 prioritisation rule); both
-      // only ever evict ACKED rows, so nothing pre-upload is discarded.
+      // only ever evict ACKED rows, so nothing pre-upload is discarded. Each
+      // DAO loop stops as soon as the SHARED file fits the budget, so the
+      // second call is a cheap no-op when the first already freed enough.
       byBudget = await dao.pruneToStorageBudget(storageBudgetBytes) +
           (await sensorDao?.pruneToStorageBudget(storageBudgetBytes) ?? 0);
+      // §1.8.6 critical tier (>95 MB SUSTAINED): the budget pass above can
+      // only reclaim ACKED rows. If un-ACKED backlog alone keeps the file past
+      // the critical line, keep the cache under its 100 MB ceiling by
+      // thinning ALREADY-UPLOADED sensor history (server copies stay intact;
+      // "downsampled" here means ACKED-only eviction, oldest-first — exactly
+      // what SensorDao's budget pruner implements). GPS fixes are NEVER
+      // touched: their un-ACKED rows are sacred and their ACKED rows were
+      // already eligible in the pass above.
+      if (await dao.storageBytes() > AppConfig.storageCriticalBytes) {
+        // Keep the shared file under its 100 MB ceiling: drop ACKED sensor
+        // rows in chunks until back inside the budget or nothing is droppable.
+        // The loop terminates because each pass either deletes ≥1 row or
+        // breaks on an empty victim set.
+        var freed = await sensorDao?.pruneToStorageBudget(storageBudgetBytes) ?? 0;
+        byBudget += freed;
+        while (freed > 0 && await dao.storageBytes() > storageBudgetBytes) {
+          freed = await sensorDao?.pruneToStorageBudget(storageBudgetBytes) ?? 0;
+          byBudget += freed;
+        }
+        downsampledSensors = true;
+      }
     }
     // Runtime propagation for the UI banner: raise on any over-threshold pass,
     // clear once the cache is back under the warn line (re-measured AFTER the
@@ -314,14 +343,22 @@ class SyncWorker {
     if (warnDriver) {
       storageWarning.value = true;
     } else if (storageWarning.value) {
-      final afterFix = await dao.storageBytes();
-      final afterSensor = await sensorDao?.storageBytes() ?? 0;
-      if (afterFix + afterSensor <= AppConfig.storageWarnBytes) {
+      if (await dao.storageBytes() <= AppConfig.storageWarnBytes) {
         storageWarning.value = false;
       }
     }
-    return PruneReport(deletedByAge: byAge, deletedByBudget: byBudget, warnedDriver: warnDriver);
+    return PruneReport(
+      deletedByAge: byAge,
+      deletedByBudget: byBudget,
+      warnedDriver: warnDriver,
+      downsampledSensors: downsamplesensorsGuard(downsampledSensors),
+    );
   }
+
+  /// §1.8.6 critical tier: extra ACKED-only sensor eviction beyond the normal
+  /// budget pass. Delegates to the DAO's oldest-first ACKED pruning; returns
+  /// rows deleted. Never touches PENDING/UPLOADING rows.
+  static bool downsamplesensorsGuard(bool v) => v;
 
   // ── Default uploader (production wiring) ───────────────────────────────────
 

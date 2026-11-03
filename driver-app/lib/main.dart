@@ -25,6 +25,7 @@ import 'features/notifications/firebase_push_source.dart';
 import 'features/notifications/push_banner.dart';
 import 'features/notifications/push_service.dart';
 import 'features/permissions/permissions_screen.dart';
+import 'features/trip/gps_collector.dart';
 import 'features/trip/trip_home_screen.dart';
 import 'l10n/app_localizations.dart';
 import 'platform/battery_source.dart';
@@ -338,7 +339,15 @@ class _YetAppState extends State<YetApp> {
       // ── Default production bootstrap: REAL device sources, no seams left
       // dangling (§Phase 1: "a real position source is constructed and
       // injected into AppRuntime by the default main.dart bootstrap").
-      final positionSource = GeolocatorPositionSource();
+      // §1.3 adaptive sampling: the plugin stream reads gps.currentInterval
+      // (speed/boost-derived 5/10/30 s policy) every time it is (re)built;
+      // AppRuntime's watchdog resubscribes on tier transitions. The closure
+      // resolves [rt] lazily — rt does not exist yet at construction time,
+      // and stream() is only ever called after bootstrap completes.
+      GpsCollector? gpsRef;
+      final positionSource = GeolocatorPositionSource(
+        samplingInterval: () => gpsRef?.currentInterval ?? const Duration(seconds: 2),
+      );
       final sensorSource = SensorsPlusSource();
       _positionSource = positionSource;
       _sensorSource = sensorSource;
@@ -353,6 +362,7 @@ class _YetAppState extends State<YetApp> {
         // every post-boot request reuses the sockets preconnect warmed.
         httpClient: AppHttp.shared,
       );
+      gpsRef = rt.gps;
       if (!mounted) {
         rt.dispose();
         return;

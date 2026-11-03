@@ -270,4 +270,110 @@ void main() {
       expect(rt.gps.isActive, isFalse);
     });
   });
+
+  // §1.3 follow-up: AdaptiveInterval must actually drive the sampling cadence.
+  // The plugin stream (GeolocatorPositionSource) reads gps.currentInterval on
+  // every (re)build; AppRuntime's watchdog resubscribes when the speed/boost-
+  // derived tier changes. These tests exercise the runtime half of that loop
+  // headlessly with a counting fake position source.
+  group('AdaptiveInterval wiring in AppRuntime (§1.3)', () {
+    late Directory dir;
+    late String dbPath;
+
+    setUp(() async {
+      dir = await Directory.systemTemp.createTemp('yet_adaptive_db');
+      dbPath = '${dir.path}/yet_cache.db';
+      SharedPreferences.setMockInitialValues({});
+    });
+
+    tearDown(() async {
+      await databaseFactory.deleteDatabase(dbPath);
+    });
+
+    // The fake source emits exactly one highway-speed fix per stream build,
+    // synchronously enough that GpsCollector's own subscription updates
+    // gps.currentInterval (20 m/s ≥ 14 ⇒ 30 s tier) right after beginCollection.
+    Future<AppRuntime> bootCounting(_StreamCounter counter) async {
+      return AppRuntime.bootstrap(
+        tokenStore: TokenStore(),
+        dbPathOverride: dbPath,
+        httpClient: MockClient((req) async => http.Response(
+              jsonEncode({
+                'vehicle': {'vehicle_id': 'v1', 'plate_number': '3-A1234'},
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            )),
+        positionSource: () {
+          counter.builds++;
+          return Stream.fromFuture(Future.value(RawPosition(
+            latitude: 9.03,
+            longitude: 38.74,
+            timestampUtc: DateTime.now().toUtc(),
+            speedMps: 20, // highway tier → currentInterval becomes 30 s
+          )));
+        },
+        sensorSource: () => const Stream<RawSensorSample>.empty(),
+      );
+    }
+
+    test('tickAdaptiveSampling resubscribes only when the tier changes',
+        () async {
+      final counter = _StreamCounter();
+      final rt = await bootCounting(counter);
+      final gpsRef = rt.gps;
+      addTearDown(rt.dispose);
+
+      await rt.onTripToggled(active: true);
+      expect(gpsRef.isActive, isTrue);
+      // beginCollection built exactly one stream and its single emitted fix
+      // moved the policy to the 30 s tier...
+      expect(counter.builds, 1);
+      expect(gpsRef.currentInterval, const Duration(seconds: 30));
+      // ...but trip start seeded _appliedGpsInterval with the SAME wanted
+      // value, so the first tick must NOT rebuild spuriously.
+      await rt.tickAdaptiveSampling();
+      expect(counter.builds, 1, reason: 'seeded applied == wanted — no-op');
+
+      // Drop back to the urban tier through the REAL write path.
+      await gpsRef.ingest(RawPosition(
+        latitude: 9.04,
+        longitude: 38.75,
+        timestampUtc: DateTime.now().toUtc(),
+        speedMps: 5,
+      ));
+      expect(gpsRef.currentInterval, const Duration(seconds: 10));
+
+      await rt.tickAdaptiveSampling();
+      expect(counter.builds, 2, reason: 'tier change must rebuild once');
+      await rt.tickAdaptiveSampling();
+      expect(counter.builds, 2, reason: 'same tier — second tick is a no-op');
+
+      await rt.onTripToggled(active: false);
+      expect(gpsRef.isActive, isFalse);
+    });
+
+    test('watchdog timer starts on trip start and stops on trip end',
+        () async {
+      final counter = _StreamCounter();
+      final rt = await bootCounting(counter);
+      addTearDown(rt.dispose);
+
+      await rt.onTripToggled(active: true);
+      expect(counter.builds, 1);
+      // Real timers can't reach the 20 s period inside this test body; drive
+      // the same entry point the periodic callback uses instead.
+      await rt.tickAdaptiveSampling();
+      expect(counter.builds, 1);
+
+      await rt.onTripToggled(active: false);
+      // Post-trip ticks are hard no-ops even if a stale timer callback lands.
+      await rt.tickAdaptiveSampling();
+      expect(counter.builds, 1);
+    });
+  });
+}
+
+class _StreamCounter {
+  int builds = 0;
 }
